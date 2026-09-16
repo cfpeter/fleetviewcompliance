@@ -307,6 +307,9 @@ interface LogRow {
   subject: string | null
   status: string
   error: string | null
+  /** What the provider says BECAME of it. See 0022 and notify/suppression.ts. */
+  delivery_state: string
+  delivery_detail: string | null
 }
 
 const [carrierResult, profileResult, prefsResult, catPrefsResult, snoozeResult, logResult] =
@@ -357,7 +360,7 @@ const [carrierResult, profileResult, prefsResult, catPrefsResult, snoozeResult, 
 
     supabase
       .from('notification_log')
-      .select('sent_at, channel, destination, subject, status, error')
+      .select('sent_at, channel, destination, subject, status, error, delivery_state, delivery_detail')
       .order('sent_at', { ascending: false })
       .limit(20),
   ])
@@ -497,12 +500,35 @@ function statusPill(status: string): string {
     case 'sent':
       return 'bg-emerald-100 text-emerald-800'
     case 'failed':
+    case 'not delivered':
       return 'bg-red-100 text-red-700'
     case 'skipped':
       return 'bg-ink-100 text-ink-500'
     default:
       return 'bg-amber-100 text-amber-800'
   }
+}
+
+/**
+ * What this row should SAY happened, which is not always what `status` holds.
+ *
+ * `status` records that the provider accepted the message — and it returns that
+ * same acceptance for an address it has suppressed and then silently drops. A
+ * row reading "sent" about a message that reached nobody is the same lie as a
+ * green digest run, told to the person it hurts most: the whole value of this
+ * table is answering "did you tell me?" months later, and it cannot answer that
+ * with a word the provider has since contradicted.
+ *
+ * `unknown` deliberately shows the send status unchanged. Most rows are
+ * unresolved for the first few minutes of their life, and flagging every one of
+ * them would train the reader to ignore the column.
+ */
+function deliveryLabel(row: LogRow): string {
+  if (row.status !== 'sent') return row.status
+  if (row.delivery_state === 'undelivered') return 'not delivered'
+  if (row.delivery_state === 'delivered') return 'delivered'
+  if (row.delivery_state === 'complained') return 'marked as spam'
+  return row.status
 }
 
 const channelLabel = (value: string) =>
@@ -1058,15 +1084,21 @@ const th = 'px-4 py-3 font-medium'
                     <span
                       class:list={[
                         'rounded-md px-2 py-0.5 text-xs font-medium',
-                        statusPill(row.status),
+                        statusPill(deliveryLabel(row)),
                       ]}
                     >
-                      {row.status}
+                      {deliveryLabel(row)}
                     </span>
                     {/* A message we tried and failed to send is exactly the
                         thing somebody will ask about, so the reason is on the
-                        row rather than in a log only we can read. */}
+                        row rather than in a log only we can read. The provider's
+                        own word is there too when we have it: "bounced" and
+                        "suppressed" both mean it never arrived and have entirely
+                        different fixes. */}
                     {row.error && <div class="mt-1 text-xs text-ink-500">{row.error}</div>}
+                    {row.delivery_detail && row.delivery_state !== 'delivered' && (
+                      <div class="mt-1 text-xs text-ink-500">{row.delivery_detail}</div>
+                    )}
                   </td>
                 </tr>
               ))}

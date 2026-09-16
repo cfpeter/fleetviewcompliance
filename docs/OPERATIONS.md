@@ -11,7 +11,9 @@ curl -X POST https://fleetviewcompliance.com/api/cron/digest \
   -H "x-cron-secret: $CRON_SECRET"
 ```
 
-It returns a summary: `{ carriers, considered, sent, held, skipped, failed }`.
+It returns a summary:
+`{ carriers, considered, sent, held, skipped, suppressed, failed }`, plus
+`reconciled`, `complaints` and `suppressionList`.
 
 `held` is its own number and not a kind of `skipped`. A held message is one the
 recipient's quiet hours caught: nothing was sent, **and nothing was written to
@@ -22,6 +24,82 @@ scratch on the next run and go out once the window has passed.
 A standing `held` count that never falls to zero means the job only ever runs
 inside somebody's quiet window. Run it more than once a day, or at an hour
 outside it — the message is waiting, not lost.
+
+### The silent delivery failure, and the two halves that close it
+
+**Resend answers `POST /emails` with HTTP 200 and a message id for an address it
+has SUPPRESSED, and then drops the mail.** Checking `res.ok` therefore records
+`sent` about a message nobody will ever read: a carrier stops receiving deadline
+warnings and neither he nor we ever find out. Every other failure in this system
+at least announces itself. This one is the reason the product's promise fails
+quietly, so it gets two defences rather than one.
+
+Measured against the live API, and the measurements are what the design is built
+on:
+
+| | what it gives | the catch |
+|---|---|---|
+| `POST /emails` | `{"id": "..."}` | **no delivery signal at all** |
+| `GET /emails/{id}` | `last_event` | `queued` at +0s, `suppressed` at +2s — knowable in seconds, not synchronously |
+| `GET /suppressions` | `id, email, origin, source_id, created_at` | **incomplete** — a reliably-suppressed address was absent from it |
+
+1. **Pre-send.** One `GET /suppressions` per run (never per message), matched
+   case-insensitively, checked **after `guard.ts` has resolved the destination**
+   — so on dev it tests the developer's address, which is where the message is
+   actually going. A recipient on the list is counted as `suppressed` and
+   **writes no `notification_log` row**, exactly as `held` does and for the
+   identical reason: the dedup key must survive so the message can go out once
+   the address is fixed.
+2. **Reconciliation.** `send()` records the provider's message id on the row.
+   The *next* digest run, before it derives anything, reads `last_event` for
+   recent unresolved rows and writes `notification_log.delivery_state`. That
+   column is deliberately separate from `status`: `status` stays true to what the
+   send attempt returned, and `delivery_state` carries the later fact. The
+   `alreadySent` read excludes `delivery_state = 'undelivered'`, which is what
+   un-spends the key.
+
+The pass is bounded on every axis — email only, `delivery_state = 'unknown'`, a
+message id present, `sent_at` inside 48 hours, newest first, at most
+`DIGEST_RECONCILE_LIMIT` (default 50) lookups — and backed by a partial index, so
+it cannot grow into a scan as the log grows. The ceiling exists because every
+lookup is a Cloudflare subrequest and exhausting that budget would take the whole
+digest down: trading a silent delivery failure for a silent digest is the worse
+of the two.
+
+`suppressionList: unavailable` means the pre-send half could not be read this
+run. That is a warning, not a failure — refusing to send whenever Resend blips
+would silence every warning in the product — but the run leaned entirely on
+reconciliation, which catches a dead address one run late.
+
+`complaints` counts messages that DID arrive and were marked as spam. Not in
+`suppressed`, and never re-sent: nothing is owed, and re-sending to somebody who
+pressed "spam" is how a sending domain is burned.
+
+### ⚠️ `0022_notification_delivery.sql` is NOT APPLIED
+
+The migration adding `provider_message_id`, `delivery_state`, `delivery_detail`
+and `delivery_checked_at` is written and **has not been run against any
+database**. Until it is, the digest's log writes and its `alreadySent` read both
+reference columns that do not exist and will fail. Apply it before deploying:
+
+```bash
+node scripts/migrate.mjs --dry   # 0022 should be the only pending file
+node scripts/migrate.mjs
+```
+
+### SMS: what Twilio does and does not share
+
+Twilio's equivalent of a suppression — a number that replied STOP — is refused
+**synchronously**: HTTP 400, error 21610. `!res.ok` already turns that into
+`failed`, which is already logged and already red, so the silent half does not
+exist on that side and nothing was built for it.
+
+What Twilio *does* share is the asynchronous half: a 201 carries
+`status: queued`/`accepted`, which is acceptance and not delivery, and a message
+can still end `undelivered` at the carrier. That is **not** reconciled, on
+purpose — SMS cannot send at all until 10DLC registration is live, and none of
+Twilio's behaviour has been measured the way Resend's has. The `sid` is recorded
+on the row now so that the handle exists when the channel is switched on.
 
 ### Why not a Cloudflare cron trigger
 
@@ -55,12 +133,19 @@ Two repository settings before it can work:
 anyone who can see the repository, and it is the only thing between the open
 internet and the send path.
 
-**It fails on `failed > 0`, not only on a bad status code.** The endpoint returns
-HTTP 200 while reporting that it reached a provider and the provider refused —
-so a workflow that checks the status code alone reports a green tick on the
-morning nothing went out. `held` is the opposite case and is only a notice: the
-message was caught by a quiet window, nothing was logged, and it is re-derived
-on the next run. That is what the 23:00 run is for.
+**It fails on `failed > 0` and on `suppressed > 0`, not only on a bad status
+code.** The endpoint returns HTTP 200 while reporting that it reached a provider
+and the provider refused — so a workflow that checks the status code alone
+reports a green tick on the morning nothing went out. `held` is the opposite case
+and is only a notice: the message was caught by a quiet window, nothing was
+logged, and it is re-derived on the next run. That is what the 23:00 run is for.
+
+The two red counters are kept apart because their fixes are:
+
+| counter | what happened | who fixes it |
+|---|---|---|
+| `failed` | we reached the provider and it refused | check the provider |
+| `suppressed` | the address is dead — bounced, or suppressed at Resend | check the recipient, then `notification_log.delivery_state` |
 
 **THE FAILURE MODE THIS FILE CANNOT CATCH:** GitHub disables scheduled workflows
 in a repository with no commits for 60 days. It emails first, but if that mail is

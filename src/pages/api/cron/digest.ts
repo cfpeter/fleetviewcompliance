@@ -10,11 +10,13 @@
  * what it did", and deliberately: a held message writes NO log row, because the
  * dedup key it would write is the same key that would then suppress it forever.
  * They are counted in the response summary as `held` and reconsidered next run.
+ * A message skipped because its recipient is suppressed at the provider follows
+ * that same precedent for that same reason — see `suppressed` below.
  *
  * Invoked by a Cloudflare cron trigger, or by hand with the shared secret.
  */
 
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { APIRoute } from 'astro'
 import { loadDeadlines } from '../../../lib/deadlines.ts'
 import { minutesOfDayInZone, parseClockTime } from '../../../lib/notify/guard.ts'
@@ -27,6 +29,7 @@ import {
   splitForQuietHours,
 } from '../../../lib/notify/select.ts'
 import { send, smsBody } from '../../../lib/notify/send.ts'
+import { fetchDeliveryEvent, fetchSuppressions } from '../../../lib/notify/suppression.ts'
 import type { Subject } from '../../../lib/rules/types.ts'
 
 interface Profile {
@@ -54,6 +57,137 @@ function secretMatches(given: string | null, expected: string): boolean {
   let diff = 0
   for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ expected.charCodeAt(i)
   return diff === 0
+}
+
+/**
+ * How far back the reconciliation pass looks.
+ *
+ * `last_event` settles within seconds of the send (measured: `queued` at +0s,
+ * `suppressed` at +2s), and this job runs three times a day — so 48 hours gives
+ * every message roughly six chances to be resolved while keeping the query a
+ * fixed-size window rather than a scan that grows with the log forever. A row
+ * still `unknown` after two days is one the provider is never going to answer
+ * about, and re-asking about it daily for a year buys nothing.
+ */
+const RECONCILE_WINDOW_HOURS = 48
+
+/**
+ * The hard ceiling on lookups per run.
+ *
+ * Every lookup is one Cloudflare subrequest, and a Worker has a per-request
+ * budget for those (50 on the free plan, 1000 on paid) that this job already
+ * spends against for every carrier it reads. An unbounded pass would eventually
+ * exhaust it and take the whole digest down with it — trading a silent delivery
+ * failure for a silent digest, which is the worse of the two.
+ *
+ * Newest first, so the messages somebody could still act on are the ones
+ * resolved when the ceiling bites. `DIGEST_RECONCILE_LIMIT` raises it for a
+ * deployment that genuinely sends more than this in one run.
+ */
+const RECONCILE_LIMIT = 50
+
+/** Lookups in flight at once. Enough to keep the pass quick, few enough not to
+ *  look like a burst to the provider's rate limiter. */
+const RECONCILE_CONCURRENCY = 6
+
+interface ReconcileSummary {
+  /** Rows we asked the provider about. */
+  checked: number
+  /** Rows that moved off `unknown` — the number that actually learned something. */
+  resolved: number
+  /** Rows the provider says never reached a person. These make the run go red. */
+  undelivered: number
+  /** Rows that DID arrive and were marked as spam. Not a delivery failure. */
+  complained: number
+}
+
+/**
+ * Correct the record on messages we reported as sent.
+ *
+ * THE HALF THAT CANNOT BE DONE AT SEND TIME. `POST /emails` returns only an id,
+ * and `last_event` reads `queued` for the first couple of seconds — so the truth
+ * about a message is knowable within seconds of sending it and not within the
+ * request that sent it. This pass is where that truth is collected.
+ *
+ * It runs first in the digest, before any candidate is derived, so that a
+ * message discovered undelivered is re-derived and re-sent in THIS run rather
+ * than eight hours later in the next one.
+ *
+ * It writes ONLY the delivery columns. `status` stays exactly as the send
+ * reported it, because Resend really did accept the message and rewriting that
+ * would destroy the record of what we observed at the time. What un-spends the
+ * dedup key is the `delivery_state` filter on the `alreadySent` read below — one
+ * rule, in one place: a log row silences its key only when it represents a
+ * message that actually arrived.
+ */
+async function reconcileDeliveries(
+  db: SupabaseClient,
+  apiKey: string | undefined,
+  limit: number,
+): Promise<ReconcileSummary> {
+  const out: ReconcileSummary = { checked: 0, resolved: 0, undelivered: 0, complained: 0 }
+  if (!apiKey) return out
+
+  const since = new Date(Date.now() - RECONCILE_WINDOW_HOURS * 3_600_000).toISOString()
+  // Every clause here is also in notification_log_unreconciled_idx (0022), so
+  // this is an index scan over one window's unresolved sends and not a walk of
+  // the log. Email only: Resend is the only provider whose delivery API has been
+  // measured, and a Twilio sid asked of `GET /emails/{id}` is a guaranteed 404.
+  const { data } = await db
+    .from('notification_log')
+    .select('id, provider_message_id')
+    .eq('channel', 'email')
+    .eq('delivery_state', 'unknown')
+    .not('provider_message_id', 'is', null)
+    .gte('sent_at', since)
+    .order('sent_at', { ascending: false })
+    .limit(limit)
+
+  const rows = (data ?? []) as { id: string; provider_message_id: string }[]
+  if (rows.length === 0) return out
+
+  // Grouped by the answer rather than written row by row. Only a handful of
+  // distinct `last_event` values can come back, so this turns up to `limit`
+  // writes into about three — which matters for the same subrequest budget the
+  // ceiling above protects.
+  const buckets = new Map<string, { state: string; event: string | null; ids: string[] }>()
+  const checkedAt = new Date().toISOString()
+
+  for (let i = 0; i < rows.length; i += RECONCILE_CONCURRENCY) {
+    const slice = rows.slice(i, i + RECONCILE_CONCURRENCY)
+    const looked = await Promise.all(
+      slice.map((r) => fetchDeliveryEvent(apiKey, r.provider_message_id)),
+    )
+    for (let j = 0; j < slice.length; j++) {
+      out.checked++
+      const found = looked[j]
+      // A lookup that errored tells us nothing, and writing `unknown` over
+      // `unknown` would only move delivery_checked_at forward — making a row we
+      // failed to read look like a row we read and could not resolve.
+      if (found.error) continue
+      const key = `${found.state}|${found.event ?? ''}`
+      const bucket = buckets.get(key) ?? { state: found.state, event: found.event, ids: [] }
+      bucket.ids.push(slice[j].id)
+      buckets.set(key, bucket)
+    }
+  }
+
+  for (const bucket of buckets.values()) {
+    const { error } = await db
+      .from('notification_log')
+      .update({
+        delivery_state: bucket.state,
+        delivery_detail: bucket.event,
+        delivery_checked_at: checkedAt,
+      })
+      .in('id', bucket.ids)
+    if (error) continue
+    if (bucket.state === 'undelivered') out.undelivered += bucket.ids.length
+    if (bucket.state === 'complained') out.complained += bucket.ids.length
+    if (bucket.state !== 'unknown') out.resolved += bucket.ids.length
+  }
+
+  return out
 }
 
 export const POST: APIRoute = async ({ request }) => {
@@ -110,6 +244,31 @@ export const POST: APIRoute = async ({ request }) => {
     redirectPhone: get('DEV_REDIRECT_PHONE'),
   }
 
+  // BOTH HALVES OF THE SUPPRESSION DEFENCE, BEFORE A SINGLE CANDIDATE IS
+  // DERIVED. Neither one closes the hole alone and the ordering is load-bearing.
+  //
+  // The list catches addresses the provider already admits to suppressing, for
+  // one HTTP call rather than one per message. It is MEASURABLY INCOMPLETE — an
+  // address that reliably reports `suppressed` from the id lookup is absent from
+  // it — so the reconciliation below is what catches the rest, one run late.
+  //
+  // Reconciliation runs HERE, ahead of the carrier loop, so that a message it
+  // finds undelivered has its dedup key freed before this run reads
+  // `alreadySent`. Run it afterwards and every correction waits eight hours for
+  // the next job.
+  // Concurrently, because the two are independent and the digest has a Worker
+  // time budget to finish inside. What is NOT optional is that both complete
+  // before the loop below.
+  const limitOverride = Number(get('DIGEST_RECONCILE_LIMIT'))
+  const [reconciled, suppression] = await Promise.all([
+    reconcileDeliveries(
+      db,
+      providers.resendApiKey,
+      Number.isFinite(limitOverride) && limitOverride > 0 ? limitOverride : RECONCILE_LIMIT,
+    ),
+    fetchSuppressions(providers.resendApiKey),
+  ])
+
   // `timezone` is selected because it is this carrier's fallback for anyone who
   // has not chosen one of their own. Before 0010 the column was written at
   // signup and read by nothing at all, while this job used a hard-coded
@@ -119,7 +278,26 @@ export const POST: APIRoute = async ({ request }) => {
   // `held` is its own number, not folded into `skipped`. They are different
   // events with different fixes: skipped means we tried and could not, held
   // means we deliberately waited and will try again.
-  const summary = { carriers: 0, considered: 0, sent: 0, held: 0, skipped: 0, failed: 0, logErrors: 0 }
+  //
+  // `suppressed` is its own number for the same reason, and NOT folded into
+  // `failed`. `failed` means we reached a provider and it refused — visible,
+  // already loud, fix the provider. `suppressed` means the provider took the
+  // message and dropped it, or would have: the address itself is the fault, the
+  // fix is the address, and the message is still owed to the carrier. Counting
+  // them together would put two problems with two different fixes behind one
+  // number. It IS counted in the red: the workflow exits non-zero on it, because
+  // a suppressed recipient that only showed up as a notice is a carrier quietly
+  // receiving nothing, which is the failure this whole product exists to prevent.
+  const summary = {
+    carriers: 0,
+    considered: 0,
+    sent: 0,
+    held: 0,
+    skipped: 0,
+    suppressed: reconciled.undelivered,
+    failed: 0,
+    logErrors: 0,
+  }
 
   for (const carrier of carriers ?? []) {
     summary.carriers++
@@ -208,6 +386,14 @@ export const POST: APIRoute = async ({ request }) => {
         // is only produced by a non-2xx response, which is the provider telling
         // us it did not accept the message.
         .eq('status', 'sent')
+        // AND ACTUALLY DELIVERED. `status` says the provider accepted it, which
+        // it does even for an address it silently drops — so on its own this
+        // filter treats a message nobody received as one already handled, and
+        // the key stays spent forever. The reconciliation pass above marks those
+        // rows `undelivered`; excluding them here is what lets the message go
+        // again once the address is fixed. One rule, in one place: a log row
+        // silences its key only when it represents a message that arrived.
+        .neq('delivery_state', 'undelivered')
         .eq('carrier_id', carrier.id)
         .like('dedup_key', `${profile.id}|%`)
       const alreadySent = new Set((sentRows ?? []).map((r) => r.dedup_key as string))
@@ -283,39 +469,70 @@ export const POST: APIRoute = async ({ request }) => {
           },
           guardConfig,
           providers,
+          // The set, not the fetch. One lookup serves the whole run; send() does
+          // the matching AFTER the guard, against the address the message is
+          // actually going to — which on dev is the developer's, not the
+          // carrier's.
+          { suppressedEmails: suppression.list },
         )
-        summary[
-          result.status === 'sent' ? 'sent' : result.status === 'failed' ? 'failed' : 'skipped'
-        ]++
 
-        // Logged whatever happened. A message we tried and failed to send is
-        // exactly the thing somebody will later ask about, and a log that only
-        // records successes cannot answer.
-        // UPSERT, not insert. `dedup_key` is unique, so a retried message —
-        // one previously logged as skipped because no provider was configured —
-        // collides on the second attempt. As a plain insert that collision was
-        // swallowed: supabase-js returns the error in the result rather than
-        // throwing, nothing read it, and the log silently stopped recording.
-        const logged = await db.from('notification_log').upsert(
-          emailItems.map((c) => ({
-            carrier_id: carrier.id,
-            user_id: profile.id,
-            channel: 'email',
-            category: 'compliance',
-            destination: result.destination,
-            subject,
-            body: null,
-            dedup_key: c.dedupKey,
-            status: result.status,
-            error: result.detail ?? null,
-          })),
-          { onConflict: 'dedup_key' },
-        )
-        if (logged.error) {
-          // A send we cannot record is worse than one we did not make: the next
-          // run has no way to know it happened. Surfaced in the summary rather
-          // than discarded.
-          summary.logErrors++
+        // FOLLOWING THE `held` PRECEDENT EXACTLY, and for the identical reason.
+        //
+        // A suppressed recipient writes NO log row. `dedup_key` is unique and
+        // `alreadySent` above matches on the key, so a row written here spends
+        // the key on a send that never happened — and the carrier can then never
+        // be told about this deadline, not even after the address is fixed. Not
+        // late. Never. The candidate is re-derived from scratch on the next run,
+        // which is precisely what lets it eventually go out.
+        //
+        // Counted and then nothing else happens for email — but the SMS branch
+        // below still runs, because a bounced mailbox is not a reason to stop
+        // texting somebody about a truck that cannot roll tomorrow.
+        if (result.status === 'suppressed') {
+          summary.suppressed += emailItems.length
+        } else {
+          summary[
+            result.status === 'sent' ? 'sent' : result.status === 'failed' ? 'failed' : 'skipped'
+          ]++
+
+          // Logged whatever happened. A message we tried and failed to send is
+          // exactly the thing somebody will later ask about, and a log that only
+          // records successes cannot answer.
+          // UPSERT, not insert. `dedup_key` is unique, so a retried message —
+          // one previously logged as skipped because no provider was configured —
+          // collides on the second attempt. As a plain insert that collision was
+          // swallowed: supabase-js returns the error in the result rather than
+          // throwing, nothing read it, and the log silently stopped recording.
+          const logged = await db.from('notification_log').upsert(
+            emailItems.map((c) => ({
+              carrier_id: carrier.id,
+              user_id: profile.id,
+              channel: 'email',
+              category: 'compliance',
+              destination: result.destination,
+              subject,
+              body: null,
+              dedup_key: c.dedupKey,
+              status: result.status,
+              error: result.detail ?? null,
+              // The handle the reconciliation pass works from. Written on every
+              // attempt, including a retry of a row that was previously
+              // undelivered — the columns are reset together so a stale
+              // `undelivered` from the last attempt cannot outlive the id it
+              // belonged to and keep freeing a key that is now genuinely spent.
+              provider_message_id: result.providerMessageId ?? null,
+              delivery_state: 'unknown',
+              delivery_detail: null,
+              delivery_checked_at: null,
+            })),
+            { onConflict: 'dedup_key' },
+          )
+          if (logged.error) {
+            // A send we cannot record is worse than one we did not make: the
+            // next run has no way to know it happened. Surfaced in the summary
+            // rather than discarded.
+            summary.logErrors++
+          }
         }
       }
 
@@ -332,6 +549,11 @@ export const POST: APIRoute = async ({ request }) => {
           guardConfig,
           providers,
         )
+        // No `suppressed` branch, because the channel cannot produce one.
+        // Twilio refuses a number that replied STOP synchronously — HTTP 400,
+        // error 21610 — so its version of a suppression arrives as `failed`,
+        // already counted and already red. See the note in send.ts for the half
+        // Twilio does share and why it is not reconciled here.
         summary[
           result.status === 'sent' ? 'sent' : result.status === 'failed' ? 'failed' : 'skipped'
         ]++
@@ -346,6 +568,14 @@ export const POST: APIRoute = async ({ request }) => {
             dedup_key: c.dedupKey,
             status: result.status,
             error: result.detail ?? null,
+            // The Twilio sid, stored but not yet acted on. Recording it costs
+            // nothing today and is the difference between being able to
+            // reconcile SMS when 10DLC goes live and having no handle at all on
+            // every message sent before somebody thought to add one.
+            provider_message_id: result.providerMessageId ?? null,
+            delivery_state: 'unknown',
+            delivery_detail: null,
+            delivery_checked_at: null,
           })),
           { onConflict: 'dedup_key' },
         )
@@ -354,7 +584,26 @@ export const POST: APIRoute = async ({ request }) => {
     }
   }
 
-  return json({ ok: true, ...summary })
+  return json({
+    ok: true,
+    ...summary,
+    /** Messages whose delivery this run finally resolved, either way. */
+    reconciled: reconciled.resolved,
+    /**
+     * Arrived, then marked as spam. Reported and NOT counted in `suppressed`:
+     * the message was delivered, so nothing is owed, and re-sending to somebody
+     * who pressed "spam" is the muting failure this product fears most.
+     */
+    complaints: reconciled.complained,
+    /**
+     * Whether the pre-send half was actually available. `unavailable` is not a
+     * failure — we send anyway rather than letting one provider blip silence
+     * every deadline warning — but it means this run leaned entirely on
+     * reconciliation, which finds a bad address one run LATE. A run that keeps
+     * saying this is one where half the defence is off.
+     */
+    suppressionList: !providers.resendApiKey ? 'off' : suppression.list ? 'ok' : 'unavailable',
+  })
 }
 
 // A GET would let a browser preload or a link prefetch trigger the whole run.

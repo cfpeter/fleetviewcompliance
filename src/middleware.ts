@@ -24,7 +24,40 @@ const API = /^\/api\//
  */
 const SELF_AUTHENTICATING = /^\/api\/cron\//
 
+/**
+ * Keep every non-production deployment out of search results.
+ *
+ * dev.fleetviewcompliance.com serves the same marketing pages as the real site,
+ * so indexed it competes with the pages it is a copy of AND puts a signup form
+ * backed by a test database in front of strangers who found it on Google. The
+ * `noindex` meta tag in Public.astro is per-page and easy to forget on the next
+ * page somebody adds; this covers the whole host.
+ *
+ * Applied by WRAPPING the router rather than by returning early from inside it.
+ * The early-return version was written first and silently disabled
+ * authentication on dev: it answered every request before the signed-in checks
+ * below ever ran, so /app stopped redirecting to /login. A header is not worth
+ * a single line of control flow anywhere near an auth guard.
+ *
+ * NOT a substitute for Cloudflare Access. A crawler obeys this; a person who
+ * has the URL does not.
+ */
 export const onRequest = defineMiddleware(async (context, next) => {
+  const response = await route(context, next)
+  if (import.meta.env.DEPLOY_ENV !== 'production') {
+    response.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive')
+  }
+  return response
+})
+
+// Typed to return a Response, not `void | Response`. The middleware contract
+// permits either, but every branch below genuinely returns one, and saying so
+// is what lets the wrapper above set a header without a cast that would hide a
+// branch quietly returning nothing.
+const route = async (
+  context: Parameters<Parameters<typeof defineMiddleware>[0]>[0],
+  next: Parameters<Parameters<typeof defineMiddleware>[0]>[1],
+): Promise<Response> => {
   const { pathname } = context.url
 
   if (SELF_AUTHENTICATING.test(pathname)) return next()
@@ -91,4 +124,4 @@ export const onRequest = defineMiddleware(async (context, next) => {
   // carrier's dashboard to another.
   response.headers.set('Cache-Control', 'private, no-store')
   return response
-})
+}

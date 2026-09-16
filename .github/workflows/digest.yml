@@ -131,13 +131,22 @@ jobs:
           skipped=$(jq -r '.skipped // 0' response.json)
           carriers=$(jq -r '.carriers // 0' response.json)
           considered=$(jq -r '.considered // 0' response.json)
+          # Suppressed and bounced recipients. Parsed here rather than only
+          # computed server-side, because a count the endpoint works out and this
+          # file drops is a silent failure with extra steps.
+          suppressed=$(jq -r '.suppressed // 0' response.json)
+          reconciled=$(jq -r '.reconciled // 0' response.json)
+          complaints=$(jq -r '.complaints // 0' response.json)
+          suppression_list=$(jq -r '.suppressionList // "off"' response.json)
 
           {
             echo "### Digest run"
             echo ""
-            echo "| carriers | considered | sent | held | skipped | failed |"
-            echo "|---:|---:|---:|---:|---:|---:|"
-            echo "| $carriers | $considered | $sent | $held | $skipped | $failed |"
+            echo "| carriers | considered | sent | held | skipped | suppressed | failed |"
+            echo "|---:|---:|---:|---:|---:|---:|---:|"
+            echo "| $carriers | $considered | $sent | $held | $skipped | $suppressed | $failed |"
+            echo ""
+            echo "Delivery checked on ${reconciled} earlier message(s); ${complaints} spam complaint(s). Suppression list: ${suppression_list}."
           } >> "$GITHUB_STEP_SUMMARY"
 
           # `held` is NOT a failure — it means a quiet window caught the message
@@ -148,11 +157,46 @@ jobs:
             echo "::notice::${held} message(s) held by quiet hours. They are re-derived next run, not lost."
           fi
 
+          # The pre-send suppression check was unavailable. Not red: refusing to
+          # send whenever Resend's suppressions endpoint blips would silence
+          # every deadline warning in the product, which is far worse than the
+          # thing it protects against. But it does mean this run leaned entirely
+          # on reconciliation, which catches a dead address one run LATE.
+          if [ "$suppression_list" = "unavailable" ]; then
+            echo "::warning::Could not read the provider suppression list this run. Bad addresses will only be caught by reconciliation, one run later."
+          fi
+
+          # Both checks below run before either exits, so a run with two problems
+          # reports two problems rather than only the first one.
+          rc=0
+
           # `failed` means we reached a provider and it refused. That is a real
           # fault and the run must go red for it, even though the HTTP call
           # itself was a perfectly good 200 — which is precisely the kind of
           # failure a status-code-only check would sail straight past.
           if [ "$failed" != "0" ]; then
             echo "::error::${failed} message(s) failed to send. Check the provider and notification_log."
-            exit 1
+            rc=1
           fi
+
+          # `suppressed` is the failure this file could NOT previously see, and
+          # it is the worst one in the system. The provider answers HTTP 200 with
+          # a message id for an address it has suppressed and then drops the mail,
+          # so the endpoint reported a clean send, this workflow went green, and a
+          # carrier silently stopped hearing about his deadlines. Red, always: a
+          # notice would be read as weather, and the whole promise of this product
+          # is that we tell you before it bites.
+          #
+          # Its fix is not `failed`'s fix, which is why it is its own number. The
+          # address is the fault — a hard bounce, or an account-level suppression
+          # at Resend — so somebody has to look at notification_log
+          # (delivery_state / delivery_detail) and at the recipient, not at the
+          # provider's status page. The message itself is not lost: its dedup key
+          # was deliberately left unspent and it goes out on the next run once the
+          # address works.
+          if [ "$suppressed" != "0" ]; then
+            echo "::error::${suppressed} recipient(s) suppressed or bounced — those deadline warnings reached nobody. Check notification_log.delivery_state and fix the address; the messages are re-sent automatically once it works."
+            rc=1
+          fi
+
+          exit $rc
