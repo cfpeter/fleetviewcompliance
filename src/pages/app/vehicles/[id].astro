@@ -1,0 +1,706 @@
+---
+/**
+ * One vehicle: the record, and the dates the rule engine reads off it.
+ *
+ * The dates are the point. Everything above them is bookkeeping the owner does
+ * once; the "Compliance dates" card is what turns a row in a table into a
+ * dashboard that knows when his truck stops being legal.
+ *
+ * Two things about that card are not negotiable and are commented where they
+ * happen: every field asks for the LAST time something happened rather than the
+ * next time it is due, and saving APPENDS. A compliance record is evidence that
+ * the unit was in order during the period it covers, so it is never overwritten
+ * and never deleted — the grant on the table does not even include DELETE.
+ */
+import { type AnswerEntry, anchorSlot, planAnchorWrites } from '../../../lib/anchors/plan.ts'
+import App from '../../../layouts/App.astro'
+import {
+  anchorByKey,
+  anchorsForKind,
+  formatDay,
+  gvwrReading,
+  kindLabel,
+  parseAnchorDate,
+  parseOptionalInt,
+  parseStateCode,
+  statusLabel,
+  statusPillClass,
+  textOrNull,
+  upperOrNull,
+  VEHICLE_KINDS,
+  VEHICLE_STATUSES,
+  vehicleLabel,
+  type VehicleRow,
+} from '../../../lib/vehicles.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+const id = Astro.params.id!
+
+const COLUMNS =
+  'id, kind, unit_number, vin, make, model, model_year, gvwr_lbs, plate, plate_state, status, notes'
+
+// RLS decides whether this row is visible; there is no carrier_id filter here
+// and there must not be one. A vehicle belonging to another carrier does not
+// come back as "forbidden", it simply does not exist as far as this query is
+// concerned — which is the same answer a bad id gets, and the right one.
+const { data: found } = await supabase.from('vehicles').select(COLUMNS).eq('id', id).maybeSingle()
+
+if (!found) {
+  return Astro.redirect(
+    '/app/vehicles?error=' + encodeURIComponent('That vehicle is not in your fleet.'),
+    303,
+  )
+}
+const vehicle = found as unknown as VehicleRow
+
+const maxYear = new Date().getUTCFullYear() + 2
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  // Every branch below ends here. 303 and not the 302 Astro.redirect() defaults
+  // to: a 302 permits the browser to repeat the POST at the new location, so a
+  // refresh after saving dates would append the same compliance records again —
+  // and on an append-only table there is no undo for that beyond withdrawing
+  // each duplicate by hand.
+  const go = (query: string) => Astro.redirect(`/app/vehicles/${vehicle.id}${query}`, 303)
+  const fail = (message: string, hash = '') =>
+    go(`?error=${encodeURIComponent(message)}${hash}`)
+
+  if (intent === 'save') {
+    const kind = String(form.get('kind') ?? '')
+    if (kind !== 'power_unit' && kind !== 'trailer') {
+      return fail('Tell us whether this is a power unit or a trailer.')
+    }
+
+    const status = String(form.get('status') ?? '')
+    if (!VEHICLE_STATUSES.some((s) => s.value === status)) {
+      return fail('That is not a status we recognise.')
+    }
+
+    const year = parseOptionalInt(form.get('model_year'), { label: 'Year', min: 1900, max: maxYear })
+    if (!year.ok) return fail(year.message)
+
+    // min 1 rather than min 0, deliberately. A blank box is already NULL by the
+    // time it gets here, so a 0 arriving at this line was typed — and 0 lb is
+    // below every threshold in the catalogue, which would switch off the annual
+    // inspection, the BIT cycle, Clean Truck Check and CVRA in one keystroke.
+    const gvwr = parseOptionalInt(form.get('gvwr_lbs'), { label: 'GVWR', min: 1, max: 200_000 })
+    if (!gvwr.ok) return fail(gvwr.message)
+
+    const plateState = parseStateCode(form.get('plate_state'))
+    if (!plateState.ok) return fail(plateState.message)
+
+    // carrier_id is deliberately absent from this update. It is set once, on
+    // insert, and the WITH CHECK half of the policy exists precisely to stop a
+    // row being moved into another carrier by an UPDATE — so writing it here
+    // would be writing the one column this table never changes.
+    const { error } = await supabase
+      .from('vehicles')
+      .update({
+        kind,
+        status,
+        unit_number: textOrNull(form.get('unit_number')),
+        vin: upperOrNull(form.get('vin')),
+        make: textOrNull(form.get('make')),
+        model: textOrNull(form.get('model')),
+        model_year: year.value,
+        gvwr_lbs: gvwr.value,
+        plate: upperOrNull(form.get('plate')),
+        plate_state: plateState.value,
+        notes: textOrNull(form.get('notes')),
+      })
+      .eq('id', vehicle.id)
+
+    if (error) {
+      return fail(
+        error.message.includes('vehicles_vin_unique')
+          ? 'Another vehicle in your fleet already has that VIN.'
+          : error.message,
+      )
+    }
+    return go('?saved=1')
+  }
+
+  if (intent === 'save_dates') {
+    // What is current comes from the view, never re-derived here. The view
+    // settles a genuinely hard question — occurred_on wins, recorded_at only
+    // breaks ties — and a second copy of that rule in page code is a second
+    // copy to drift.
+    const { data: currentRows } = await supabase
+      .from('current_compliance_anchors')
+      .select('id, anchor_key, occurred_on')
+      .eq('subject_type', 'vehicle')
+      .eq('subject_id', vehicle.id)
+
+    const current = new Map<string, { id: string; occurred_on: string }>()
+    for (const r of currentRows ?? []) {
+      current.set(anchorSlot('vehicle', vehicle.id, String(r.anchor_key)), {
+        id: String(r.id),
+        occurred_on: String(r.occurred_on).slice(0, 10),
+      })
+    }
+
+    const entries: AnswerEntry[] = []
+    for (const anchor of anchorsForKind(vehicle.kind)) {
+      const parsed = parseAnchorDate(form.get(`date_${anchor.key}`), anchor.label)
+      // Validate the whole form before writing any of it. A partial save would
+      // leave the owner looking at a screen where some boxes took and some did
+      // not, with one error message to explain it.
+      if (!parsed.ok) return fail(parsed.message, '#dates')
+
+      // Blank means "I still do not know", not "remove what you have". There is
+      // no DELETE grant on compliance_records and there should not be: a
+      // superseded date is the evidence the unit was in order during the period
+      // it covered. Taking one back is the explicit Withdraw button below.
+      entries.push({
+        subject: 'vehicle',
+        subjectId: vehicle.id,
+        anchorKey: anchor.key,
+        on: parsed.value,
+      })
+    }
+
+    /**
+     * THIS SCREEN USED TO INSERT WITHOUT EVER SUPERSEDING.
+     *
+     * Correcting a fat-fingered 2027 down to 2026 wrote a perfectly good row
+     * that `current_compliance_anchors` then ignored — it picks the latest
+     * occurred_on, not the latest typed. The page redirected saying "1 date
+     * saved" and re-rendered the field still showing 2027. The Withdraw button
+     * below was the only way through, and nothing on the screen said so.
+     *
+     * The driver page had already solved this. Sharing the decision rather than
+     * copying it is the point: unchanged values are still skipped, a later date
+     * still leaves the old row standing as evidence the unit was in order during
+     * the period it covered, and there is now one implementation under test.
+     */
+    const { supersede, inserts, conflicts } = planAnchorWrites({
+      entries,
+      current,
+      carrierId,
+      userId: Astro.locals.userId ?? null,
+      recordedAt: new Date().toISOString(),
+    })
+
+    // Unreachable from this form — one input per anchor — but a planner that can
+    // refuse must not be allowed to refuse silently.
+    if (conflicts.length > 0) {
+      return fail('Two different dates were typed for the same field.', '#dates')
+    }
+
+    if (supersede.length > 0) {
+      // Permitted by the append-only trigger: it forbids changing the carrier,
+      // the subject, the anchor or the date, and superseded_at is none of those.
+      const { error } = await supabase
+        .from('compliance_records')
+        .update({ superseded_at: new Date().toISOString() })
+        .in('id', supersede)
+      if (error) return fail(error.message, '#dates')
+    }
+
+    if (inserts.length > 0) {
+      // INSERT, always. Correcting a date is a new row, not an edit of the old
+      // one — the database enforces that too, with a trigger that refuses any
+      // UPDATE which changes occurred_on.
+      const { error } = await supabase.from('compliance_records').insert(inserts)
+      if (error) return fail(error.message, '#dates')
+    }
+    return go(`?dates=${inserts.length}#dates`)
+  }
+
+  if (intent === 'withdraw_date') {
+    const recordId = String(form.get('record_id') ?? '')
+    if (!recordId) return fail('Nothing to withdraw.', '#history')
+
+    // Supersede, do not delete — and this is the only UPDATE this page makes to
+    // a compliance record. It touches superseded_at and nothing else, which is
+    // exactly what the append-only trigger permits: the date itself is
+    // immutable, the claim that it is still the live one is not.
+    //
+    // `.is('superseded_at', null)` keeps a double-click from moving the
+    // withdrawal time on a row that was already withdrawn.
+    const { error } = await supabase
+      .from('compliance_records')
+      .update({ superseded_at: new Date().toISOString() })
+      .eq('id', recordId)
+      .is('superseded_at', null)
+
+    if (error) return fail(error.message, '#history')
+    return go('?withdrew=1#history')
+  }
+
+  return fail('That button did not tell us what to do. Try again.')
+}
+
+// --- GET -------------------------------------------------------------------
+
+const [{ data: anchorRows }, { data: historyRows }] = await Promise.all([
+  supabase
+    .from('current_compliance_anchors')
+    .select('id, anchor_key, occurred_on, source')
+    .eq('subject_type', 'vehicle')
+    .eq('subject_id', vehicle.id),
+  supabase
+    .from('compliance_records')
+    .select('id, anchor_key, occurred_on, source, note, recorded_at, superseded_at')
+    .eq('subject_type', 'vehicle')
+    .eq('subject_id', vehicle.id)
+    .order('occurred_on', { ascending: false })
+    .order('recorded_at', { ascending: false }),
+])
+
+/** anchor_key -> the date in force, and the row it came from. */
+const current = new Map<string, { on: string; id: string }>()
+for (const r of anchorRows ?? []) {
+  current.set(String(r.anchor_key), { on: String(r.occurred_on).slice(0, 10), id: String(r.id) })
+}
+
+interface HistoryRow {
+  id: string
+  anchor_key: string
+  occurred_on: string
+  source: string
+  note: string | null
+  recorded_at: string
+  superseded_at: string | null
+}
+const history = (historyRows ?? []) as unknown as HistoryRow[]
+
+const anchors = anchorsForKind(vehicle.kind)
+const federal = anchors.filter((a) => a.jurisdiction === 'federal')
+const california = anchors.filter((a) => a.jurisdiction === 'CA')
+
+const params = Astro.url.searchParams
+const error = params.get('error')
+const added = params.get('added') === '1'
+const saved = params.get('saved') === '1'
+const withdrew = params.get('withdrew') === '1'
+const dates = params.get('dates')
+const datesCount = dates === null ? null : Number(dates)
+
+const gvwr = gvwrReading(vehicle.gvwr_lbs)
+const weightUnknown = vehicle.gvwr_lbs === null
+
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const today = new Date().toISOString().slice(0, 10)
+---
+
+<App
+  title={vehicleLabel(vehicle)}
+  subtitle={`${kindLabel(vehicle.kind)} · ${statusLabel(vehicle.status)}`}
+>
+  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {
+    added && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Vehicle added. The dates below are what turn it into deadlines — put in the ones you have
+        and leave the rest.
+      </p>
+    )
+  }
+  {saved && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Saved.</p>}
+  {
+    withdrew && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Entry withdrawn. It stays in the history as a record of what was believed and when; the
+        next most recent date takes over.
+      </p>
+    )
+  }
+  {
+    datesCount !== null &&
+      (datesCount > 0 ? (
+        <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          <span class="tabular-nums">{datesCount}</span>
+          {datesCount === 1 ? ' date' : ' dates'} recorded.
+        </p>
+      ) : (
+        <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+          Nothing changed — every date you submitted was already the one on file.
+        </p>
+      ))
+  }
+
+  <div class="grid gap-6 lg:grid-cols-[1fr_minmax(0,20rem)]">
+    <form method="POST" class={card}>
+      <h2 class="text-lg font-semibold tracking-tight">The vehicle</h2>
+
+      <div class="mt-4 grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">Unit number</span>
+          <input
+            type="text"
+            name="unit_number"
+            value={vehicle.unit_number ?? ''}
+            class={`${field} tabular-nums`}
+          />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">VIN</span>
+          <input
+            type="text"
+            name="vin"
+            value={vehicle.vin ?? ''}
+            maxlength="17"
+            autocapitalize="characters"
+            spellcheck="false"
+            class={`${field} font-mono uppercase`}
+          />
+        </label>
+      </div>
+
+      <div class="mt-4 grid gap-4 sm:grid-cols-3">
+        <label class="block">
+          <span class="text-sm font-medium">Year</span>
+          <input
+            type="text"
+            name="model_year"
+            value={vehicle.model_year ?? ''}
+            inputmode="numeric"
+            class={`${field} tabular-nums`}
+          />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Make</span>
+          <input type="text" name="make" value={vehicle.make ?? ''} class={field} />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Model</span>
+          <input type="text" name="model" value={vehicle.model ?? ''} class={field} />
+        </label>
+      </div>
+
+      <div class="mt-4 grid gap-4 sm:grid-cols-3">
+        <label class="block">
+          <span class="text-sm font-medium">Plate</span>
+          <input
+            type="text"
+            name="plate"
+            value={vehicle.plate ?? ''}
+            autocapitalize="characters"
+            class={`${field} uppercase tabular-nums`}
+          />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Plate state</span>
+          <input
+            type="text"
+            name="plate_state"
+            value={vehicle.plate_state ?? ''}
+            maxlength="2"
+            autocapitalize="characters"
+            placeholder="CA"
+            class={`${field} uppercase`}
+          />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">GVWR</span>
+          <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
+            <input
+              type="text"
+              name="gvwr_lbs"
+              value={vehicle.gvwr_lbs ?? ''}
+              inputmode="numeric"
+              placeholder="Unknown"
+              class="w-full bg-transparent px-3 py-2 text-base tabular-nums outline-none"
+            />
+            <span class="pr-3 text-ink-300">lb</span>
+          </div>
+        </label>
+      </div>
+
+      <div class="mt-4 grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">Kind</span>
+          <select name="kind" class={field}>
+            {
+              VEHICLE_KINDS.map((k) => (
+                <option value={k.value} selected={k.value === vehicle.kind}>
+                  {k.label}
+                </option>
+              ))
+            }
+          </select>
+          <span class="mt-1 block text-xs text-ink-500">
+            Changing this changes which deadlines the unit gets. Dates already recorded stay in
+            the history either way.
+          </span>
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Status</span>
+          <select name="status" class={field}>
+            {
+              VEHICLE_STATUSES.map((s) => (
+                <option value={s.value} selected={s.value === vehicle.status}>
+                  {s.label}
+                </option>
+              ))
+            }
+          </select>
+        </label>
+      </div>
+
+      <label class="mt-4 block">
+        <span class="text-sm font-medium">
+          Notes <span class="font-normal text-ink-300">(optional)</span>
+        </span>
+        <textarea name="notes" rows="2" class={field}>{vehicle.notes ?? ''}</textarea>
+      </label>
+
+      <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+        <button
+          type="submit"
+          name="intent"
+          value="save"
+          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+        >
+          Save vehicle
+        </button>
+        <a href="/app/vehicles" class="text-sm font-medium text-brand-600 hover:underline">
+          Back to trucks
+        </a>
+      </div>
+    </form>
+
+    <div class="space-y-4">
+      <div class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">GVWR</div>
+        <div class={`mt-1 text-3xl font-semibold tabular-nums ${gvwr.className}`}>{gvwr.text}</div>
+        {/*
+          The one sentence this whole feature turns on. An empty GVWR column is
+          not an exemption — the engine reads NULL as unknown and keeps every
+          weight-conditional rule switched on. Rendering it as "—" or "n/a" here
+          would tell the owner the opposite of what the system believes.
+        */}
+        <p class="mt-2 text-xs text-ink-500">
+          {
+            weightUnknown
+              ? 'We do not know this unit’s weight. That is not the same as exempt: it is treated as fully regulated until you tell us otherwise.'
+              : 'Used to decide which weight-conditional rules apply to this unit.'
+          }
+        </p>
+      </div>
+
+      <div class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">Status</div>
+        <div class="mt-2">
+          <span
+            class:list={[
+              'rounded-md px-2 py-0.5 text-xs font-medium',
+              statusPillClass(vehicle.status),
+            ]}
+          >
+            {statusLabel(vehicle.status)}
+          </span>
+        </div>
+        <dl class="mt-4 divide-y divide-ink-100 text-sm">
+          <div class="flex justify-between gap-4 py-2">
+            <dt class="text-ink-500">Kind</dt>
+            <dd class="text-right font-medium">{kindLabel(vehicle.kind)}</dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2">
+            <dt class="text-ink-500">Dates on file</dt>
+            <dd class="text-right font-medium tabular-nums">{current.size}</dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2">
+            <dt class="text-ink-500">Dates we still want</dt>
+            <dd class="text-right font-medium tabular-nums">
+              {anchors.filter((a) => !current.has(a.key)).length}
+            </dd>
+          </div>
+        </dl>
+      </div>
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------------- dates -->
+
+  <section id="dates" class="mt-6 scroll-mt-24">
+    <form method="POST" class={card}>
+      <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
+      <p class="mt-1 text-sm text-ink-500">
+        Every box below wants the <strong>last time it happened</strong>, not the next time it is
+        due. We count forward from what you type — hand us a future date and we step straight past
+        the deadline you were trying to tell us about.
+      </p>
+
+      {
+        weightUnknown && (
+          <p class="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            This unit has no GVWR on file, so every weight-conditional rule below stays ON. An
+            unknown weight is treated as fully regulated, never as exempt — one needless reminder
+            costs a minute, one missed inspection costs the truck. Fill the GVWR in above and the
+            list gets shorter only if the truck genuinely is lighter.
+          </p>
+        )
+      }
+
+      {
+        [
+          { title: 'Federal', items: federal },
+          { title: 'California', items: california },
+        ].map(
+          (group) =>
+            group.items.length > 0 && (
+              <div class="mt-6">
+                <h3 class="text-xs tracking-wide text-ink-500 uppercase">{group.title}</h3>
+                <div class="mt-3 space-y-5">
+                  {group.items.map((anchor) => {
+                    const live = current.get(anchor.key)
+                    return (
+                      <div class="border-t border-ink-100 pt-4 first:border-t-0 first:pt-0">
+                        <label class="block">
+                          <span class="text-sm font-medium">{anchor.label}</span>
+                          <input
+                            type="date"
+                            name={`date_${anchor.key}`}
+                            value={live?.on ?? ''}
+                            max={today}
+                            class={`${field} max-w-xs tabular-nums`}
+                          />
+                        </label>
+                        <p class="mt-1.5 text-xs text-ink-500">{anchor.help}</p>
+                        <p class="mt-1 text-xs text-ink-300">Drives: {anchor.drives}</p>
+                        {anchor.weightNote && (
+                          <p class="mt-1 text-xs text-ink-300">{anchor.weightNote}</p>
+                        )}
+                        {/*
+                          Only ever rendered when the weight is MISSING, and it
+                          says "stays on". There is deliberately no branch here
+                          that turns a NULL GVWR into "does not apply to you".
+                        */}
+                        {anchor.weightNote && weightUnknown && (
+                          <p class="mt-1.5 inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                            GVWR unknown — this one stays on
+                          </p>
+                        )}
+                        {live && (
+                          <p class="mt-1.5 text-xs text-emerald-700">
+                            On file: {formatDay(live.on)}
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ),
+        )
+      }
+
+      <div class="mt-6 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+        <button
+          type="submit"
+          name="intent"
+          value="save_dates"
+          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+        >
+          Save dates
+        </button>
+        <span class="text-sm text-ink-500">
+          Saving adds a new entry. Nothing already recorded is overwritten, and a box you leave
+          blank changes nothing.
+        </span>
+      </div>
+    </form>
+  </section>
+
+  <!-- ----------------------------------------------------------- history -->
+
+  {
+    history.length > 0 && (
+      <section id="history" class="mt-6 scroll-mt-24">
+        <div class={card}>
+          <h2 class="text-lg font-semibold tracking-tight">Everything recorded for this unit</h2>
+          <p class="mt-1 text-sm text-ink-500">
+            Kept, not replaced: a superseded date is the evidence that this unit was in order
+            during the period it covered. The <strong>latest date</strong> is the one in force —
+            not the one typed most recently — so a correction that moves a date EARLIER only takes
+            effect once you withdraw the wrong entry.
+          </p>
+
+          <div class="mt-4 overflow-x-auto rounded-xl border border-ink-100">
+            <table class="w-full min-w-[46rem] text-sm">
+              <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+                <tr>
+                  <th class="px-4 py-3 font-medium">What</th>
+                  <th class="px-4 py-3 font-medium">Date</th>
+                  <th class="px-4 py-3 font-medium">Recorded</th>
+                  <th class="px-4 py-3 font-medium">Source</th>
+                  <th class="px-4 py-3" />
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-ink-100">
+                {history.map((r) => {
+                  const anchor = anchorByKey(r.anchor_key)
+                  const inForce = current.get(r.anchor_key)?.id === r.id
+                  const collected = anchors.some((a) => a.key === r.anchor_key)
+                  return (
+                    <tr class="hover:bg-ink-50/60">
+                      <td class="px-4 py-3">
+                        <span class="font-medium">{anchor?.label ?? r.anchor_key}</span>
+                        {/*
+                          A date recorded before the kind was changed is not
+                          wrong and is not deleted — it is simply not read by any
+                          rule that applies to what this unit is now. Saying so
+                          beats leaving an unexplained row in the list.
+                        */}
+                        {!collected && (
+                          <span class="mt-0.5 block text-xs text-ink-300">
+                            No rule for a {kindLabel(vehicle.kind).toLowerCase()} reads this
+                          </span>
+                        )}
+                        {r.note && <span class="mt-0.5 block text-xs text-ink-300">{r.note}</span>}
+                      </td>
+                      <td class="px-4 py-3 whitespace-nowrap tabular-nums">
+                        <span class:list={[r.superseded_at ? 'text-ink-300 line-through' : '']}>
+                          {formatDay(r.occurred_on)}
+                        </span>
+                        {inForce && (
+                          <span class="ml-2 rounded-md bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-800">
+                            in force
+                          </span>
+                        )}
+                        {r.superseded_at && (
+                          <span class="ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs font-medium text-ink-500">
+                            withdrawn
+                          </span>
+                        )}
+                      </td>
+                      <td class="px-4 py-3 whitespace-nowrap text-ink-500 tabular-nums">
+                        {formatDay(r.recorded_at)}
+                      </td>
+                      <td class="px-4 py-3 text-ink-500">
+                        {r.source === 'fmcsa' ? 'Federal record' : r.source === 'import' ? 'Import' : 'You'}
+                      </td>
+                      <td class="px-4 py-3 text-right whitespace-nowrap">
+                        {!r.superseded_at && (
+                          <form method="POST">
+                            <input type="hidden" name="record_id" value={r.id} />
+                            <button
+                              type="submit"
+                              name="intent"
+                              value="withdraw_date"
+                              class="text-sm text-red-600 hover:underline"
+                            >
+                              Withdraw
+                            </button>
+                          </form>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    )
+  }
+</App>

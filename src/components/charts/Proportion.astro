@@ -1,0 +1,80 @@
+---
+/**
+ * One bar, split by category: how a fleet's compliance or a month's loads
+ * divide up.
+ *
+ * Used sparingly. A proportion bar answers "what is the mix" and nothing else —
+ * it cannot show a trend, cannot be compared against last month, and flatters
+ * whoever reads it, because a thin red segment looks like a small problem even
+ * when it is two expired medical cards. So every segment prints its own count
+ * next to its name in the legend, and the legend is not optional.
+ */
+import { type Tone, TONES } from '../../lib/charts/tones.ts'
+
+export interface Segment {
+  label: string
+  count: number
+  tone: Tone
+  href?: string
+}
+
+interface Props {
+  segments: readonly Segment[]
+  /** Passed in rather than summed, so a caller can show a mix of a larger whole. */
+  total: number
+  emptyMessage?: string
+}
+
+const { segments, total, emptyMessage = 'Nothing to show yet.' } = Astro.props
+const live = segments.filter((s) => s.count > 0)
+const pct = (n: number) => (total > 0 ? (n / total) * 100 : 0)
+---
+
+{
+  total === 0 || live.length === 0 ? (
+    <p class="py-6 text-center text-sm text-ink-500">{emptyMessage}</p>
+  ) : (
+    <div>
+      {/* The bar is empty divs — it announces as nothing at all, so hiding it
+          costs a screen-reader user no information. The legend below is the
+          real content, which is the other half of why it is not optional. */}
+      <div class="flex h-3 overflow-hidden rounded-full bg-ink-100" aria-hidden="true">
+        {live.map((s) => (
+          /* min-width so a single overdue item in a fleet of four hundred
+             deadlines is still a visible mark rather than a sub-pixel the
+             browser rounds away entirely. */
+          <div
+            class:list={['h-full', TONES[s.tone].bar]}
+            style={`width:${pct(s.count)}%;min-width:3px`}
+          />
+        ))}
+      </div>
+
+      <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs">
+        {segments.map((s) => {
+          const inner = (
+            <>
+              <span class:list={['h-2 w-2 shrink-0 rounded-full', TONES[s.tone].swatch]} />
+              <span class="tabular-nums">
+                <span class="font-medium">{s.count}</span> {s.label}
+              </span>
+            </>
+          )
+          return (
+            <li>
+              {s.href && s.count > 0 ? (
+                <a href={s.href} class="flex items-center gap-1.5 hover:text-brand-600 hover:underline">
+                  {inner}
+                </a>
+              ) : (
+                <span class:list={['flex items-center gap-1.5', s.count === 0 && 'text-ink-300']}>
+                  {inner}
+                </span>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}

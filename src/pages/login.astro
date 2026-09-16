@@ -1,0 +1,254 @@
+---
+/**
+ * Sign in and sign up. One page, one intent at a time.
+ *
+ * Both jobs used to share one screen: a heading that said "Sign in", two
+ * full-width buttons under the same two boxes, and no way to tell which one you
+ * were doing until one of them failed. A returning customer who hit "Create an
+ * account" got a raw Supabase error, and a new one who hit "Sign in" got "that
+ * email and password do not match" — which reads as "you typed it wrong", not
+ * as "you do not have an account yet".
+ *
+ * It is still one page, because splitting it would duplicate the POST handler,
+ * the `next` plumbing and the enumeration rules that must hold identically on
+ * both branches. What splits is the INTENT: `?mode=signup` renders the sign-up
+ * screen and nothing else, with one button and one link to the other side. The
+ * mode is in the query string so the back button walks through it and a refresh
+ * keeps it, which is what a form with no JavaScript has instead of state.
+ *
+ * Handles its own POST and always 303s, so a refresh cannot resubmit.
+ *
+ * NO NAME FIELD, and that is a decision rather than an omission. `profiles` has
+ * had `full_name` since 0001 and `handle_new_user()` already copies it out of
+ * the signup metadata — but nothing in this application reads it. The digest
+ * addresses a destination, not a person; settlement statements name DRIVERS,
+ * off the drivers table; `created_by` and `approved_by` are written and never
+ * joined back for display; and the settings page has no field to correct a
+ * typo. Asking for a name here would collect a value the customer can never
+ * change and never see. The moment something does show a person's name, the fix
+ * is `options: { data: { full_name } }` on the signUp below plus a field on the
+ * settings page — one line each, and the trigger is already waiting for it.
+ */
+import Public from '../layouts/Public.astro'
+import { normalizeDot } from '../lib/fmcsa.ts'
+import { type AuthMode, notice, parseAuthMode, signupOutcome } from '../lib/onboarding.ts'
+import { safeNext } from '../lib/redirect.ts'
+import { sessionClient } from '../lib/supabase/server.ts'
+
+const params = Astro.url.searchParams
+const mode = parseAuthMode(params.get('mode'))
+const nextPath = safeNext(params.get('next'))
+
+/**
+ * A USDOT number carried in from /check, so somebody who has just looked up
+ * their own fleet does not type the number a second time. Normalised on the way
+ * in: it is about to be put back into a URL and then into a Socrata query, and
+ * `?dot=` is as attacker-controlled as any other parameter on this page.
+ */
+const carriedDot = normalizeDot(params.get('dot') ?? '')
+
+/** Rebuild this page's URL, keeping everything that must survive a round trip. */
+function loginHref(to: AuthMode, code: string | null, dot: string | null): string {
+  const q = new URLSearchParams()
+  if (to === 'signup') q.set('mode', 'signup')
+  if (code) q.set('notice', code)
+  // The deep link the middleware was guarding. Losing it on a mistyped password
+  // silently drops the person on the dashboard instead of the page they asked
+  // for, which reads as the link having been wrong.
+  if (nextPath !== '/app') q.set('next', nextPath)
+  if (dot) q.set('dot', dot)
+  const s = q.toString()
+  return s ? `/login?${s}` : '/login'
+}
+
+/**
+ * Where a session should land.
+ *
+ * A carried DOT number only redirects when nothing else was asked for: an
+ * explicit `next` is a page the middleware bounced them off, and that beats a
+ * number picked up on the marketing site.
+ */
+function landing(dot: string | null): string {
+  return dot && nextPath === '/app' ? `/app/setup?dot=${dot}` : nextPath
+}
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  // House convention: the submit button carries the intent, so the same handler
+  // serves both screens and the button a person actually pressed is the one
+  // that decides. `mode` in the query string only decides what is drawn.
+  const intent = String(form.get('intent') ?? 'signin')
+  const submitted: AuthMode = intent === 'signup' ? 'signup' : 'signin'
+
+  const email = String(form.get('email') ?? '')
+    .trim()
+    .toLowerCase()
+  const password = String(form.get('password') ?? '')
+  const dot = normalizeDot(String(form.get('dot') ?? '')) ?? carriedDot
+
+  /**
+   * Back to the same screen with a code, never with what was typed.
+   *
+   * The email is deliberately not carried back. It would land in every access
+   * log and proxy between here and the customer's desk, which is the same trade
+   * /app/drivers/new refuses to make with a date of birth. `autocomplete="email"`
+   * covers the common case without putting an address in a URL.
+   */
+  const back = (code: string, to: AuthMode = submitted) =>
+    Astro.redirect(loginHref(to, code, dot), 303)
+
+  if (!email || !password) return back('missing')
+
+  const supabase = sessionClient(Astro.cookies, Astro.request.headers)
+
+  if (submitted === 'signup') {
+    const { data, error: e } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        // Built from the ORIGIN of this request, never from PUBLIC_SITE_URL.
+        // That value is inlined at build time, so one build serving both
+        // dev.fleetviewcompliance.com and the apex would mail every dev signup
+        // a link pointing at production — where the account does not exist.
+        // The origin is whatever host they are actually looking at.
+        emailRedirectTo: new URL('/auth/callback', Astro.url.origin).toString(),
+      },
+    })
+    const outcome = signupOutcome(e)
+    // See signupOutcome: an address that already has an account produces the
+    // same code as a brand-new one, so this form cannot be used to find out who
+    // is a customer here. The sign-in branch below has always been careful
+    // about that; this branch used to give it away.
+    if (outcome !== 'check_email') return back(outcome)
+
+    // With email confirmation switched off in the Supabase project, signUp
+    // returns a session and the SSR client has already written the cookies.
+    // Telling that person to go and check their inbox sends them looking for an
+    // email nobody sent.
+    if (data.session) return Astro.redirect(landing(dot), 303)
+
+    return back('check_email', 'signin')
+  }
+
+  const { error: e } = await supabase.auth.signInWithPassword({ email, password })
+  if (e) {
+    // Never distinguish "no such account" from "wrong password": that turns the
+    // form into a way to find out who has an account here.
+    return back('credentials', 'signin')
+  }
+  return Astro.redirect(landing(dot), 303)
+}
+
+const msg = notice(params.get('notice'))
+const signup = mode === 'signup'
+
+const tone =
+  msg?.tone === 'ok'
+    ? 'bg-emerald-50 text-emerald-800'
+    : msg?.tone === 'info'
+      ? 'bg-sky-50 text-sky-900'
+      : 'bg-red-50 text-red-700'
+
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2.5 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+---
+
+<Public title={signup ? 'Create your account' : 'Sign in'} noindex>
+  <section class="mx-auto max-w-sm px-4 py-16 sm:px-6">
+    <h1 class="text-2xl font-semibold tracking-tight">
+      {signup ? 'Create your account' : 'Sign in'}
+    </h1>
+
+    {
+      signup && (
+        <p class="mt-2 text-sm text-ink-500">
+          {carriedDot ? (
+            <>
+              Two steps. This one takes an email address and a password; the next one sets up USDOT{' '}
+              <span class="tabular-nums">{carriedDot}</span>, which we have already looked up.
+            </>
+          ) : (
+            <>
+              Two steps. This one takes an email address and a password; the next one takes your
+              USDOT number and reads your carrier record out of the federal file.
+            </>
+          )}
+        </p>
+      )
+    }
+
+    {msg && <p class:list={['mt-5 rounded-lg px-4 py-3 text-sm', tone]}>{msg.text}</p>}
+
+    <form method="POST" class="mt-6 space-y-4">
+      {carriedDot && <input type="hidden" name="dot" value={carriedDot} />}
+
+      <label class="block">
+        <span class="text-sm font-medium">Email</span>
+        <input type="email" name="email" autocomplete="email" required autofocus class={field} />
+      </label>
+
+      <label class="block">
+        <span class="text-sm font-medium">Password</span>
+        {/*
+          `minlength` only on sign-up. On sign-in it blocks the submit button for
+          anybody whose existing password is shorter than this build's rule — the
+          minimum is a Supabase project setting and has been lower — so the
+          browser refuses to send a password that would have worked, and says so
+          in a tooltip nobody reads as "your password is fine, our form is not".
+        */}
+        <input
+          type="password"
+          name="password"
+          autocomplete={signup ? 'new-password' : 'current-password'}
+          required
+          minlength={signup ? 8 : undefined}
+          class={field}
+        />
+        {signup && <span class="mt-1 block text-xs text-ink-500">At least 8 characters.</span>}
+      </label>
+
+      <button
+        type="submit"
+        name="intent"
+        value={signup ? 'signup' : 'signin'}
+        class="w-full rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+      >
+        {signup ? 'Create account' : 'Sign in'}
+      </button>
+    </form>
+
+    {/*
+      One link, not a second button. Two equally weighted buttons under one pair
+      of boxes is what made the old screen ambiguous in the first place.
+    */}
+    <p class="mt-6 text-center text-sm text-ink-500">
+      {
+        signup ? (
+          <>
+            Already have an account?{' '}
+            <a href={loginHref('signin', null, carriedDot)} class="font-medium text-brand-600 hover:underline">
+              Sign in
+            </a>
+          </>
+        ) : (
+          <>
+            New here?{' '}
+            <a href={loginHref('signup', null, carriedDot)} class="font-medium text-brand-600 hover:underline">
+              Create an account
+            </a>
+          </>
+        )
+      }
+    </p>
+
+    {
+      signup && (
+        <p class="mt-8 border-t border-ink-100 pt-6 text-xs text-ink-500">
+          We ask for the email first on purpose. A USDOT number is public — anyone can read one off
+          the side of a truck — so it is claimed from inside an account rather than being the thing
+          that opens one.
+        </p>
+      )
+    }
+  </section>
+</Public>

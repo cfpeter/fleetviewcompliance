@@ -1,0 +1,220 @@
+---
+/**
+ * Add a customer.
+ *
+ * One required field, and that is a decision rather than an omission. A
+ * dispatcher adds the broker while the rate confirmation is on the phone in
+ * front of her, and a required field she cannot fill is a field she invents a
+ * value for — an invented MC number is worse than a blank one, because the
+ * authority check on the detail page will then look up somebody else's docket
+ * and report their status as this broker's.
+ */
+import App from '../../../layouts/App.astro'
+import {
+  docketOrNull,
+  parseDaysToPay,
+  parseDotNumber,
+  textOrNull,
+} from '../../../lib/customers.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+
+/**
+ * Every exit from the POST is a 303, and the status code is not decoration.
+ * Astro.redirect() defaults to 302, which permits the browser to repeat the POST
+ * against the new location — so a refresh re-runs it, the broker is added twice,
+ * and nothing on screen says so. Two rows for one broker then split his load
+ * history down the middle, which is the failure nobody notices until the
+ * quarterly numbers are wrong.
+ */
+function back(message: string): Response {
+  return Astro.redirect(`/app/customers/new?error=${encodeURIComponent(message)}`, 303)
+}
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  if (intent === 'create') {
+    const name = textOrNull(form.get('name'))
+    // The browser's own `required` blocks this, so reaching it means a hand-made
+    // POST. The typed values are deliberately NOT carried back in the query
+    // string on the way out: a contact's phone number and a billing address in a
+    // URL land in every access log between here and her desk, which is not a
+    // trade worth making to repopulate a form the browser was already guarding.
+    if (!name) return back('A customer needs a name. Everything else can wait.')
+
+    const dot = parseDotNumber(form.get('dot_number'))
+    if (!dot.ok) return back(dot.message)
+
+    const days = parseDaysToPay(form.get('days_to_pay'))
+    if (!days.ok) return back(days.message)
+
+    const { data, error } = await supabase
+      .from('customers')
+      .insert({
+        // carrier_id is set here and nowhere else in this file. RLS CHECKS it on
+        // the way in — an insert naming somebody else's carrier is rejected —
+        // but it does not SUPPLY it, and the column is NOT NULL, so leaving it
+        // out fails the insert rather than defaulting to anything sensible.
+        carrier_id: carrierId,
+        name,
+        mc_number: docketOrNull(form.get('mc_number')),
+        dot_number: dot.value,
+        contact_name: textOrNull(form.get('contact_name')),
+        phone: textOrNull(form.get('phone')),
+        email: textOrNull(form.get('email')),
+        billing_email: textOrNull(form.get('billing_email')),
+        billing_address: textOrNull(form.get('billing_address')),
+        days_to_pay: days.value,
+        notes: textOrNull(form.get('notes')),
+      })
+      .select('id')
+      .single()
+
+    if (error || !data) return back(error?.message ?? 'That customer could not be saved.')
+
+    // Straight to the customer rather than back to the list: if she gave us a
+    // DOT number, their federal authority status is waiting on that page, and it
+    // is the one thing worth reading before the truck rolls.
+    return Astro.redirect(`/app/customers/${data.id}?added=1`, 303)
+  }
+
+  // An unrecognised intent is a bug or a crafted post; either way it must not
+  // fall through and render the form as though it were a GET.
+  return Astro.redirect('/app/customers/new', 303)
+}
+
+const error = Astro.url.searchParams.get('error')
+
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+---
+
+<App title="Add a customer" subtitle="A company name is enough. The rest can follow the rate con.">
+  <div class="max-w-2xl">
+    {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+
+    <form method="POST" class="space-y-4 rounded-xl border border-ink-100 bg-white p-5">
+      <label class="block">
+        <span class="text-sm font-medium">Company name <span class="text-red-600">*</span></span>
+        <input type="text" name="name" required autofocus class={field} />
+        <span class="mt-1 block text-xs text-ink-500">
+          The name on the rate confirmation, not the name the dispatcher answers the phone with.
+        </span>
+      </label>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">
+            MC number <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input type="text" name="mc_number" placeholder="MC123456" class={`${field} tabular-nums`} />
+          <span class="mt-1 block text-xs text-ink-500">
+            Keep the prefix if there is one — MC, MX and FF are three different kinds of authority.
+          </span>
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">
+            USDOT number <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input
+            type="text"
+            name="dot_number"
+            inputmode="numeric"
+            placeholder="1234567"
+            class={`${field} tabular-nums`}
+          />
+          <span class="mt-1 block text-xs text-ink-500">
+            Worth finding. With this we can check their operating authority against the public
+            federal record every time you open their page.
+          </span>
+        </label>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">
+            Contact name <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input type="text" name="contact_name" class={field} />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">
+            Phone <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input type="tel" name="phone" class={`${field} tabular-nums`} />
+        </label>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">
+            Email <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input type="email" name="email" class={field} />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">
+            Billing email <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input type="email" name="billing_email" class={field} />
+          <span class="mt-1 block text-xs text-ink-500">
+            Kept apart from the dispatch email on purpose. Invoices sent to the dispatcher are
+            invoices nobody pays.
+          </span>
+        </label>
+      </div>
+
+      <label class="block">
+        <span class="text-sm font-medium">
+          Billing address <span class="font-normal text-ink-300">(optional)</span>
+        </span>
+        <textarea name="billing_address" rows="3" class={field}></textarea>
+      </label>
+
+      <label class="block">
+        <span class="text-sm font-medium">
+          Days to pay <span class="font-normal text-ink-300">(optional)</span>
+        </span>
+        <input
+          type="text"
+          name="days_to_pay"
+          inputmode="numeric"
+          placeholder="30"
+          class={`${field} tabular-nums`}
+        />
+        <span class="mt-1 block text-xs text-ink-500">
+          Their agreed terms, in days. Left blank it stays blank — we would rather show nothing than
+          guess 30 on the screen you use to decide whether you can afford to take the load.
+        </span>
+      </label>
+
+      <label class="block">
+        <span class="text-sm font-medium">
+          Notes <span class="font-normal text-ink-300">(optional)</span>
+        </span>
+        <textarea
+          name="notes"
+          rows="3"
+          placeholder="Detention needs pre-approval in writing. Lumper reimbursed with receipt."
+          class={field}></textarea>
+      </label>
+
+      <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+        <button
+          type="submit"
+          name="intent"
+          value="create"
+          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+        >
+          Add customer
+        </button>
+        <a href="/app/customers" class="text-sm font-medium text-brand-600 hover:underline">
+          Back to customers
+        </a>
+      </div>
+    </form>
+  </div>
+</App>

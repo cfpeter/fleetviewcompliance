@@ -1,0 +1,554 @@
+---
+/**
+ * Add a load.
+ *
+ * NOTHING is required except that the load can be identified — either our load
+ * number or the broker's reference. That is the whole validation, and it is a
+ * decision rather than an omission: this form is filled in while a broker is
+ * still on the phone, off a rate confirmation that is frequently a photo of a
+ * fax. A required commodity or a required weight is a field she types "x" into,
+ * and an invented weight is worse than a blank one because it looks answered.
+ *
+ * Status and billing are not on this form at all. The table defaults them to
+ * 'booked' and 'not_ready', which are the two true statements about a load that
+ * has just been typed in, and they are moved SEPARATELY afterwards on the load's
+ * own page. Offering them here as one "stage" dropdown is the exact mistake
+ * 0009_loads.sql was written to avoid.
+ */
+import App from '../../../layouts/App.astro'
+import {
+  EQUIPMENT_TYPES,
+  matchCustomerName,
+  parseMoneyToCents,
+  parseOptionalInt,
+  textOrNull,
+} from '../../../lib/loads.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+
+/**
+ * The fields worth handing back after a rejected save.
+ *
+ * A 303 throws the request body away, so without this one mistyped rate costs
+ * her the entire rate confirmation again — fourteen fields — while the broker
+ * waits. They ride in the query string, which is also what makes the error page
+ * survive a refresh. Nothing personal goes in here; these are commercial fields
+ * off a document that was emailed in clear text in the first place.
+ */
+const CARRY = [
+  'load_number',
+  'broker_reference',
+  'customer_id',
+  'customer_name',
+  'equipment_type',
+  'commodity',
+  'weight_lbs',
+  'pieces',
+  'linehaul',
+  'fuel_surcharge',
+  'accessorials',
+  'free_hours_pickup',
+  'free_hours_delivery',
+  'detention_rate',
+] as const
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  const reject = (message: string) => {
+    const next = new URLSearchParams({ error: message })
+    for (const key of CARRY) {
+      const v = String(form.get(key) ?? '').trim()
+      if (v) next.set(key, v)
+    }
+    // Checkboxes are absent when unticked, so this is only ever set when she
+    // ticked it — which is the state worth preserving across a rejection.
+    if (form.get('detention_requires_preapproval')) next.set('preapproval', '1')
+    return Astro.redirect(`/app/loads/new?${next.toString()}`, 303)
+  }
+
+  if (intent !== 'create') {
+    // An unrecognised intent is a bug or a crafted post; either way it must not
+    // fall through and render the form as though this were a GET.
+    return reject('That button did not tell us what to do. Try again.')
+  }
+
+  const loadNumber = textOrNull(form.get('load_number'))
+  const brokerReference = textOrNull(form.get('broker_reference'))
+
+  /**
+   * The one rule. A load with neither number is a row she can never find again:
+   * the search box on the board covers exactly these two columns, because they
+   * are the two numbers that exist on paper.
+   */
+  if (!loadNumber && !brokerReference) {
+    return reject(
+      'Give the load a number — ours or the broker’s. Everything else can be filled in later, but without one of these the load cannot be searched for.',
+    )
+  }
+
+  const weight = parseOptionalInt(form.get('weight_lbs'), {
+    label: 'Weight',
+    // min 1, not 0: a blank box is already NULL by now, so a 0 here was typed,
+    // and a zero-pound load is not a fact anyone means.
+    min: 1,
+    max: 250_000,
+  })
+  if (!weight.ok) return reject(weight.message)
+
+  const pieces = parseOptionalInt(form.get('pieces'), { label: 'Pieces', min: 1, max: 100_000 })
+  if (!pieces.ok) return reject(pieces.message)
+
+  /**
+   * Free hours allow 0, and the difference between 0 and blank is real money.
+   *
+   * Blank means the rate confirmation did not say, so we cannot start a
+   * detention clock at all. Zero means the broker granted no free time and the
+   * clock starts on arrival — a term worth having, and one that would be thrown
+   * away if this shared the "0 is a typo" rule the weight field uses.
+   */
+  const freePickup = parseOptionalInt(form.get('free_hours_pickup'), {
+    label: 'Free hours at pickup',
+    min: 0,
+    max: 72,
+  })
+  if (!freePickup.ok) return reject(freePickup.message)
+
+  const freeDelivery = parseOptionalInt(form.get('free_hours_delivery'), {
+    label: 'Free hours at delivery',
+    min: 0,
+    max: 72,
+  })
+  if (!freeDelivery.ok) return reject(freeDelivery.message)
+
+  const linehaul = parseMoneyToCents(form.get('linehaul'), { label: 'Linehaul rate' })
+  if (!linehaul.ok) return reject(linehaul.message)
+
+  const fuel = parseMoneyToCents(form.get('fuel_surcharge'), { label: 'Fuel surcharge' })
+  if (!fuel.ok) return reject(fuel.message)
+
+  // Negative allowed here and nowhere else: a lumper, an advance or a fuel
+  // advance fee comes off the rate confirmation as a deduction, and a total that
+  // cannot go down is a total that never matches the cheque.
+  const accessorials = parseMoneyToCents(form.get('accessorials'), {
+    label: 'Accessorials',
+    allowNegative: true,
+  })
+  if (!accessorials.ok) return reject(accessorials.message)
+
+  const detentionRate = parseMoneyToCents(form.get('detention_rate'), {
+    label: 'Detention rate',
+  })
+  if (!detentionRate.ok) return reject(detentionRate.message)
+
+  /**
+   * The customer: an existing one, or a name typed straight onto the load.
+   *
+   * The free-text fallback is not a convenience. A broker she has never hauled
+   * for is the single most common case on a load-board booking, and sending her
+   * away to a Customers screen to create a record first is how the load she is
+   * holding gets written on a sticky note instead.
+   */
+  let customerId: string | null = null
+  const chosen = String(form.get('customer_id') ?? '').trim()
+  const typedName = textOrNull(form.get('customer_name'))
+
+  if (chosen) {
+    // The dropdown wins over the free-text box when both are filled — she picked
+    // a record deliberately, and the text box is usually just left over from
+    // typing before she spotted the customer in the list.
+    if (!UUID.test(chosen)) return reject('That customer could not be read. Pick it again.')
+    customerId = chosen
+  } else if (typedName) {
+    // Match an existing customer BEFORE inserting. Without this, every
+    // hand-typed load creates another customer row and the list becomes four
+    // spellings of TQL — at which point "what did we haul for them this
+    // quarter" stops being answerable, quietly. The matching rule itself lives
+    // in lib/loads.ts, where it can be tested.
+    const { data: existing, error: lookupError } = await supabase
+      .from('customers')
+      .select('id, name')
+    if (lookupError) return reject(lookupError.message)
+
+    const hit = matchCustomerName(existing, typedName)
+    if (hit) {
+      customerId = hit
+    } else {
+      const { data: created, error: createError } = await supabase
+        .from('customers')
+        // carrier_id explicitly, here as on every insert in this section. RLS
+        // CHECKS the column — a row naming another carrier is rejected — but it
+        // does not SUPPLY it, and the column is NOT NULL with no default.
+        .insert({ carrier_id: carrierId, name: typedName })
+        .select('id')
+        .single()
+      if (createError || !created) {
+        return reject(createError?.message ?? 'That customer could not be saved.')
+      }
+      customerId = created.id
+    }
+  }
+
+  const { data, error } = await supabase
+    .from('loads')
+    .insert({
+      carrier_id: carrierId,
+      load_number: loadNumber,
+      broker_reference: brokerReference,
+      customer_id: customerId,
+      equipment_type: textOrNull(form.get('equipment_type')),
+      commodity: textOrNull(form.get('commodity')),
+      weight_lbs: weight.value,
+      pieces: pieces.value,
+      linehaul_cents: linehaul.value,
+      fuel_surcharge_cents: fuel.value,
+      accessorials_cents: accessorials.value,
+      free_hours_pickup: freePickup.value,
+      free_hours_delivery: freeDelivery.value,
+      detention_rate_cents: detentionRate.value,
+      /**
+       * TRUE or NULL — never FALSE from this form.
+       *
+       * The column is nullable on purpose. An unticked box here cannot tell
+       * "the rate confirmation says no pre-approval is needed" apart from "I
+       * have not read that far yet", and writing FALSE asserts the first. That
+       * assertion is the one that loses a detention claim: the driver sits four
+       * hours, nobody calls the broker because the screen said it was not
+       * required, and the invoice is refused. NULL says we do not know, the
+       * load page says so in words, and the tri-state control there is where a
+       * definite "not required" gets recorded.
+       */
+      detention_requires_preapproval: form.has('detention_requires_preapproval') ? true : null,
+    })
+    .select('id')
+    .single()
+
+  if (error || !data) return reject(error?.message ?? 'That load could not be saved.')
+
+  // 303, spelled out. Astro.redirect() defaults to 302, and a 302 lets the
+  // browser repeat the POST on a refresh or a back — which here books the same
+  // load twice, under the same broker reference, with nothing on screen saying
+  // so. 303 turns the follow-up request into a GET.
+  //
+  // Straight to the load rather than back to the board: the next thing in her
+  // hand is the stop detail and the status the driver just gave her.
+  return Astro.redirect(`/app/loads/${data.id}?added=1`, 303)
+}
+
+// --- GET: render, prefilled from whatever a rejected save handed back --------
+
+const params = Astro.url.searchParams
+const error = params.get('error')
+const prior = (key: string): string => params.get(key) ?? ''
+
+// The customer list for the dropdown. RLS scopes it to this carrier; no
+// .eq('carrier_id', ...) belongs here.
+const { data: customerRows } = await supabase
+  .from('customers')
+  .select('id, name')
+  .order('name', { ascending: true })
+const customers = (customerRows ?? []) as { id: string; name: string | null }[]
+
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const moneyWrap =
+  'mt-1 flex items-center rounded-lg border border-ink-100 bg-white focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20'
+const moneyInput = 'w-full bg-transparent px-2 py-2 text-base tabular-nums outline-none'
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+---
+
+<App
+  title="Add a load"
+  subtitle="The broker&#8217;s reference number is enough to start. The rest can follow the rate confirmation."
+>
+  <div class="max-w-3xl">
+    {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+
+    <form method="POST" class="space-y-4">
+      <div class={card}>
+        <h2 class="font-medium tracking-tight">Reference numbers</h2>
+        <p class="mt-1 text-sm text-ink-500">
+          One of these two is all we insist on, because they are the only way to find this load
+          again.
+        </p>
+
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          {
+            /* The broker's number is FIRST and autofocused. It is the number
+               printed on the sheet in front of her; ours often does not exist
+               yet. Putting it second, in grey, is how a field that matters more
+               than any other on this form gets skipped. */
+          }
+          <label class="block">
+            <span class="text-sm font-medium">Broker reference</span>
+            <input
+              type="text"
+              name="broker_reference"
+              value={prior('broker_reference')}
+              autofocus
+              placeholder="Off the rate confirmation"
+              class={`${field} tabular-nums`}
+            />
+            <span class="mt-1 block text-xs text-ink-500">
+              What the broker calls this load. This is what you will search by when they call.
+            </span>
+          </label>
+
+          <label class="block">
+            <span class="text-sm font-medium">
+              Load number <span class="font-normal text-ink-300">(ours)</span>
+            </span>
+            <input
+              type="text"
+              name="load_number"
+              value={prior('load_number')}
+              class={`${field} tabular-nums`}
+            />
+            <span class="mt-1 block text-xs text-ink-500">
+              Your own numbering, if you use one. Leave it blank if you do not.
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class={card}>
+        <h2 class="font-medium tracking-tight">Customer</h2>
+
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <label class="block">
+            <span class="text-sm font-medium">Existing customer</span>
+            <select name="customer_id" class={field}>
+              <option value="">—</option>
+              {
+                customers.map((c) => (
+                  <option value={c.id} selected={prior('customer_id') === c.id}>
+                    {c.name}
+                  </option>
+                ))
+              }
+            </select>
+          </label>
+
+          <label class="block">
+            <span class="text-sm font-medium">…or type a new one</span>
+            <input
+              type="text"
+              name="customer_name"
+              value={prior('customer_name')}
+              placeholder="e.g. TQL"
+              class={field}
+            />
+            <span class="mt-1 block text-xs text-ink-500">
+              Saved as a customer you can reuse. A name that already exists is matched rather than
+              duplicated. If you pick from the list, the list wins.
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class={card}>
+        <h2 class="font-medium tracking-tight">Freight</h2>
+
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <label class="block">
+            <span class="text-sm font-medium">Equipment</span>
+            {
+              /* A datalist suggests without constraining, and it is plain HTML
+                 with no script behind it. A closed <select> guarantees a wrong
+                 box the first time a conestoga turns up, and the wrong box gets
+                 picked rather than left blank — which looks authoritative. */
+            }
+            <input
+              type="text"
+              name="equipment_type"
+              value={prior('equipment_type')}
+              list="equipment-types"
+              placeholder="e.g. Dry van 53"
+              class={field}
+            />
+            <datalist id="equipment-types">
+              {EQUIPMENT_TYPES.map((t) => <option value={t}></option>)}
+            </datalist>
+          </label>
+
+          <label class="block">
+            <span class="text-sm font-medium">Commodity</span>
+            <input
+              type="text"
+              name="commodity"
+              value={prior('commodity')}
+              placeholder="What is on the truck"
+              class={field}
+            />
+          </label>
+
+          <label class="block">
+            <span class="text-sm font-medium">Weight (lb)</span>
+            <input
+              type="text"
+              inputmode="numeric"
+              name="weight_lbs"
+              value={prior('weight_lbs')}
+              placeholder="e.g. 42000"
+              class={`${field} tabular-nums`}
+            />
+          </label>
+
+          <label class="block">
+            <span class="text-sm font-medium">Pieces</span>
+            <input
+              type="text"
+              inputmode="numeric"
+              name="pieces"
+              value={prior('pieces')}
+              placeholder="e.g. 24 pallets"
+              class={`${field} tabular-nums`}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div class={card}>
+        <h2 class="font-medium tracking-tight">Rate</h2>
+        <p class="mt-1 text-sm text-ink-500">
+          Type dollars. Everything is stored to the cent, so what you enter here is what the invoice
+          will say.
+        </p>
+
+        <div class="mt-4 grid gap-4 sm:grid-cols-3">
+          <label class="block">
+            <span class="text-sm font-medium">Linehaul</span>
+            <div class={moneyWrap}>
+              <span class="pl-3 text-ink-300">$</span>
+              <input
+                type="text"
+                name="linehaul"
+                value={prior('linehaul')}
+                inputmode="decimal"
+                placeholder="1850.00"
+                class={moneyInput}
+              />
+            </div>
+          </label>
+
+          <label class="block">
+            <span class="text-sm font-medium">Fuel surcharge</span>
+            <div class={moneyWrap}>
+              <span class="pl-3 text-ink-300">$</span>
+              <input
+                type="text"
+                name="fuel_surcharge"
+                value={prior('fuel_surcharge')}
+                inputmode="decimal"
+                class={moneyInput}
+              />
+            </div>
+          </label>
+
+          <label class="block">
+            <span class="text-sm font-medium">Accessorials</span>
+            <div class={moneyWrap}>
+              <span class="pl-3 text-ink-300">$</span>
+              <input
+                type="text"
+                name="accessorials"
+                value={prior('accessorials')}
+                inputmode="decimal"
+                class={moneyInput}
+              />
+            </div>
+            <span class="mt-1 block text-xs text-ink-500">
+              A deduction, like a lumper or an advance, goes in as a negative.
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class={card}>
+        <h2 class="font-medium tracking-tight">Detention terms</h2>
+        <p class="mt-1 text-sm text-ink-500">
+          Off the rate confirmation, as numbers rather than a sentence in an attachment. These are
+          the terms that decide whether four hours at a dock is billable.
+        </p>
+
+        <div class="mt-4 grid gap-4 sm:grid-cols-3">
+          <label class="block">
+            <span class="text-sm font-medium">Free hours at pickup</span>
+            <input
+              type="text"
+              inputmode="numeric"
+              name="free_hours_pickup"
+              value={prior('free_hours_pickup')}
+              placeholder="e.g. 2"
+              class={`${field} tabular-nums`}
+            />
+          </label>
+
+          <label class="block">
+            <span class="text-sm font-medium">Free hours at delivery</span>
+            <input
+              type="text"
+              inputmode="numeric"
+              name="free_hours_delivery"
+              value={prior('free_hours_delivery')}
+              placeholder="e.g. 2"
+              class={`${field} tabular-nums`}
+            />
+          </label>
+
+          <label class="block">
+            <span class="text-sm font-medium">Detention rate (per hour)</span>
+            <div class={moneyWrap}>
+              <span class="pl-3 text-ink-300">$</span>
+              <input
+                type="text"
+                name="detention_rate"
+                value={prior('detention_rate')}
+                inputmode="decimal"
+                placeholder="50.00"
+                class={moneyInput}
+              />
+            </div>
+          </label>
+        </div>
+
+        <label class="mt-4 flex items-start gap-3">
+          <input
+            type="checkbox"
+            name="detention_requires_preapproval"
+            value="1"
+            checked={params.get('preapproval') === '1'}
+            class="mt-0.5 size-4 rounded border-ink-300"
+          />
+          <span>
+            <span class="text-sm font-medium">The broker must pre-approve detention</span>
+            <span class="mt-1 block text-xs text-ink-500">
+              Tick this and the driver has to call before the free hours run out, or the detention
+              is not billable however long he sits. Left unticked, we record that we do not know
+              yet rather than that it is not required — the load page is where a definite "no
+              pre-approval needed" gets set.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+        <button
+          type="submit"
+          name="intent"
+          value="create"
+          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+        >
+          Add load
+        </button>
+        <a href="/app/loads" class="text-sm font-medium text-brand-600 hover:underline">
+          Back to loads
+        </a>
+      </div>
+    </form>
+  </div>
+</App>

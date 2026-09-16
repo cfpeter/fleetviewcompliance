@@ -1,0 +1,401 @@
+---
+/**
+ * The customer book: every broker and shipper we haul for.
+ *
+ * Search is a plain GET parameter, so a filtered view is a URL she can bookmark
+ * or text to the owner, and the page works on one bar of signal in a yard.
+ * Nothing here runs JavaScript.
+ */
+import Bars from '../../../components/charts/Bars.astro'
+import Figure from '../../../components/charts/Figure.astro'
+import { type RevenueLoad, topCustomers } from '../../../lib/charts/revenue.ts'
+import App from '../../../layouts/App.astro'
+import { searchFilter } from '../../../lib/customers.ts'
+import { formatCents } from '../../../lib/loads.ts'
+
+const supabase = Astro.locals.supabase!
+
+const params = Astro.url.searchParams
+const q = (params.get('q') ?? '').trim()
+
+/**
+ * The shape we read. Written out rather than inferred, because an untyped
+ * Supabase client hands back `any` and a mistyped column then renders as an
+ * empty cell — indistinguishable on screen from a field nobody filled in.
+ */
+interface ListRow {
+  id: string
+  name: string
+  mc_number: string | null
+  contact_name: string | null
+  phone: string | null
+  days_to_pay: number | null
+  /** PostgREST's embedded aggregate. Absent entirely on the fallback query. */
+  loads?: { count: number }[] | null
+}
+
+const COLUMNS = 'id, name, mc_number, contact_name, phone, days_to_pay'
+// `loads(count)` counts in Postgres over the foreign key from 0009_loads.sql.
+// The alternative — a count query per customer — is forty round trips on a page
+// that should be one, and the alternative to THAT (pulling every load row and
+// counting in JavaScript) grows without limit as the carrier does.
+const COLUMNS_WITH_COUNT = `${COLUMNS}, loads(count)`
+
+// There is no .eq('carrier_id', ...) on this page. RLS already limits every row
+// to the signed-in user's carrier, and repeating the check in the query reads as
+// though the policy might not hold — which is how somebody eventually "fixes" a
+// bug by loosening the policy instead of the query.
+function build(select: string) {
+  let query = supabase.from('customers').select(select).order('name', { ascending: true })
+  const filter = searchFilter(q)
+  if (filter) query = query.or(filter)
+  return query
+}
+
+/**
+ * The revenue behind the ranking, asked for only on the resting view.
+ *
+ * Never over a search result: the chart would rank the three brokers whose
+ * names happen to contain the letters she typed, under a heading that says
+ * "top customers", which is a different and false claim. Skipping the query
+ * entirely rather than hiding the chart also means a search costs no extra
+ * round trip.
+ *
+ * ALL loads, not the last twelve months, and that is deliberate. Concentration
+ * is a property of the book as a whole — a broker who was eighty percent of the
+ * business until nine months ago is exactly the risk that has just
+ * materialised, and a rolling window would hide them the moment they stopped
+ * calling. The subtitle says which span this is, because the charts on
+ * /app/loads say twelve months and two spans on one product is a thing a reader
+ * has to be told rather than left to discover.
+ */
+const unfiltered = q === ''
+
+const [first, { count: totalCount }, revenueResult] = await Promise.all([
+  build(COLUMNS_WITH_COUNT),
+  // The unfiltered count exists so the empty state can tell the truth. "No
+  // customers yet" on a book of thirty, none of whom match the search, sends
+  // her to the add form to re-type a broker who is already in here.
+  supabase.from('customers').select('*', { count: 'exact', head: true }),
+  unfiltered
+    ? supabase.from('loads').select(
+        'customer_id, status, exception, linehaul_cents, fuel_surcharge_cents, accessorials_cents',
+        // The exact count, so the ranking can tell whether PostgREST's row cap
+        // ate anything. A capped response makes every bar shorter than it
+        // should be and, worse, shifts the concentration share — with nothing
+        // on the page to say a load was missing.
+        { count: 'exact' },
+      )
+    : null,
+])
+
+/**
+ * The count is a bonus; the customer book is not.
+ *
+ * Embedded aggregates are a PostgREST feature a project can have switched off,
+ * and if it is, the query above fails outright. Losing the load counts is a
+ * shrug. Losing the list — every phone number and payment term she has — because
+ * of a decorative column is not, so the fallback re-asks without it and the
+ * counts then render as "—" rather than as zero. A zero we did not measure is
+ * the same class of lie as a clean bill of health we did not check.
+ */
+let rows = (first.data ?? []) as unknown as ListRow[]
+let error = first.error
+let countsAvailable = true
+
+if (first.error) {
+  const plain = await build(COLUMNS)
+  rows = (plain.data ?? []) as unknown as ListRow[]
+  error = plain.error
+  countsAvailable = false
+}
+
+function loadCountOf(row: ListRow): number | null {
+  if (!countsAvailable) return null
+  // PostgREST hands the aggregate back as a one-element array, `[{count: 3}]`,
+  // and a customer with no loads at all comes back as `[]` on some versions and
+  // `[{count: 0}]` on others. Both mean nothing has been hauled for them yet.
+  if (!Array.isArray(row.loads)) return 0
+  return row.loads[0]?.count ?? 0
+}
+
+const notice = params.get('error') ?? (error ? error.message : null)
+
+/**
+ * Concentration risk, which an alphabetical list cannot show.
+ *
+ * This is the one thing on this page that is worth more than the phone numbers.
+ * A carrier taking seventy percent of his revenue from one broker is one lost
+ * contract from closing, and in a book sorted by name that fact is spread
+ * across forty rows and invisible. The bars put it in one shape; the sentence
+ * under them says the number out loud, because colour and length are not
+ * allowed to be the only carriers of a finding.
+ *
+ * `rows` is the same array the table below renders, so a customer in one and
+ * not the other is impossible.
+ */
+const revenueFailed = Boolean(revenueResult?.error)
+const ranking =
+  revenueResult && !revenueResult.error
+    ? topCustomers((revenueResult.data ?? []) as unknown as RevenueLoad[], rows)
+    : null
+
+const loadWord = (n: number) => (n === 1 ? 'load' : 'loads')
+
+// Loads the response could not carry. See the note on the count above.
+const missing = Math.max(
+  0,
+  (revenueResult?.count ?? revenueResult?.data?.length ?? 0) - (revenueResult?.data?.length ?? 0),
+)
+
+/**
+ * How a customer's terms read on one line under their bar.
+ *
+ * NULL and 0 are different facts and get different sentences — 0 is payment on
+ * delivery, the best terms in the industry, and NULL is a question nobody has
+ * asked them. Collapsed into one number the broker who never answered would sit
+ * beside the best payer on the book.
+ */
+const termsNote = (days: number | null): string => {
+  if (days === null) return 'terms not recorded'
+  if (days === 0) return 'pays on delivery'
+  return `pays in ${days} days`
+}
+
+/**
+ * What the bars do not cover.
+ *
+ * `unattributedCents` is the clause that matters. The share below is computed
+ * over revenue we could attribute to somebody, so every load booked without a
+ * customer on it makes that percentage larger than the truth. Left unsaid, a
+ * carrier with half his loads unattributed would read a 70% concentration that
+ * is really 35%.
+ */
+const rankingCoverage = ranking
+  ? [
+      'Booked rates on every load on file, not money received.',
+      ranking.unattributedLoads > 0 &&
+        `${formatCents(ranking.unattributedCents)} across ${ranking.unattributedLoads} ${loadWord(ranking.unattributedLoads)} has no customer on it, so it is in no bar here and out of the share below — which makes that share read higher than it is.`,
+      ranking.unpricedLoads > 0 &&
+        `${ranking.unpricedLoads} ${loadWord(ranking.unpricedLoads)} carry no rate yet and are in nobody's total. A load with no rate is not a $0 load.`,
+      ranking.quotedLoads + ranking.cancelledLoads > 0 &&
+        `${ranking.quotedLoads + ranking.cancelledLoads} quoted or cancelled ${loadWord(ranking.quotedLoads + ranking.cancelledLoads)} are left out; neither is money anyone owes.`,
+      missing > 0 &&
+        `${missing} ${loadWord(missing)} did not fit in one request and are in no bar and in no share.`,
+    ]
+      .filter(Boolean)
+      .join(' ')
+  : undefined
+
+const topName = ranking?.rows[0]?.name ?? ''
+const concentration =
+  !ranking || ranking.topShare === null
+    ? null
+    : ranking.rows.length === 1
+      ? `Every dollar you have priced came from ${topName}. One customer is the whole book.`
+      : ranking.topShare >= 50
+        ? `${topName} is ${ranking.topShare}% of the revenue we can put a customer against. Losing that one broker is losing most of the business — worth knowing before the next rate conversation, not after it.`
+        : `${topName} is your largest customer at ${ranking.topShare}% of the revenue we can put a customer against.`
+---
+
+<App title="Customers" subtitle="The brokers and shippers you haul for, and how they pay.">
+  {notice && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{notice}</p>}
+
+  <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+    <form method="GET" class="relative flex-1">
+      <svg
+        class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-300"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        aria-hidden="true"
+      >
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-3.5-3.5"></path>
+      </svg>
+      <input
+        type="search"
+        name="q"
+        value={q}
+        placeholder="Search by company name or MC number…"
+        aria-label="Search customers"
+        class="w-full rounded-xl border border-ink-100 bg-white py-3 pr-4 pl-10 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+      />
+    </form>
+    <a
+      href="/app/customers/new"
+      class="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-center font-medium text-white transition hover:bg-brand-700"
+    >
+      Add a customer
+    </a>
+  </div>
+
+  {
+    !countsAvailable && (
+      <p class="mb-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        Load counts could not be read just now, so they show as —. Everything else on this page is
+        current.
+      </p>
+    )
+  }
+
+  {
+    revenueFailed && (
+      <p class="mb-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        Revenue could not be read just now, so the ranking is not on the page. That is not "nobody
+        has paid you" — it is no answer.
+      </p>
+    )
+  }
+
+  {
+    /*
+      Above the book, and only on the resting view. The doctrine's rule about
+      never charting a filtered list applies twice as hard here: a ranking
+      headed "top customers" drawn from a search result is not a truncated
+      answer, it is a wrong one.
+    */
+  }
+  {
+    ranking && ranking.rows.length > 0 && (
+      <Figure
+        class="mb-6"
+        title="Who the money comes from"
+        subtitle="Booked rates across every load on file, best first"
+        coverage={rankingCoverage}
+        action={{ href: '#customer-book', label: 'The whole book' }}
+      >
+        <Bars
+          items={ranking.rows.map((r) => ({
+            label: r.name,
+            // `null` for a customer whose loads all lack a rate. Bars draws
+            // that as a dashed empty slot rather than a zero-width bar, because
+            // a broker we have not finished entering must not rank below one we
+            // genuinely earn nothing from.
+            value: r.cents,
+            display: r.cents === null ? 'no rate yet' : formatCents(r.cents),
+            note: `${r.countedLoads + r.unpricedLoads} ${loadWord(r.countedLoads + r.unpricedLoads)} · ${termsNote(r.daysToPay)}`,
+            href: `/app/customers/${r.id}`,
+          }))}
+          limit={8}
+          moreHref="#customer-book"
+        />
+        {concentration && (
+          /* The finding, written out. A long bar is a shape, and a shape is not
+             a number — the sentence is what survives being read on a phone in
+             the sun by somebody who cannot separate two similar lengths. */
+          <p class="mt-4 border-t border-ink-100 pt-3 text-sm text-ink-700">{concentration}</p>
+        )}
+      </Figure>
+    )
+  }
+
+  {
+    rows.length === 0 ? (
+      (totalCount ?? 0) === 0 ? (
+        <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+          <p class="font-medium">No customers yet</p>
+          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+            Add the brokers and shippers you book with. A company name is enough to start — the MC
+            number and their payment terms can follow the first rate confirmation.
+          </p>
+          <a
+            href="/app/customers/new"
+            class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+          >
+            Add a customer →
+          </a>
+        </div>
+      ) : (
+        <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+          <p class="font-medium">Nobody matches that search</p>
+          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+            You have <span class="tabular-nums">{totalCount}</span> customers on file. None of them
+            match “{q}” by name or MC number.
+          </p>
+          <a
+            href="/app/customers"
+            class="mt-4 inline-block rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
+          >
+            Show everyone
+          </a>
+        </div>
+      )
+    ) : (
+      <>
+        <p class="mb-3 text-sm text-ink-500">
+          <span class="tabular-nums">{rows.length}</span>
+          {rows.length === 1 ? ' customer' : ' customers'}
+        </p>
+
+        <div id="customer-book" class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
+          <table class="w-full min-w-[52rem] text-sm">
+            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+              <tr>
+                <th class="px-4 py-3 font-medium">Customer</th>
+                <th class="px-4 py-3 font-medium">MC number</th>
+                <th class="px-4 py-3 font-medium">Contact</th>
+                <th class="px-4 py-3 font-medium">Phone</th>
+                <th class="px-4 py-3 text-right font-medium">Days to pay</th>
+                <th class="px-4 py-3 text-right font-medium">Loads</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink-100">
+              {rows.map((c) => (
+                <tr class="hover:bg-ink-50/60">
+                  <td class="px-4 py-3">
+                    <a
+                      href={`/app/customers/${c.id}`}
+                      class="font-medium hover:text-brand-600 hover:underline"
+                    >
+                      {c.name}
+                    </a>
+                  </td>
+                  <td class="px-4 py-3">
+                    {c.mc_number ? (
+                      <span class="tabular-nums">{c.mc_number}</span>
+                    ) : (
+                      <span class="text-ink-300">—</span>
+                    )}
+                  </td>
+                  <td class="px-4 py-3">
+                    {c.contact_name ?? <span class="text-ink-300">—</span>}
+                  </td>
+                  <td class="px-4 py-3 whitespace-nowrap tabular-nums">
+                    {c.phone ?? <span class="text-ink-300">—</span>}
+                  </td>
+                  <td class="px-4 py-3 text-right whitespace-nowrap tabular-nums">
+                    {
+                      /* Blank is "they never told us", and it stays blank. A
+                         default of 30 here would be a payment term we invented
+                         on a screen the owner uses to decide whether he can
+                         afford to take the load. */
+                    }
+                    {c.days_to_pay === null ? (
+                      <span class="text-ink-300">—</span>
+                    ) : (
+                      <>
+                        {c.days_to_pay}
+                        <span class="text-ink-300"> days</span>
+                      </>
+                    )}
+                  </td>
+                  <td class="px-4 py-3 text-right tabular-nums">
+                    {loadCountOf(c) === null ? (
+                      <span class="text-ink-300">—</span>
+                    ) : loadCountOf(c) === 0 ? (
+                      <span class="text-ink-300">0</span>
+                    ) : (
+                      loadCountOf(c)
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </>
+    )
+  }
+</App>

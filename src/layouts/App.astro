@@ -1,0 +1,123 @@
+---
+/**
+ * The signed-in shell. Never indexed, never cached.
+ */
+import '../styles/global.css'
+
+interface Props {
+  title: string
+  subtitle?: string
+}
+const { title, subtitle } = Astro.props
+const path = Astro.url.pathname
+
+/**
+ * `short` is what a phone shows.
+ *
+ * Measured before this existed: at 375px the nav had 80px of visible width
+ * holding 809px of links, and ZERO of the ten items were fully on screen — on
+ * every signed-in page. The owner who opens his phone because he is worried
+ * about one truck could not reach Trucks at all without first discovering that
+ * an 80px strip scrolls sideways.
+ *
+ * The Public shell already solved this with short/long label pairs "because a
+ * phone header has ~120px to spare". That pattern never made it here.
+ */
+const nav = [
+  { href: '/app', label: 'Dashboard', short: 'Home' },
+  { href: '/app/dispatch', label: 'Dispatch', short: 'Disp' },
+  { href: '/app/loads', label: 'Loads', short: 'Loads' },
+  { href: '/app/drivers', label: 'Drivers', short: 'Drv' },
+  { href: '/app/settlements', label: 'Settlements', short: 'Pay' },
+  { href: '/app/vehicles', label: 'Trucks', short: 'Trk' },
+  { href: '/app/customers', label: 'Customers', short: 'Cust' },
+  { href: '/app/ifta', label: 'IFTA', short: 'IFTA' },
+  { href: '/app/proof', label: 'Proof', short: 'Proof' },
+  { href: '/app/settings', label: 'Settings', short: 'Set' },
+]
+
+const active = (href: string) =>
+  path === href || (href !== '/app' && path.startsWith(href))
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>{title} · FleetView</title>
+  </head>
+  <body class="min-h-dvh bg-ink-50 font-sans text-ink-900 antialiased">
+    <header class="sticky top-0 z-10 border-b border-ink-100 bg-white/85 backdrop-blur">
+      <div class="mx-auto flex max-w-7xl items-center gap-4 px-4 py-3 sm:px-6">
+        {/* The wordmark costs 156px on a phone — more than the nav had in
+            total. It earns that space on a desktop and nowhere else. */}
+        <a href="/app" class="hidden shrink-0 font-semibold tracking-tight sm:block">
+          FleetView<span class="text-brand-600">Compliance</span>
+        </a>
+        {/*
+          The negative margin is the point: the row bleeds to both edges of the
+          screen so a half-clipped pill is visible at the right edge, which is
+          the only thing that tells a person the row scrolls at all. A row that
+          ends flush inside the padding looks finished.
+        */}
+        <nav
+          id="appnav"
+          class="-mx-4 flex flex-1 gap-1 overflow-x-auto px-4 sm:mx-0 sm:px-0"
+          aria-label="Sections"
+        >
+          {
+            nav.map((n) => (
+              <a
+                href={n.href}
+                aria-current={active(n.href) ? 'page' : undefined}
+                class:list={[
+                  'rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition',
+                  active(n.href)
+                    ? 'bg-brand-500/10 text-brand-700'
+                    : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
+                ]}
+              >
+                <span class="sm:hidden">{n.short}</span>
+                <span class="hidden sm:inline">{n.label}</span>
+              </a>
+            ))
+          }
+        </nav>
+        <form method="POST" action="/logout" class="shrink-0">
+          <button
+            type="submit"
+            class="rounded-lg px-2.5 py-1.5 text-sm font-medium text-ink-500 transition hover:bg-ink-100 hover:text-ink-900"
+          >
+            Sign out
+          </button>
+        </form>
+      </div>
+    </header>
+
+    <script is:inline>
+      // Scroll the section you are actually in into view.
+      //
+      // Progressive enhancement: the nav scrolls by finger without this. But
+      // standing on Loads with the "Loads" pill off-screen to the right reads as
+      // "this page is not in the menu", and the fix costs four lines.
+      ;(() => {
+        const nav = document.getElementById('appnav')
+        const current = nav?.querySelector('[aria-current="page"]')
+        if (nav && current) {
+          const left = current.offsetLeft - (nav.clientWidth - current.clientWidth) / 2
+          nav.scrollLeft = Math.max(0, left)
+        }
+      })()
+    </script>
+
+    <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+      <div class="mb-6">
+        <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
+        {subtitle && <p class="mt-1 text-sm text-ink-500">{subtitle}</p>}
+      </div>
+      <slot />
+    </main>
+  </body>
+</html>

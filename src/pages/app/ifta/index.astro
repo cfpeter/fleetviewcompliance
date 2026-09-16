@@ -1,0 +1,823 @@
+---
+/**
+ * The IFTA quarterly return.
+ *
+ * Read-only on purpose: there is no form on this page and nothing here writes.
+ * The two inputs are typed on the other two screens — the gallons off a shoebox
+ * of receipts, the miles off trip sheets — and this is where they are turned
+ * into the number that goes on the form. Keeping the writes elsewhere is what
+ * lets this page be the one place that can say the word INCOMPLETE without
+ * anything on it offering a way to proceed anyway.
+ *
+ * Every figure below comes from `quarterlyReturn()` in src/lib/ifta/compute.ts.
+ * Nothing on this page multiplies, divides or rounds: the arithmetic is money
+ * owed to a tax authority that audits, it is tested in tests/ifta.test.ts, and a
+ * second implementation in a template is a second answer nobody tests.
+ */
+import Bars from '../../../components/charts/Bars.astro'
+import Columns from '../../../components/charts/Columns.astro'
+import Diverging from '../../../components/charts/Diverging.astro'
+import Figure from '../../../components/charts/Figure.astro'
+import App from '../../../layouts/App.astro'
+import {
+  milesFigure,
+  mpgTrend,
+  netTaxFigure,
+  quarterStillOpen,
+  quarterTotals,
+  truckCoverage,
+} from '../../../lib/charts/ifta.ts'
+import { ceilingFor } from '../../../lib/charts/scale.ts'
+import { formatDate } from '../../../lib/drivers.ts'
+import {
+  type FuelRow,
+  type MileRow,
+  gallons,
+  mpg,
+  quarterLabel,
+  quarterlyReturn,
+  rate,
+  returnDueOn,
+} from '../../../lib/ifta/compute.ts'
+import {
+  FUEL_TYPE,
+  type RateSourceRow,
+  carrierToday,
+  daysUntil,
+  effectiveRates,
+  isoDay,
+  jurisdictionName,
+  nextQuarterStart,
+  periodFromParam,
+  recentQuarters,
+} from '../../../lib/ifta/input.ts'
+import { formatCents } from '../../../lib/loads.ts'
+
+const supabase = Astro.locals.supabase!
+
+const today = carrierToday()
+const period = periodFromParam(Astro.url.searchParams.get('q'), today)
+const periodIso = isoDay(period)
+// Half-open range, so nothing has to work out the last day of a quarter and get
+// 30 September wrong. `purchased_on >= 1 Jul AND < 1 Oct` is every day of Q3 and
+// no day of Q4, in two comparisons a database index can use.
+const nextIso = isoDay(nextQuarterStart(period))
+
+/**
+ * The quarters on offer: this one and the four before it.
+ *
+ * A bookmarked or shared URL pointing further back is added to the list rather
+ * than silently redirected — an old quarter is exactly what someone opens when
+ * an auditor asks about it, and a picker that cannot show the quarter the page
+ * is displaying reads as a broken page.
+ */
+const quarters = recentQuarters(today, 5)
+if (!quarters.some((q) => isoDay(q) === periodIso)) {
+  quarters.push(period)
+  quarters.sort((a, b) => b.getTime() - a.getTime())
+}
+
+/**
+ * The quarters the MPG chart at the bottom of this page is drawn over.
+ *
+ * Anchored on the quarter being DISPLAYED rather than on today, so a Q2 return
+ * opened from a bookmark carries Q2's history instead of a trend that runs on
+ * past the return it sits under. It also bounds the two reads below: everything
+ * this page needs lives in [oldest quarter start, next quarter start).
+ */
+const trendQuarters = recentQuarters(period, 5)
+const oldestIso = isoDay(trendQuarters[trendQuarters.length - 1])
+
+/**
+ * Four reads, and the errors are kept rather than swallowed.
+ *
+ * A FAILED READ MUST NEVER RENDER AS A NIL RETURN. `(data ?? [])` on a query
+ * that errored produces an empty array, which produces a return with no travel,
+ * no tax and `complete: true` — a page that cheerfully reports nothing to file
+ * for a quarter the trucks ran all of. So `readError` below does not merely add
+ * a banner: it replaces the entire return, because a nil return and a broken
+ * database look identical once the numbers are on screen.
+ *
+ * No `.eq('carrier_id', …)` on any of them: RLS already limits every row to the
+ * signed-in user's carrier, and repeating the filter here would say in code that
+ * we do not quite believe the policy. `ifta_rates` is reference data shared by
+ * every tenant and has no carrier column at all.
+ *
+ * The miles and fuel reads span the five quarters on the trend rather than this
+ * one, and the return is then filtered back out of them. Two wide reads rather
+ * than four narrow ones: the same rows either way, one round trip each.
+ */
+const [milesResult, fuelResult, ratesResult, vehiclesResult] = await Promise.all([
+  supabase
+    .from('jurisdiction_miles')
+    .select('jurisdiction, miles, vehicle_id, period_start')
+    .gte('period_start', oldestIso)
+    .lt('period_start', nextIso),
+  supabase
+    .from('fuel_purchases')
+    .select('jurisdiction, gallons_milli, tax_paid, purchased_on')
+    .gte('purchased_on', oldestIso)
+    .lt('purchased_on', nextIso),
+  // Every rate that had started by this quarter, for every jurisdiction.
+  // `effectiveRates()` then keeps the latest per jurisdiction — PostgREST has no
+  // DISTINCT ON, and taking whichever row came back first would price a quarter
+  // at a superseded rate.
+  supabase
+    .from('ifta_rates')
+    .select('jurisdiction, fuel_type, period_start, rate_mills')
+    .eq('fuel_type', FUEL_TYPE)
+    .lte('period_start', periodIso),
+  // Ids only, and only so the charts can say "drawn from 6 of 9 trucks". Its
+  // error is deliberately NOT part of `readError` below: a failure here leaves
+  // every figure on this page correct, and costs only the sentence about what
+  // those figures cover — which `truckCoverage(null, …)` then says instead of
+  // claiming the fleet all reported.
+  supabase.from('vehicles').select('id'),
+])
+
+const readError =
+  milesResult.error?.message ?? fuelResult.error?.message ?? ratesResult.error?.message ?? null
+
+const mileRecords = (
+  (milesResult.data ?? []) as {
+    jurisdiction: string
+    miles: number
+    vehicle_id: string | null
+    period_start: string
+  }[]
+).map((r) => ({
+  jurisdiction: r.jurisdiction,
+  miles: Number(r.miles),
+  vehicleId: r.vehicle_id,
+  periodStart: r.period_start,
+}))
+
+const fuelRecords = (
+  (fuelResult.data ?? []) as {
+    jurisdiction: string
+    gallons_milli: number
+    tax_paid: boolean
+    purchased_on: string
+  }[]
+).map((r) => ({
+  jurisdiction: r.jurisdiction,
+  // `gallons_milli` is bigint. PostgREST sends it as a JSON number, and Number()
+  // here is a statement that the value is already an integer count of
+  // thousandths — not a conversion from gallons, which is the mistake that would
+  // divide the whole return by a thousand.
+  gallonsMilli: Number(r.gallons_milli),
+  taxPaid: r.tax_paid,
+  purchasedOn: r.purchased_on,
+}))
+
+// THE RETURN IS THIS QUARTER'S ROWS AND NOTHING ELSE. `period_start` is a
+// quarter's first day, so the mileage filter is an exact match; the fuel read is
+// already capped at `nextIso`, so its lower bound is the whole test. Getting
+// either wrong would file one quarter's return with another quarter's figures.
+const currentMiles = mileRecords.filter((r) => r.periodStart === periodIso)
+const mileRows: MileRow[] = currentMiles.map((r) => ({
+  jurisdiction: r.jurisdiction,
+  miles: r.miles,
+}))
+
+const fuelRows: FuelRow[] = fuelRecords
+  .filter((r) => r.purchasedOn >= periodIso)
+  .map((r) => ({
+    jurisdiction: r.jurisdiction,
+    gallonsMilli: r.gallonsMilli,
+    taxPaid: r.taxPaid,
+  }))
+
+const rates = effectiveRates((ratesResult.data ?? []) as RateSourceRow[], period)
+
+const result = quarterlyReturn({ miles: mileRows, fuel: fuelRows, rates })
+
+const due = returnDueOn(period)
+const daysLeft = daysUntil(due, today)
+const label = quarterLabel(period)
+
+/**
+ * Miles run with no fuel recorded: the failure mode `complete` cannot see.
+ *
+ * `quarterlyReturn()` reports a quarter complete when every jurisdiction has a
+ * rate. But with zero gallons the fleet MPG is zero, so the taxable gallons for
+ * EVERY jurisdiction compute as zero, and the return renders as a fully-priced
+ * $0.00 owed on thousands of miles. That is a short filing that looks finished —
+ * the same failure the rate_unknown outcome exists to prevent, arriving through
+ * the other input. It is called out here with the same volume.
+ */
+const milesWithoutFuel = result.totalMiles > 0 && result.totalGallonsMilli === 0
+const fuelWithoutMiles = result.totalGallonsMilli > 0 && result.totalMiles === 0
+const nilReturn = result.totalMiles === 0 && result.totalGallonsMilli === 0
+
+/**
+ * Both inputs are on file and the average still rounds to nothing.
+ *
+ * Usually a gallons figure in the wrong unit. `quarterlyReturn()` has reported
+ * this in `blockers` since it was written and this page never showed it, so a
+ * quarter in this state rendered a fully-priced $0.00 return with no banner of
+ * any kind over it.
+ */
+const mpgUnusable = result.totalMiles > 0 && result.totalGallonsMilli > 0 && result.mpgCentis === 0
+
+/**
+ * Incomplete, and it is the ENGINE's answer rather than a second one worked out
+ * here.
+ *
+ * This used to read `missingRates.length > 0 || milesWithoutFuel`, which let the
+ * two states `blockers` was added for through as finished. A quarter with fuel
+ * and no miles prices every jurisdiction as a pure credit, and the tile below
+ * then announced a net refund, in green, as fact; a quarter whose average rounds
+ * to zero prices every line at nothing and said so nowhere. There is deliberately
+ * no way to dismiss this.
+ */
+const incomplete = !result.complete
+
+/**
+ * A fleet MPG outside this band is a question, not a refusal.
+ *
+ * A loaded class-8 truck runs 5 to 8 mpg. Well outside that usually means a
+ * missing stack of receipts (MPG too high, which under-reports every
+ * jurisdiction) or a mistyped gallons figure (MPG too low, which over-reports).
+ * Worth asking about; not worth blocking a return over, because a light-duty
+ * fleet legitimately sits above it.
+ */
+const mpgSuspect = result.mpgCentis > 0 && (result.mpgCentis < 300 || result.mpgCentis > 1200)
+
+/**
+ * The quarter drawn as three shapes.
+ *
+ * All three derivations live in src/lib/charts/ifta.ts and all three can refuse:
+ * the half-entered quarter is the ORDINARY state of a return for months at a
+ * time — receipts arrive daily, odometers at quarter end — and every half-state
+ * has a confident, wrong picture waiting to be drawn from it. The refusals are
+ * honoured below by simply not rendering the figure, because a caveat printed
+ * under a wall of green credits is read second and the shape is read first.
+ */
+const open = quarterStillOpen(period, today)
+
+/**
+ * How much of the fleet these miles cover.
+ *
+ * Built from the same rows the return is, so the chart and the caveat under it
+ * cannot drift apart. `null` for the id list when the read failed, which is not
+ * the same claim as a carrier with no trucks.
+ */
+const trucks = truckCoverage(
+  vehiclesResult.error ? null : ((vehiclesResult.data ?? []) as { id: string }[]).map((v) => v.id),
+  currentMiles,
+)
+
+const milesChart = milesFigure({ result, fuel: fuelRows, trucks, open })
+const netChart = netTaxFigure({ result, trucks, open })
+
+/**
+ * Fleet MPG over five quarters — far enough back that the same quarter a year
+ * ago is on the axis, and the widest span these two reads can cover cheaply.
+ *
+ * Reversed because `recentQuarters` hands them back newest-first for the picker
+ * at the top of the page, and an axis reads oldest to newest.
+ */
+const trend = mpgTrend(
+  quarterTotals([...trendQuarters].reverse(), mileRecords, fuelRecords),
+  today,
+)
+// The same ceiling `Columns` computes internally, so the label names the line
+// the columns are actually scaled against rather than a number near it.
+const mpgCeiling = ceilingFor(trend.columns.map((c) => c.value))
+
+const quarterHref = (p: Date) => `/app/ifta?q=${isoDay(p)}`
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition'
+
+/** The deadline card's colour, and it earns red. A late return is a penalty. */
+const deadlineTone =
+  daysLeft < 0
+    ? 'border-red-200 bg-red-50'
+    : daysLeft <= 30
+      ? 'border-amber-300 bg-amber-50'
+      : 'border-ink-100 bg-white'
+---
+
+<App
+  title={`IFTA · ${label}`}
+  subtitle="Tax on the fuel you burned in each jurisdiction, less the tax you already paid at the pump there."
+>
+  {/* ------------------------------------------------------- quarter picker */}
+  <div class="-mx-4 mb-5 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
+    {
+      quarters.map((q) => (
+        <a
+          href={quarterHref(q)}
+          class:list={[
+            tab,
+            'tabular-nums',
+            isoDay(q) === periodIso
+              ? 'bg-brand-500/10 text-brand-700'
+              : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
+          ]}
+        >
+          {quarterLabel(q)}
+        </a>
+      ))
+    }
+  </div>
+
+  {
+    /* The deadline is rendered even when the database is unreachable: it comes
+       from the calendar, not from a query, and it is still true. */
+  }
+  <div class:list={['mb-5 flex flex-wrap items-center gap-4 rounded-xl border p-5', deadlineTone]}>
+    <div class="min-w-0 flex-1">
+      <div class="text-xs tracking-wide text-ink-500 uppercase">{label} return is due</div>
+      <div class="mt-1 text-3xl font-semibold tabular-nums">{formatDate(isoDay(due))}</div>
+      {
+        /* The sentence that makes the date mean something. A nil return is still
+           a return: the penalty for not filing is $50 or 10% of the tax due,
+           whichever is greater, and 10% of nothing is still $50. */
+      }
+      <p class="mt-2 max-w-2xl text-sm text-ink-500">
+        Filing is required every quarter, even with no travel and nothing owed. The penalty for a
+        late or missing return is $50 or 10% of the tax due, whichever is greater.
+      </p>
+    </div>
+    <div class="shrink-0 text-right">
+      {
+        daysLeft < 0 ? (
+          <>
+            <div class="text-4xl font-semibold tabular-nums text-red-700">{-daysLeft}</div>
+            <div class="text-sm font-medium text-red-700">
+              {daysLeft === -1 ? 'day overdue' : 'days overdue'}
+            </div>
+          </>
+        ) : (
+          <>
+            <div
+              class:list={[
+                'text-4xl font-semibold tabular-nums',
+                daysLeft <= 30 ? 'text-amber-800' : '',
+              ]}
+            >
+              {daysLeft}
+            </div>
+            <div
+              class:list={[
+                'text-sm font-medium',
+                daysLeft <= 30 ? 'text-amber-800' : 'text-ink-500',
+              ]}
+            >
+              {daysLeft === 0 ? 'due today' : daysLeft === 1 ? 'day left' : 'days left'}
+            </div>
+          </>
+        )
+      }
+    </div>
+  </div>
+
+  {
+    readError ? (
+      /* THE RETURN IS REPLACED, not annotated. Rendering the tiles at zero under
+         an error banner would put "0 miles · $0.00 owed · complete" on screen
+         for a quarter whose rows simply could not be read — which is the exact
+         picture a genuine nil return paints, and the one wrong answer this page
+         must never give. */
+      <div class="rounded-xl border border-red-200 bg-red-50 p-10 text-center">
+        <p class="font-semibold text-red-800">The {label} return could not be read</p>
+        <p class="mx-auto mt-2 max-w-xl text-sm text-red-700">{readError}</p>
+        <p class="mx-auto mt-2 max-w-xl text-sm text-red-700">
+          No figures are shown, on purpose: an empty screen here would be indistinguishable from a
+          quarter in which the trucks genuinely went nowhere. Reload before filing anything.
+        </p>
+        <a
+          href={quarterHref(period)}
+          class="mt-4 inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-700"
+        >
+          Try again
+        </a>
+      </div>
+    ) : (
+      <>
+        {/* --------------------------------------------------- the loud failures */}
+        {/* NAMED, never counted. "3 jurisdictions are missing a rate" is a
+            sentence nobody can act on; the codes are what she takes to the rate
+            tables. There is no button here to file anyway, and that absence is
+            the feature. */}
+        {result.missingRates.length > 0 && (
+          <div class="mb-5 rounded-xl border border-red-200 bg-red-50 p-5">
+            <p class="font-semibold text-red-800">
+              This return is INCOMPLETE — {result.missingRates.length}{' '}
+              {result.missingRates.length === 1 ? 'jurisdiction has' : 'jurisdictions have'} no tax
+              rate on file
+            </p>
+            <p class="mt-2 max-w-3xl text-sm text-red-700">
+              The trucks ran in{' '}
+              {result.missingRates.map((code, i) => (
+                <>
+                  {i > 0 && ', '}
+                  <span class="font-medium">
+                    {code} ({jurisdictionName(code)})
+                  </span>
+                </>
+              ))}
+              , and we have no rate for {result.missingRates.length === 1 ? 'it' : 'them'} for{' '}
+              {label}. Those miles are known and their gallons are computed below, but the tax on
+              them is not.
+            </p>
+            <p class="mt-2 max-w-3xl text-sm text-red-700">
+              Filing with these lines at zero is a return that is quietly short, and a short return
+              is what an audit finds. The rates are published quarterly by IFTA, Inc. and load into
+              <span class="font-medium"> ifta_rates</span>; until they are in, the net below is a
+              partial figure and not the amount to file.
+            </p>
+          </div>
+        )}
+
+        {milesWithoutFuel && (
+          <div class="mb-5 rounded-xl border border-red-200 bg-red-50 p-5">
+            <p class="font-semibold text-red-800">
+              This return is INCOMPLETE — miles are recorded and no fuel is
+            </p>
+            <p class="mt-2 max-w-3xl text-sm text-red-700">
+              Gallons burned in a jurisdiction are not measured, they are derived from the fleet's
+              average miles per gallon. With no gallons recorded there is no average, so every line
+              below computes zero taxable gallons and the whole return prices at $0.00 on{' '}
+              <span class="font-medium tabular-nums">
+                {result.totalMiles.toLocaleString('en-US')}
+              </span>{' '}
+              miles of travel.
+            </p>
+            <a
+              href={`/app/ifta/fuel?q=${periodIso}`}
+              class="mt-3 inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-700"
+            >
+              Enter the fuel receipts →
+            </a>
+          </div>
+        )}
+
+        {/* The third blocker `quarterlyReturn()` reports, and the only one this
+            page never had a banner for. Both inputs are present, so neither
+            single-sided warning above fires, and every taxable-gallon figure on
+            the return multiplies out to nothing — a fully-priced $0.00 return
+            with nothing on screen arguing with it. */}
+        {mpgUnusable && (
+          <div class="mb-5 rounded-xl border border-red-200 bg-red-50 p-5">
+            <p class="font-semibold text-red-800">
+              This return is INCOMPLETE — the miles and gallons on file give no usable fleet average
+            </p>
+            <p class="mt-2 max-w-3xl text-sm text-red-700">
+              <span class="font-medium tabular-nums">
+                {result.totalMiles.toLocaleString('en-US')}
+              </span>{' '}
+              miles against{' '}
+              <span class="font-medium tabular-nums">{gallons(result.totalGallonsMilli)}</span>{' '}
+              gallons averages out to less than 0.01 mpg, so no taxable gallons can be derived for
+              any jurisdiction and every line below prices at nothing. Usually a gallons figure is
+              in the wrong unit — a price per gallon typed into the gallons box does this.
+            </p>
+            <a
+              href={`/app/ifta/fuel?q=${periodIso}`}
+              class="mt-3 inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-700"
+            >
+              Check the receipts →
+            </a>
+          </div>
+        )}
+
+        {fuelWithoutMiles && (
+          <p class="mb-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            Fuel is recorded for {label} and no miles are. As it stands this return claims credit
+            for tax paid at the pump while reporting that the trucks went nowhere, which is the
+            shape an auditor opens first.{' '}
+            <a href={`/app/ifta/miles?q=${periodIso}`} class="font-medium underline">
+              Enter the jurisdiction miles
+            </a>
+            .
+          </p>
+        )}
+
+        {mpgSuspect && (
+          <p class="mb-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            Fleet average of{' '}
+            <span class="font-medium tabular-nums">{mpg(result.mpgCentis)} mpg</span> is outside
+            what a loaded truck normally returns. Too high usually means receipts are still in the
+            shoebox — which under-reports every jurisdiction at once — and too low usually means a
+            gallons figure was mistyped.
+          </p>
+        )}
+
+        {/* ------------------------------------------------------------- figures */}
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div class={card}>
+            <div class="text-xs tracking-wide text-ink-500 uppercase">Total miles</div>
+            <div class="mt-1 text-3xl font-semibold tabular-nums">
+              {result.totalMiles.toLocaleString('en-US')}
+            </div>
+            <div class="mt-1 text-xs text-ink-500">Every jurisdiction, every truck.</div>
+          </div>
+
+          <div class={card}>
+            <div class="text-xs tracking-wide text-ink-500 uppercase">Total gallons</div>
+            <div class="mt-1 text-3xl font-semibold tabular-nums">
+              {gallons(result.totalGallonsMilli)}
+            </div>
+            {/* Taxed and untaxed alike. The engine burned bulk fuel the same as
+                pump fuel, so it counts toward the average; only the CREDIT side
+                cares whether tax was paid on it. */}
+            <div class="mt-1 text-xs text-ink-500">Bulk fuel included — it was burned too.</div>
+          </div>
+
+          <div class={card}>
+            <div class="text-xs tracking-wide text-ink-500 uppercase">Fleet MPG</div>
+            <div class="mt-1 text-3xl font-semibold tabular-nums">
+              {result.mpgCentis > 0 ? mpg(result.mpgCentis) : <span class="text-ink-300">—</span>}
+            </div>
+            <div class="mt-1 text-xs text-ink-500">
+              One figure for the fleet. Per-truck averages would not sum to the return.
+            </div>
+          </div>
+
+          <div
+            class:list={[
+              card,
+              // The net gets an accent only when the return can actually be
+              // filed. A confident-looking total on an incomplete return is the
+              // thing that gets copied onto a form.
+              incomplete ? 'border-red-200 bg-red-50/40' : '',
+            ]}
+          >
+            <div class="text-xs tracking-wide text-ink-500 uppercase">
+              {incomplete
+                ? 'Partial net — not the filing figure'
+                : result.netCents < 0
+                  ? 'Net credit'
+                  : 'Net owed'}
+            </div>
+            <div
+              class:list={[
+                'mt-1 text-3xl font-semibold tabular-nums',
+                incomplete ? 'text-red-700' : result.netCents < 0 ? 'text-emerald-700' : '',
+              ]}
+            >
+              {formatCents(Math.abs(result.netCents))}
+            </div>
+            <div class="mt-1 text-xs text-ink-500">
+              {incomplete
+                ? 'Covers only the jurisdictions priced below.'
+                : result.netCents < 0
+                  ? 'Owed back to you across the fleet.'
+                  : 'Across every jurisdiction on the return.'}
+            </div>
+          </div>
+        </div>
+
+        {/* ----------------------------------------------------------- the shape */}
+        {/*
+          The flagship, and the case `Diverging` was built for. A quarter is a
+          list of jurisdictions billing you and jurisdictions crediting you, and
+          the question the owner actually has — where is the money going, and is
+          any of it coming back — is invisible in a column of signed numbers he
+          has to read the sign off, row by row.
+
+          It renders ONLY when there is a net figure to draw. `netTaxFigure`
+          refuses the half-entered quarter outright rather than captioning it:
+          fuel in and miles not yet is the normal order of a real quarter and
+          draws as a full green bar against every jurisdiction, and no sentence
+          printed underneath takes a refund back once it has been seen.
+
+          Jurisdictions with no rate on file are NOT on this chart and are named
+          in the coverage note instead. They have miles but no net figure, and
+          the only place a chart could put them is the centre line, where they
+          would read as settled.
+        */}
+        {netChart.items.length > 0 && (
+          <Figure
+            class="mt-6"
+            title="Where the quarter's money goes"
+            subtitle="Tax owed to each jurisdiction, less the tax already paid at the pump there"
+            coverage={netChart.coverage}
+            action={{ href: '#jurisdictions', label: 'The full table' }}
+          >
+            <Diverging
+              items={netChart.items}
+              negativeLabel="Owed back to you"
+              positiveLabel="You owe"
+            />
+            {/* The takeaway, written out, because roughly one man in twelve
+                cannot separate the green half from the red one and this is read
+                on a phone, in a yard, in the sun. */}
+            {netChart.takeaway && <p class="mt-3 text-sm text-ink-500">{netChart.takeaway}</p>}
+          </Figure>
+        )}
+
+
+        {/* ---------------------------------------------------------- the return */}
+        <div id="jurisdictions" class="mt-6 flex flex-wrap items-baseline justify-between gap-3">
+          <h2 class="text-lg font-semibold tracking-tight">Jurisdiction by jurisdiction</h2>
+          <div class="flex flex-wrap gap-4">
+            <a
+              href={`/app/ifta/miles?q=${periodIso}`}
+              class="text-sm font-medium text-brand-600 hover:underline"
+            >
+              Enter miles →
+            </a>
+            <a
+              href={`/app/ifta/fuel?q=${periodIso}`}
+              class="text-sm font-medium text-brand-600 hover:underline"
+            >
+              Fuel receipts →
+            </a>
+          </div>
+        </div>
+
+        {result.lines.length === 0 ? (
+          /* A NIL RETURN IS STILL A RETURN, and it still has the deadline above
+             it. This is not an empty state inviting her to add data — it is a
+             statement that the quarter has nothing in it and must be filed
+             anyway. */
+          <div class="mt-3 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+            <p class="font-medium">
+              {nilReturn
+                ? `Nothing recorded for ${label} — this is a nil return`
+                : `No jurisdictions on the ${label} return yet`}
+            </p>
+            <p class="mx-auto mt-2 max-w-xl text-sm text-ink-500">
+              {nilReturn
+                ? 'A quarter with no travel and no fuel is still filed, and still by the deadline above. If the trucks did run, the miles and receipts have not been entered yet.'
+                : 'Neither the miles nor the fuel for this quarter have reached this screen.'}
+            </p>
+            <div class="mt-4 flex flex-wrap justify-center gap-3">
+              <a
+                href={`/app/ifta/miles?q=${periodIso}`}
+                class="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+              >
+                Enter miles →
+              </a>
+              <a
+                href={`/app/ifta/fuel?q=${periodIso}`}
+                class="rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
+              >
+                Fuel receipts →
+              </a>
+            </div>
+          </div>
+        ) : (
+          <div class="mt-3 overflow-x-auto rounded-xl border border-ink-100 bg-white">
+            <table class="w-full min-w-[56rem] text-sm">
+              <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+                <tr>
+                  <th class="px-4 py-3 font-medium">Jurisdiction</th>
+                  <th class="px-4 py-3 text-right font-medium">Miles</th>
+                  <th class="px-4 py-3 text-right font-medium">Taxable gallons</th>
+                  <th class="px-4 py-3 text-right font-medium">Tax-paid gallons</th>
+                  <th class="px-4 py-3 text-right font-medium">Rate</th>
+                  <th class="px-4 py-3 text-right font-medium">Net owed / (credit)</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-ink-100">
+                {result.lines.map((line) => {
+                  const unknown = line.outcome.kind === 'rate_unknown'
+                  return (
+                    <tr class:list={[unknown ? 'bg-red-50/60' : 'hover:bg-ink-50/60']}>
+                      <td class="px-4 py-3">
+                        <span class="font-medium">{line.jurisdiction}</span>
+                        <span class="ml-2 text-xs text-ink-500">
+                          {jurisdictionName(line.jurisdiction)}
+                        </span>
+                      </td>
+                      <td class="px-4 py-3 text-right tabular-nums">
+                        {line.miles.toLocaleString('en-US')}
+                      </td>
+                      {/* Derived from miles and fleet MPG, never measured. */}
+                      <td class="px-4 py-3 text-right tabular-nums">
+                        {gallons(line.taxableGallonsMilli)}
+                      </td>
+                      {/* Tax-paid purchases ONLY. Bulk gallons are missing from
+                          this column on purpose: claiming them is the classic
+                          audit finding, and they are already counted in the
+                          fleet MPG. */}
+                      <td class="px-4 py-3 text-right tabular-nums">
+                        {gallons(line.purchasedGallonsMilli)}
+                      </td>
+                      <td class="px-4 py-3 text-right tabular-nums">
+                        {line.outcome.kind === 'computed' ? (
+                          rate(line.outcome.rateMills)
+                        ) : (
+                          <span class="font-medium text-red-700">unknown</span>
+                        )}
+                      </td>
+                      <td class="px-4 py-3 text-right tabular-nums">
+                        {line.outcome.kind === 'computed' ? (
+                          <span
+                            class:list={[
+                              'font-medium',
+                              line.outcome.netCents < 0 ? 'text-emerald-700' : '',
+                            ]}
+                          >
+                            {line.outcome.netCents < 0
+                              ? `(${formatCents(-line.outcome.netCents)})`
+                              : formatCents(line.outcome.netCents)}
+                          </span>
+                        ) : (
+                          /* NOT $0.00, and not an em dash either. A blank cell
+                             in a money column reads as nothing owed, which is
+                             the exact lie this outcome exists to prevent. */
+                          <span class="rounded-md bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-800">
+                            no rate on file
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              <tfoot class="border-t border-ink-100">
+                <tr>
+                  <td class="px-4 py-3 font-medium">{incomplete ? 'Partial total' : 'Total'}</td>
+                  <td class="px-4 py-3 text-right font-medium tabular-nums">
+                    {result.totalMiles.toLocaleString('en-US')}
+                  </td>
+                  <td class="px-4 py-3" />
+                  <td class="px-4 py-3" />
+                  <td class="px-4 py-3" />
+                  <td
+                    class:list={[
+                      'px-4 py-3 text-right font-semibold tabular-nums',
+                      incomplete ? 'text-red-700' : result.netCents < 0 ? 'text-emerald-700' : '',
+                    ]}
+                  >
+                    {result.netCents < 0
+                      ? `(${formatCents(-result.netCents)})`
+                      : formatCents(result.netCents)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        )}
+
+        {result.lines.length > 0 && (
+          <p class="mt-3 max-w-3xl text-sm text-ink-500">
+            Taxable gallons are derived, not measured: the fleet's average miles per gallon applied
+            to the miles run in each jurisdiction. That is why a jurisdiction the trucks drove
+            through without buying fuel owes tax, and one where fuel was bought but no miles were
+            run shows a credit.
+          </p>
+        )}
+
+        {/* BELOW the table, not above it. Drawn at 811px on a phone, this chart
+            alone pushed the return itself — the numbers he is here to read and
+            file — most of a screen further down, and it is a ranking of the
+            same miles the table's second column already holds. The net chart
+            above earns its place because it answers a question the table cannot;
+            this one re-sorts an answer the table already gives.
+
+            The input to every figure above it: the tax on a jurisdiction is its
+            miles divided by the fleet average, so the mileage ranking IS the
+            ranking of exposure. Unpriced jurisdictions stay HERE, because their
+            miles are known — it is only the tax on them that is not.
+
+            The subtitle does NOT say "every truck". The coverage note under this
+            chart may be about to say only six of nine reported, and a subtitle
+            claiming the fleet would contradict it two inches higher up. */}
+        {result.totalMiles > 0 && (
+          <Figure
+            class="mt-6"
+            title="Miles by jurisdiction"
+            subtitle={`Miles on file for ${label} — what the taxable gallons are derived from`}
+            coverage={milesChart.coverage}
+            action={{ href: `/app/ifta/miles?q=${periodIso}`, label: 'Enter miles →' }}
+          >
+            {/* The limit is derived, not ten. Unpriced jurisdictions and the
+                ones with no miles entered rank last, and a flat limit would
+                collapse the tail over exactly those rows. */}
+            <Bars items={milesChart.items} limit={milesChart.limit} moreHref="/app/ifta/miles" />
+            {milesChart.takeaway && <p class="mt-3 text-sm text-ink-500">{milesChart.takeaway}</p>}
+          </Figure>
+        )}
+
+        {/*
+          Below the table, not above it, because this is the follow-up question
+          rather than the return. "Is this getting worse" is asked after "what do
+          I owe", and the figure for THIS quarter is already the third tile.
+
+          Two known quarters is the floor. One real column beside four dashed
+          slots is not a trend, it is a sentence — and the tile above already
+          says it.
+        */}
+        {trend.known >= 2 && (
+          <Figure
+            class="mt-6"
+            title="Fleet MPG, quarter by quarter"
+            subtitle="Every taxable-gallon figure above is these miles divided by this number"
+            coverage={trend.coverage}
+          >
+            <Columns columns={trend.columns} axisLabel={`${mpg(mpgCeiling)} mpg`} />
+            {trend.takeaway && <p class="mt-3 text-sm text-ink-500">{trend.takeaway}</p>}
+          </Figure>
+        )}
+      </>
+    )
+  }
+</App>

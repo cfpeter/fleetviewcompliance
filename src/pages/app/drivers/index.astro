@@ -1,0 +1,264 @@
+---
+/**
+ * The driver roster.
+ *
+ * Search and the status filter are plain GET parameters, so a filtered view is a
+ * URL she can bookmark, text to the owner, or reload on one bar of signal in a
+ * yard. Nothing here runs JavaScript.
+ */
+import App from '../../../layouts/App.astro'
+import {
+  DRIVER_STATUSES,
+  formatDate,
+  isDriverStatus,
+  statusPillClass,
+  todayInCalifornia,
+} from '../../../lib/drivers.ts'
+
+const supabase = Astro.locals.supabase!
+
+const params = Astro.url.searchParams
+const q = (params.get('q') ?? '').trim()
+const requested = params.get('status') ?? 'active'
+// Anything unrecognised falls back to active rather than being handed to the
+// database. '?status=' with an empty value is what a browser sends when a hidden
+// input is left blank, and `.eq('status', '')` is a Postgres enum cast error,
+// not an empty result — a 500 on the page she reaches by clearing the search.
+const status = requested === 'all' || isDriverStatus(requested) ? requested : 'active'
+
+/**
+ * PostgREST reads `or=` as a comma-separated list inside brackets, so a comma or
+ * a bracket typed into the search box is not text — it is syntax. "Ramirez, J"
+ * silently became two filters and returned the wrong rows. The two LIKE
+ * wildcards go too: a '%' in the box should look for a percent sign, not match
+ * the entire roster.
+ */
+function searchFilter(term: string): string | null {
+  const safe = term.replace(/[,()%_\\"]/g, ' ').trim()
+  if (!safe) return null
+
+  const parts = [
+    `first_name.ilike.%${safe}%`,
+    `last_name.ilike.%${safe}%`,
+    `cdl_number.ilike.%${safe}%`,
+  ]
+
+  // "juan ramirez" matches neither name column on its own, and typing a full
+  // name into a search box and getting nothing back is the moment she stops
+  // using the box and starts scrolling. Both orders, because half the office
+  // writes surname first.
+  const words = safe.split(/\s+/).filter(Boolean)
+  if (words.length > 1) {
+    const head = words[0]
+    const tail = words.slice(1).join(' ')
+    parts.push(`and(first_name.ilike.%${head}%,last_name.ilike.%${tail}%)`)
+    parts.push(`and(first_name.ilike.%${tail}%,last_name.ilike.%${head}%)`)
+  }
+  return parts.join(',')
+}
+
+let query = supabase
+  .from('drivers')
+  .select('id, first_name, last_name, phone, email, cdl_number, cdl_state, cdl_expires_on, hired_on, status')
+  .order('last_name', { ascending: true })
+  .order('first_name', { ascending: true })
+
+// There is no .eq('carrier_id', ...) anywhere on this page. RLS already limits
+// every row to the signed-in user's carrier, and repeating the check in the
+// query would read as though the policy might not hold — which is how someone
+// eventually "fixes" a bug by loosening the policy instead of the query.
+if (status !== 'all') query = query.eq('status', status)
+const filter = searchFilter(q)
+if (filter) query = query.or(filter)
+
+// The unfiltered count exists so the empty state can tell the truth. "No drivers
+// yet" on a fleet of twelve, all of whom happen to be inactive, is a lie that
+// sends her to the add form to type a driver who is already in here.
+const [{ data: drivers, error }, { count: totalCount }] = await Promise.all([
+  query,
+  supabase.from('drivers').select('*', { count: 'exact', head: true }),
+])
+
+const rows = drivers ?? []
+const notice = params.get('error') ?? (error ? error.message : null)
+
+/** A link that keeps the other filter intact. */
+function withParam(key: string, value: string): string {
+  const next = new URLSearchParams(params)
+  if (value) next.set(key, value)
+  else next.delete(key)
+  const s = next.toString()
+  return `/app/drivers${s ? `?${s}` : ''}`
+}
+
+const tabs = [...DRIVER_STATUSES, { value: 'all', label: 'All' }]
+const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
+const today = todayInCalifornia()
+---
+
+<App title="Drivers" subtitle="Everyone who can be dispatched, and what is on file for them.">
+  {notice && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{notice}</p>}
+
+  <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+    <form method="GET" class="relative flex-1">
+      <svg
+        class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-300"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        aria-hidden="true"
+      >
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-3.5-3.5"></path>
+      </svg>
+      <input
+        type="search"
+        name="q"
+        value={q}
+        placeholder="Search by name or CDL number…"
+        aria-label="Search drivers"
+        class="w-full rounded-xl border border-ink-100 bg-white py-3 pr-4 pl-10 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+      />
+      {
+        /* Carries the current tab through the search, so searching from the
+           Terminated tab does not quietly drop her back to Active. */
+      }
+      {status !== 'active' && <input type="hidden" name="status" value={status} />}
+    </form>
+    <a
+      href="/app/drivers/new"
+      class="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-center font-medium text-white transition hover:bg-brand-700"
+    >
+      Add a driver
+    </a>
+  </div>
+
+  <div class="-mx-4 mb-4 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
+    {
+      tabs.map((t) => (
+        <a
+          href={withParam('status', t.value === 'active' ? '' : t.value)}
+          class:list={[
+            tab,
+            status === t.value
+              ? 'bg-brand-500/10 text-brand-700'
+              : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
+          ]}
+        >
+          {t.label}
+        </a>
+      ))
+    }
+  </div>
+
+  {
+    rows.length === 0 ? (
+      (totalCount ?? 0) === 0 ? (
+        <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+          <p class="font-medium">No drivers yet</p>
+          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+            Add the people you dispatch. A name is enough to start — the dates can follow as the
+            paperwork turns up.
+          </p>
+          <a
+            href="/app/drivers/new"
+            class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+          >
+            Add a driver →
+          </a>
+        </div>
+      ) : (
+        <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+          <p class="font-medium">Nobody matches this view</p>
+          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+            You have <span class="tabular-nums">{totalCount}</span> drivers on file. This search and
+            tab together match none of them.
+          </p>
+          <a
+            href="/app/drivers?status=all"
+            class="mt-4 inline-block rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
+          >
+            Show everyone
+          </a>
+        </div>
+      )
+    ) : (
+      <>
+        <p class="mb-3 text-sm text-ink-500">
+          <span class="tabular-nums">{rows.length}</span>
+          {rows.length === 1 ? ' driver' : ' drivers'}
+        </p>
+
+        <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
+          <table class="w-full min-w-[48rem] text-sm">
+            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+              <tr>
+                <th class="px-4 py-3 font-medium">Driver</th>
+                <th class="px-4 py-3 font-medium">CDL</th>
+                <th class="px-4 py-3 font-medium">CDL expires</th>
+                <th class="px-4 py-3 font-medium">Status</th>
+                <th class="px-4 py-3 font-medium">Hired</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink-100">
+              {rows.map((d) => (
+                <tr class="hover:bg-ink-50/60">
+                  <td class="px-4 py-3">
+                    <a
+                      href={`/app/drivers/${d.id}`}
+                      class="font-medium hover:text-brand-600 hover:underline"
+                    >
+                      {d.last_name}, {d.first_name}
+                    </a>
+                    {(d.phone || d.email) && (
+                      <div class="text-xs text-ink-300 tabular-nums">{d.phone || d.email}</div>
+                    )}
+                  </td>
+                  <td class="px-4 py-3">
+                    {d.cdl_number ? (
+                      <span class="tabular-nums">{d.cdl_number}</span>
+                    ) : (
+                      <span class="text-ink-300">—</span>
+                    )}
+                    {d.cdl_state && <div class="text-xs text-ink-300">{d.cdl_state}</div>}
+                  </td>
+                  <td class="px-4 py-3 whitespace-nowrap tabular-nums">
+                    {
+                      /* Red for a date already gone, and nothing at all for a
+                         date in the future. This is a plain string comparison on
+                         two ISO dates, not the rule engine — so it may only ever
+                         raise alarm, never say "fine". A blank here is unknown,
+                         which is not the same as compliant, and the deadline
+                         engine is what will eventually say so. */
+                    }
+                    {d.cdl_expires_on ? (
+                      <span class:list={[d.cdl_expires_on < today ? 'font-medium text-red-700' : '']}>
+                        {formatDate(d.cdl_expires_on)}
+                      </span>
+                    ) : (
+                      <span class="text-ink-300">—</span>
+                    )}
+                  </td>
+                  <td class="px-4 py-3">
+                    <span
+                      class:list={[
+                        'rounded-md px-2 py-0.5 text-xs font-medium',
+                        statusPillClass(d.status),
+                      ]}
+                    >
+                      {d.status}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 whitespace-nowrap tabular-nums">
+                    {d.hired_on ? formatDate(d.hired_on) : <span class="text-ink-300">—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </>
+    )
+  }
+</App>

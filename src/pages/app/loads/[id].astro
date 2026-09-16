@@ -1,0 +1,874 @@
+---
+/**
+ * One load: the paperwork, where the truck is, where the money is, and what
+ * went wrong.
+ *
+ * FOUR FORMS, FOUR INTENTS, AND THEY DO NOT OVERLAP.
+ *
+ * `save_load` writes the record and touches neither status column. `set_status`
+ * writes `status` and nothing else. `set_billing` writes `billing` and nothing
+ * else. `set_exception` writes `exception` and nothing else. That separation is
+ * the entire design of 0009_loads.sql expressed as four buttons, and it buys two
+ * things that are easy to lose:
+ *
+ *  1. A load can be delivered and not ready to invoice at the same time, because
+ *     nothing here advances one column from the other. That is the normal state
+ *     of a delivered load whose POD has not been scanned yet, not an error.
+ *  2. The big form cannot silently roll the status back. She opens the load at
+ *     9am, the driver rings at 11 and someone else moves it to Delivered, she
+ *     saves her half-finished edit at noon — and because `save_load` never
+ *     carries a status field, the delivery survives.
+ *
+ * Every exit is a 303. A replayed POST on this page would not just duplicate a
+ * row, it would re-apply a status the dispatcher has since moved on from.
+ */
+import App from '../../../layouts/App.astro'
+import {
+  BILLING_STATUSES,
+  EQUIPMENT_TYPES,
+  LOAD_EXCEPTIONS,
+  LOAD_STATUSES,
+  billingPillClass,
+  billingStatusLabel,
+  centsToInput,
+  exceptionLabel,
+  exceptionPillClass,
+  formatCents,
+  isBillingStatus,
+  isLoadException,
+  isLoadStatus,
+  laneFromStops,
+  loadLabel,
+  loadStatusLabel,
+  matchCustomerName,
+  parseMoneyToCents,
+  parseOptionalInt,
+  statusPillClass,
+  textOrNull,
+  totalRateCents,
+} from '../../../lib/loads.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+const id = Astro.params.id ?? ''
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function back(params: string): Response {
+  return Astro.redirect(`/app/loads/${id}${params ? `?${params}` : ''}`, 303)
+}
+
+function fail(message: string): Response {
+  return back(`error=${encodeURIComponent(message)}`)
+}
+
+/** Back to the board, for every case where this load is not ours to show. */
+function toBoard(message: string): Response {
+  return Astro.redirect(`/app/loads?error=${encodeURIComponent(message)}`, 303)
+}
+
+const NOT_YOURS = 'That load is not on your board.'
+
+// A hand-edited URL like /app/loads/abc is not a missing row, it is a failed
+// uuid cast — Postgres raises, and without this check the dispatcher gets
+// "invalid input syntax for type uuid" across the top of her screen. Checked
+// here rather than swallowing the error later, so a REAL database failure still
+// reaches her as a real database failure instead of "no such load".
+if (!UUID.test(id)) return toBoard(NOT_YOURS)
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  /**
+   * An UPDATE that matches nothing is not an error in Postgres, and RLS makes
+   * another carrier's load match nothing. Without checking the returned rows,
+   * every one of these handlers would report a cheerful "Saved." for a load that
+   * does not exist. `.select('id')` is what makes the difference visible.
+   */
+  async function patch(values: Record<string, unknown>): Promise<Response | null> {
+    const { data, error } = await supabase
+      .from('loads')
+      .update(values)
+      // No carrier_id in the filter and none in the patch. RLS makes another
+      // carrier's load invisible to this statement, so the worst an edited URL
+      // achieves is matching zero rows — and leaving carrier_id out of the patch
+      // is what stops anyone moving a load into a different tenancy.
+      .eq('id', id)
+      .select('id')
+    if (error) return fail(error.message)
+    if (!data || data.length === 0) return toBoard(NOT_YOURS)
+    return null
+  }
+
+  if (intent === 'set_status') {
+    const requested = String(form.get('status') ?? '')
+    // Guarded rather than passed through: an unrecognised value reaches Postgres
+    // as `invalid input value for enum load_status`, which is a 500 in place of
+    // a status change.
+    if (!isLoadStatus(requested)) return fail('That is not a status we recognise.')
+
+    /**
+     * ONLY `status`. Not `billing`, not `exception`.
+     *
+     * The tempting line — "when it goes to pod_received, set billing to
+     * ready_to_invoice" — is the bug this schema exists to prevent. It is right
+     * about four loads in five and wrong about the ones that matter: the load
+     * still missing a lumper receipt, the one the broker wants a scale ticket
+     * for, the one already invoiced early against a signed BOL. Each of those
+     * gets quietly reset by a helpful rule, and what she sees afterwards is an
+     * invoice list that does not match the money.
+     *
+     * Clearing the exception here is equally wrong: a load moving from
+     * at_shipper to loaded is still the load that sat there four hours, and the
+     * detention claim is still owed.
+     */
+    const failed = await patch({ status: requested })
+    if (failed) return failed
+    return back(`status=${encodeURIComponent(requested)}`)
+  }
+
+  if (intent === 'set_billing') {
+    const requested = String(form.get('billing') ?? '')
+    if (!isBillingStatus(requested)) return fail('That is not a billing status we recognise.')
+    // Only `billing`. Moving the money does not move the truck: a load can be
+    // invoiced off a signed BOL while it is still in_transit on the next leg.
+    const failed = await patch({ billing: requested })
+    if (failed) return failed
+    return back(`billing=${encodeURIComponent(requested)}`)
+  }
+
+  if (intent === 'set_exception') {
+    const requested = String(form.get('exception') ?? '')
+    // '' is the "no exception" option and means NULL, which is a real answer —
+    // the detention was resolved — and the only way to clear one.
+    if (requested !== '' && !isLoadException(requested)) {
+      return fail('That is not an exception we recognise.')
+    }
+    /**
+     * The exception is recorded ALONGSIDE the status, never instead of it.
+     *
+     * There is deliberately no `status` in this patch. A detained load is still
+     * at_shipper; a broken-down load is still in_transit. Overwriting the status
+     * with the exception is how a dispatcher loses the answer to "where is my
+     * truck" at the exact moment she needs it to make a phone call.
+     */
+    const failed = await patch({ exception: requested === '' ? null : requested })
+    if (failed) return failed
+    return back(`exception=${encodeURIComponent(requested || 'none')}`)
+  }
+
+  if (intent === 'save_load') {
+    /**
+     * Defence in depth against a half-submitted form.
+     *
+     * The record form is the only thing on this page that carries
+     * `broker_reference`, and a submission without it would otherwise be read as
+     * "set every one of these fields to blank" — wiping a rate confirmation in
+     * one click. This is not theoretical: a disabled submit button is excluded
+     * from form data, which is exactly what a busy-state script does.
+     */
+    if (!form.has('broker_reference')) {
+      return fail('That submission did not include the load fields — nothing was changed.')
+    }
+
+    const loadNumber = textOrNull(form.get('load_number'))
+    const brokerReference = textOrNull(form.get('broker_reference'))
+    if (!loadNumber && !brokerReference) {
+      return fail(
+        'Keep at least one of the two numbers — ours or the broker’s. Without one the load cannot be searched for.',
+      )
+    }
+
+    const weight = parseOptionalInt(form.get('weight_lbs'), {
+      label: 'Weight',
+      min: 1,
+      max: 250_000,
+    })
+    if (!weight.ok) return fail(weight.message)
+
+    const pieces = parseOptionalInt(form.get('pieces'), { label: 'Pieces', min: 1, max: 100_000 })
+    if (!pieces.ok) return fail(pieces.message)
+
+    // Reefer loads run below zero, so the minimum here is genuinely negative.
+    // A -20°F setpoint typed into a field that refuses it is a field she stops
+    // using, and the setpoint then lives only in the driver's head.
+    const temperature = parseOptionalInt(form.get('temperature_f'), {
+      label: 'Temperature',
+      min: -60,
+      max: 120,
+    })
+    if (!temperature.ok) return fail(temperature.message)
+
+    // 0 free hours is a real term and must survive; blank means the rate
+    // confirmation did not say, which is a different fact and stays NULL.
+    const freePickup = parseOptionalInt(form.get('free_hours_pickup'), {
+      label: 'Free hours at pickup',
+      min: 0,
+      max: 72,
+    })
+    if (!freePickup.ok) return fail(freePickup.message)
+
+    const freeDelivery = parseOptionalInt(form.get('free_hours_delivery'), {
+      label: 'Free hours at delivery',
+      min: 0,
+      max: 72,
+    })
+    if (!freeDelivery.ok) return fail(freeDelivery.message)
+
+    const linehaul = parseMoneyToCents(form.get('linehaul'), { label: 'Linehaul rate' })
+    if (!linehaul.ok) return fail(linehaul.message)
+
+    const fuel = parseMoneyToCents(form.get('fuel_surcharge'), { label: 'Fuel surcharge' })
+    if (!fuel.ok) return fail(fuel.message)
+
+    // Negative allowed here alone: a lumper or an advance comes off the rate
+    // confirmation as a deduction, and a total that cannot go down never matches
+    // the cheque.
+    const accessorials = parseMoneyToCents(form.get('accessorials'), {
+      label: 'Accessorials',
+      allowNegative: true,
+    })
+    if (!accessorials.ok) return fail(accessorials.message)
+
+    const detentionRate = parseMoneyToCents(form.get('detention_rate'), { label: 'Detention rate' })
+    if (!detentionRate.ok) return fail(detentionRate.message)
+
+    /**
+     * Pre-approval is THREE answers, not a checkbox, and that is the difference
+     * between a paid detention claim and an unpaid one.
+     *
+     * NULL is "the rate confirmation has not been read that far". FALSE is "it
+     * says nothing is needed — just sit and bill". TRUE is "call before the free
+     * hours expire or none of it is billable". A checkbox can only say TRUE or
+     * FALSE, and its unticked state would assert the middle answer on every load
+     * anyone typed in a hurry, which is the assertion that costs the money.
+     */
+    const preapprovalRaw = String(form.get('detention_requires_preapproval') ?? '')
+    const preapproval =
+      preapprovalRaw === 'yes' ? true : preapprovalRaw === 'no' ? false : null
+
+    // The customer, resolved the same way the create form resolves it: an
+    // existing record wins, a typed name is matched before it is inserted.
+    let customerId: string | null = null
+    const chosen = String(form.get('customer_id') ?? '').trim()
+    const typedName = textOrNull(form.get('customer_name'))
+
+    if (chosen) {
+      if (!UUID.test(chosen)) return fail('That customer could not be read. Pick it again.')
+      customerId = chosen
+    } else if (typedName) {
+      const { data: existing, error: lookupError } = await supabase
+        .from('customers')
+        .select('id, name')
+      if (lookupError) return fail(lookupError.message)
+
+      const hit = matchCustomerName(existing, typedName)
+      if (hit) {
+        customerId = hit
+      } else {
+        const { data: created, error: createError } = await supabase
+          .from('customers')
+          // carrier_id explicitly. RLS checks the column but does not supply it,
+          // and it is NOT NULL with no default.
+          .insert({ carrier_id: carrierId, name: typedName })
+          .select('id')
+          .single()
+        if (createError || !created) {
+          return fail(createError?.message ?? 'That customer could not be saved.')
+        }
+        customerId = created.id
+      }
+    }
+
+    const failed = await patch({
+      load_number: loadNumber,
+      broker_reference: brokerReference,
+      customer_id: customerId,
+      equipment_type: textOrNull(form.get('equipment_type')),
+      commodity: textOrNull(form.get('commodity')),
+      weight_lbs: weight.value,
+      pieces: pieces.value,
+      temperature_f: temperature.value,
+      // `form.has`, not a ternary on `form.get`: an unticked checkbox is absent
+      // from the form data entirely, and both of these columns are NOT NULL
+      // DEFAULT false — so unticked genuinely is false here, unlike the
+      // pre-approval question below, where absence means "not stated".
+      hazmat: form.has('hazmat'),
+      linehaul_cents: linehaul.value,
+      fuel_surcharge_cents: fuel.value,
+      accessorials_cents: accessorials.value,
+      free_hours_pickup: freePickup.value,
+      free_hours_delivery: freeDelivery.value,
+      detention_rate_cents: detentionRate.value,
+      detention_requires_preapproval: preapproval,
+      factored: form.has('factored'),
+      notes: textOrNull(form.get('notes')),
+      // No `status`, no `billing`, no `exception`. See the file header.
+    })
+    if (failed) return failed
+    return back('saved=1')
+  }
+
+  // An unrecognised intent is a bug or a crafted post; either way it must not
+  // fall through and render as though this were a GET.
+  return back('')
+}
+
+// --- GET ---------------------------------------------------------------------
+
+const { data: load, error: loadError } = await supabase
+  .from('loads')
+  .select(
+    'id, load_number, broker_reference, customer_id, status, exception, billing, linehaul_cents, fuel_surcharge_cents, accessorials_cents, equipment_type, commodity, weight_lbs, pieces, temperature_f, hazmat, free_hours_pickup, free_hours_delivery, detention_rate_cents, detention_requires_preapproval, factored, notes, created_at',
+  )
+  .eq('id', id)
+  .maybeSingle()
+
+if (loadError) return toBoard(loadError.message)
+// maybeSingle() returns null both for "no such id" and for "belongs to another
+// carrier", because RLS makes the second one look exactly like the first. That
+// is the point: this page cannot be used to find out whether a load exists
+// somewhere else on the platform.
+if (!load) return toBoard(NOT_YOURS)
+
+const [{ data: stopRows }, { data: customerRows }] = await Promise.all([
+  supabase
+    .from('load_stops')
+    .select('id, sequence, stop_type, company_name, city, state')
+    .eq('load_id', id)
+    .order('sequence', { ascending: true }),
+  supabase.from('customers').select('id, name').order('name', { ascending: true }),
+])
+
+const stops = (stopRows ?? []) as {
+  id: string
+  sequence: number
+  stop_type: string
+  company_name: string | null
+  city: string | null
+  state: string | null
+}[]
+const customers = (customerRows ?? []) as { id: string; name: string | null }[]
+
+const lane = laneFromStops(stops)
+const total = totalRateCents(load)
+
+const params = Astro.url.searchParams
+const error = params.get('error')
+const added = params.get('added') === '1'
+const saved = params.get('saved') === '1'
+const statusMoved = params.get('status')
+const billingMoved = params.get('billing')
+const exceptionMoved = params.get('exception')
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const moneyWrap =
+  'mt-1 flex items-center rounded-lg border border-ink-100 bg-white focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20'
+const moneyInput = 'w-full bg-transparent px-2 py-2 text-base tabular-nums outline-none'
+const pill = 'rounded-md px-2 py-0.5 text-xs font-medium'
+const smallButton =
+  'mt-3 w-full rounded-lg bg-ink-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-ink-700'
+
+/** The subtitle says the lane when we know it, and says so plainly when we do not. */
+const subtitle = lane.origin
+  ? `${lane.origin} → ${lane.destination ?? 'no delivery stop yet'}`
+  : 'No stops entered yet'
+---
+
+<App title={loadLabel(load)} subtitle={subtitle}>
+  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {
+    added && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Load added. It is booked and not ready to invoice — move each of those separately as the
+        day goes on.
+      </p>
+    )
+  }
+  {saved && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Saved.</p>}
+  {
+    statusMoved && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Moved to {loadStatusLabel(statusMoved)}. Billing was not touched.
+      </p>
+    )
+  }
+  {
+    billingMoved && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Billing moved to {billingStatusLabel(billingMoved)}. The load still says{' '}
+        {loadStatusLabel(load.status)}.
+      </p>
+    )
+  }
+  {
+    exceptionMoved &&
+      (exceptionMoved === 'none' ? (
+        <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          Exception cleared. The load is still {loadStatusLabel(load.status)}.
+        </p>
+      ) : (
+        <p class="mb-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          Flagged as {exceptionLabel(exceptionMoved)}. The load is still{' '}
+          {loadStatusLabel(load.status)} — the exception sits beside the status, it does not
+          replace it.
+        </p>
+      ))
+  }
+
+  {
+    /* The broker's reference, at the top, in full. It is the number she is
+       holding, and the header above shows our load number when we have one —
+       so without this line the load she came here to check is identified by a
+       number that appears nowhere on her desk. */
+  }
+  <div class="mb-6 flex flex-wrap items-center gap-x-4 gap-y-2">
+    <div class="flex items-baseline gap-2">
+      <span class="text-xs tracking-wide text-ink-500 uppercase">Broker ref</span>
+      <span class="text-lg font-semibold tracking-tight tabular-nums">
+        {load.broker_reference ?? <span class="font-normal text-ink-300">none on file</span>}
+      </span>
+    </div>
+    <div class="flex flex-wrap items-center gap-1">
+      <span class:list={[pill, statusPillClass(load.status)]}>
+        {loadStatusLabel(load.status)}
+      </span>
+      {
+        load.exception && (
+          <span class:list={[pill, exceptionPillClass(load.exception)]}>
+            {exceptionLabel(load.exception)}
+          </span>
+        )
+      }
+      <span class:list={[pill, billingPillClass(load.billing)]}>
+        {billingStatusLabel(load.billing)}
+      </span>
+    </div>
+  </div>
+
+  <div class="grid gap-6 lg:grid-cols-[1fr_minmax(0,22rem)]">
+    <form method="POST" class="space-y-4">
+      <div class={card}>
+        <h2 class="text-lg font-semibold tracking-tight">Reference numbers</h2>
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <label class="block">
+            <span class="text-sm font-medium">Broker reference</span>
+            <input
+              type="text"
+              name="broker_reference"
+              value={load.broker_reference ?? ''}
+              class={`${field} tabular-nums`}
+            />
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">
+              Load number <span class="font-normal text-ink-300">(ours)</span>
+            </span>
+            <input
+              type="text"
+              name="load_number"
+              value={load.load_number ?? ''}
+              class={`${field} tabular-nums`}
+            />
+          </label>
+        </div>
+
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <label class="block">
+            <span class="text-sm font-medium">Customer</span>
+            <select name="customer_id" class={field}>
+              <option value="">—</option>
+              {
+                customers.map((c) => (
+                  <option value={c.id} selected={load.customer_id === c.id}>
+                    {c.name}
+                  </option>
+                ))
+              }
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">…or type a new one</span>
+            <input type="text" name="customer_name" placeholder="e.g. TQL" class={field} />
+            <span class="mt-1 block text-xs text-ink-500">
+              Only used when the dropdown is left blank. An existing name is matched rather than
+              duplicated.
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class={card}>
+        <h2 class="text-lg font-semibold tracking-tight">Freight</h2>
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <label class="block">
+            <span class="text-sm font-medium">Equipment</span>
+            <input
+              type="text"
+              name="equipment_type"
+              value={load.equipment_type ?? ''}
+              list="equipment-types"
+              class={field}
+            />
+            <datalist id="equipment-types">
+              {EQUIPMENT_TYPES.map((t) => <option value={t}></option>)}
+            </datalist>
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">Commodity</span>
+            <input type="text" name="commodity" value={load.commodity ?? ''} class={field} />
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">Weight (lb)</span>
+            <input
+              type="text"
+              inputmode="numeric"
+              name="weight_lbs"
+              value={load.weight_lbs ?? ''}
+              class={`${field} tabular-nums`}
+            />
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">Pieces</span>
+            <input
+              type="text"
+              inputmode="numeric"
+              name="pieces"
+              value={load.pieces ?? ''}
+              class={`${field} tabular-nums`}
+            />
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">
+              Temperature (°F) <span class="font-normal text-ink-300">(reefer)</span>
+            </span>
+            <input
+              type="text"
+              inputmode="numeric"
+              name="temperature_f"
+              value={load.temperature_f ?? ''}
+              class={`${field} tabular-nums`}
+            />
+          </label>
+          <label class="flex items-start gap-3 sm:mt-7">
+            <input
+              type="checkbox"
+              name="hazmat"
+              value="1"
+              checked={load.hazmat === true}
+              class="mt-0.5 size-4 rounded border-ink-300"
+            />
+            <span>
+              <span class="text-sm font-medium">Hazmat</span>
+              <span class="mt-1 block text-xs text-ink-500">
+                A placarded load carries its own inspection and paperwork rules at any weight.
+              </span>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class={card}>
+        <h2 class="text-lg font-semibold tracking-tight">Rate</h2>
+        <p class="mt-1 text-sm text-ink-500">
+          Dollars in, cents stored. What you type here is what the invoice will say.
+        </p>
+        <div class="mt-4 grid gap-4 sm:grid-cols-3">
+          <label class="block">
+            <span class="text-sm font-medium">Linehaul</span>
+            <div class={moneyWrap}>
+              <span class="pl-3 text-ink-300">$</span>
+              <input
+                type="text"
+                name="linehaul"
+                value={centsToInput(load.linehaul_cents)}
+                inputmode="decimal"
+                class={moneyInput}
+              />
+            </div>
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">Fuel surcharge</span>
+            <div class={moneyWrap}>
+              <span class="pl-3 text-ink-300">$</span>
+              <input
+                type="text"
+                name="fuel_surcharge"
+                value={centsToInput(load.fuel_surcharge_cents)}
+                inputmode="decimal"
+                class={moneyInput}
+              />
+            </div>
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">Accessorials</span>
+            <div class={moneyWrap}>
+              <span class="pl-3 text-ink-300">$</span>
+              <input
+                type="text"
+                name="accessorials"
+                value={centsToInput(load.accessorials_cents)}
+                inputmode="decimal"
+                class={moneyInput}
+              />
+            </div>
+            <span class="mt-1 block text-xs text-ink-500">
+              A deduction goes in as a negative.
+            </span>
+          </label>
+        </div>
+
+        <label class="mt-4 flex items-start gap-3">
+          <input
+            type="checkbox"
+            name="factored"
+            value="1"
+            checked={load.factored === true}
+            class="mt-0.5 size-4 rounded border-ink-300"
+          />
+          <span>
+            <span class="text-sm font-medium">Factored</span>
+            <span class="mt-1 block text-xs text-ink-500">
+              This invoice goes to the factoring company rather than straight to the broker.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div class={card}>
+        <h2 class="text-lg font-semibold tracking-tight">Detention terms</h2>
+        <p class="mt-1 text-sm text-ink-500">
+          As numbers, off the rate confirmation, rather than a sentence in an attachment nobody
+          opens while the driver is sitting at a dock.
+        </p>
+        <div class="mt-4 grid gap-4 sm:grid-cols-3">
+          <label class="block">
+            <span class="text-sm font-medium">Free hours at pickup</span>
+            <input
+              type="text"
+              inputmode="numeric"
+              name="free_hours_pickup"
+              value={load.free_hours_pickup ?? ''}
+              class={`${field} tabular-nums`}
+            />
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">Free hours at delivery</span>
+            <input
+              type="text"
+              inputmode="numeric"
+              name="free_hours_delivery"
+              value={load.free_hours_delivery ?? ''}
+              class={`${field} tabular-nums`}
+            />
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">Detention rate (per hour)</span>
+            <div class={moneyWrap}>
+              <span class="pl-3 text-ink-300">$</span>
+              <input
+                type="text"
+                name="detention_rate"
+                value={centsToInput(load.detention_rate_cents)}
+                inputmode="decimal"
+                class={moneyInput}
+              />
+            </div>
+          </label>
+        </div>
+
+        <label class="mt-4 block">
+          <span class="text-sm font-medium">Does the broker have to pre-approve detention?</span>
+          {
+            /* Three answers, not a checkbox. "Not stated" is the honest default
+               for a load typed in a hurry, and it is NOT the same as "no" — the
+               difference is whether the driver has to phone before the free
+               hours run out, which is the difference between a paid claim and
+               an unpaid one. */
+          }
+          <select name="detention_requires_preapproval" class={field}>
+            <option value="" selected={load.detention_requires_preapproval === null}>
+              Not stated — check the rate confirmation
+            </option>
+            <option value="yes" selected={load.detention_requires_preapproval === true}>
+              Yes — the driver must call before the free hours run out
+            </option>
+            <option value="no" selected={load.detention_requires_preapproval === false}>
+              No — detention accrues without a call
+            </option>
+          </select>
+        </label>
+      </div>
+
+      <div class={card}>
+        <h2 class="text-lg font-semibold tracking-tight">Notes</h2>
+        <textarea name="notes" rows="4" class={field}>{load.notes ?? ''}</textarea>
+        <p class="mt-1 text-xs text-ink-500">
+          Anything the fields above have no box for — a gate code, who signed, what the broker
+          promised on the phone.
+        </p>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+        <button
+          type="submit"
+          name="intent"
+          value="save_load"
+          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+        >
+          Save load
+        </button>
+        <a href="/app/loads" class="text-sm font-medium text-brand-600 hover:underline">
+          Back to loads
+        </a>
+        <span class="text-xs text-ink-300">
+          This form does not touch the status, the billing or the exception.
+        </span>
+      </div>
+    </form>
+
+    <div class="space-y-4">
+      {
+        /* THREE SEPARATE FORMS, on purpose.
+           Three <select>s inside one form with one Save button would post all
+           three columns on every press, which quietly re-asserts two values she
+           did not look at — and re-asserting a stale status is how a delivery
+           gets undone. One button, one column. */
+      }
+      <form method="POST" class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">Where the truck is</div>
+        <select name="status" class={field}>
+          {
+            LOAD_STATUSES.map((s) => (
+              <option value={s.value} selected={load.status === s.value}>
+                {s.label}
+              </option>
+            ))
+          }
+        </select>
+        <button type="submit" name="intent" value="set_status" class={smallButton}>
+          Move status
+        </button>
+        <p class="mt-2 text-xs text-ink-500">
+          Moving this never changes the billing. A delivered load that is not ready to invoice is
+          the normal state of a load whose POD has not come in yet.
+        </p>
+      </form>
+
+      <form method="POST" class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">Exception</div>
+        <select name="exception" class={field}>
+          <option value="" selected={!load.exception}>No exception</option>
+          {
+            LOAD_EXCEPTIONS.map((e) => (
+              <option value={e.value} selected={load.exception === e.value}>
+                {e.label}
+              </option>
+            ))
+          }
+        </select>
+        <button type="submit" name="intent" value="set_exception" class={smallButton}>
+          Record exception
+        </button>
+        <p class="mt-2 text-xs text-ink-500">
+          This sits beside the status, it does not replace it. A detained load is still at the
+          shipper, which is where you would go looking for the truck.
+        </p>
+        {
+          load.exception === 'detained' && (
+            <p class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              {load.detention_requires_preapproval === true
+                ? 'This broker requires pre-approval. The claim is only billable if the driver called before the free hours ran out.'
+                : load.detention_requires_preapproval === null
+                  ? 'Nobody has recorded whether this broker requires pre-approval. Check the rate confirmation before the free hours run out — after that it is too late to ask.'
+                  : 'No pre-approval needed on this one. Detention accrues from the end of the free hours.'}
+            </p>
+          )
+        }
+      </form>
+
+      <form method="POST" class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">Where the money is</div>
+        <select name="billing" class={field}>
+          {
+            BILLING_STATUSES.map((b) => (
+              <option value={b.value} selected={load.billing === b.value}>
+                {b.label}
+              </option>
+            ))
+          }
+        </select>
+        <button type="submit" name="intent" value="set_billing" class={smallButton}>
+          Move billing
+        </button>
+        <p class="mt-2 text-xs text-ink-500">
+          Independent of where the truck is. An invoice can go out against a signed BOL while the
+          truck is still on the road.
+        </p>
+      </form>
+
+      <div class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">Rate</div>
+        <div class="mt-1 text-3xl font-semibold tabular-nums">{formatCents(total)}</div>
+        <dl class="mt-3 divide-y divide-ink-100 text-sm">
+          <div class="flex justify-between gap-4 py-2">
+            <dt class="text-ink-500">Linehaul</dt>
+            <dd class="text-right tabular-nums">{formatCents(load.linehaul_cents)}</dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2">
+            <dt class="text-ink-500">Fuel surcharge</dt>
+            <dd class="text-right tabular-nums">{formatCents(load.fuel_surcharge_cents)}</dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2">
+            <dt class="text-ink-500">Accessorials</dt>
+            <dd class="text-right tabular-nums">{formatCents(load.accessorials_cents)}</dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2">
+            <dt class="text-ink-500">Detention</dt>
+            <dd class="text-right tabular-nums">
+              {load.detention_rate_cents === null ? (
+                <span class="text-ink-300">—</span>
+              ) : (
+                `${formatCents(load.detention_rate_cents)}/hr`
+              )}
+            </dd>
+          </div>
+        </dl>
+        <p class="mt-2 text-xs text-ink-500">
+          An em dash is a rate nobody has typed yet, which is not the same as zero.
+        </p>
+      </div>
+
+      <div class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">Stops</div>
+        {
+          stops.length === 0 ? (
+            <p class="mt-2 text-sm text-ink-500">
+              None entered yet, so this load has no lane and no detention clock.
+            </p>
+          ) : (
+            <ol class="mt-2 divide-y divide-ink-100 text-sm">
+              {stops.map((s) => (
+                <li class="flex items-baseline justify-between gap-3 py-2">
+                  <span class="min-w-0">
+                    <span class="tabular-nums text-ink-300">{s.sequence}</span>{' '}
+                    <span class="font-medium">
+                      {[s.city, s.state].filter(Boolean).join(', ') || s.company_name || '—'}
+                    </span>
+                    {s.company_name && [s.city, s.state].filter(Boolean).length > 0 && (
+                      <span class="block text-xs text-ink-300">{s.company_name}</span>
+                    )}
+                  </span>
+                  <span class="shrink-0 text-xs text-ink-500">{s.stop_type}</span>
+                </li>
+              ))}
+            </ol>
+          )
+        }
+      </div>
+    </div>
+  </div>
+</App>

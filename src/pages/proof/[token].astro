@@ -1,0 +1,340 @@
+---
+/**
+ * The page a broker or an underwriter opens. No account, no session.
+ *
+ * The token IS the credential, so everything is arranged so that this page
+ * cannot read more than the token allows even if this file is wrong. Content
+ * comes from four SECURITY DEFINER functions that each take THE TOKEN AND
+ * NOTHING ELSE — scope lives in their WHERE clauses, in the database. A function
+ * taking (token, driver_id) could be pointed at any driver by guessing ids;
+ * these cannot be pointed anywhere at all.
+ *
+ * See supabase/migrations/0013_share_links.sql and 0014_share_content.sql, and
+ * tests/share-scope.test.ts which proves the scoping as the real `anon` role.
+ */
+import Public from '../../layouts/Public.astro'
+import { lookupAuthority, lookupCarrier } from '../../lib/fmcsa.ts'
+import { assembleDqf, gaps, summarise, type ItemState } from '../../lib/proof/dqf.ts'
+import { evaluate, type EvaluationSubject } from '../../lib/rules/index.ts'
+import { anonClient } from '../../lib/supabase/server.ts'
+
+const { token = '' } = Astro.params
+const db = anonClient()
+
+const { data: resolved } = await db.rpc('resolve_share_token', { p_token: token })
+const link = (Array.isArray(resolved) ? resolved[0] : resolved) as
+  | { carrier_id: string; scope: string; subject_id: string | null; expires_at: string }
+  | undefined
+
+// A dead link says one thing, and only one thing.
+//
+// It deliberately does NOT distinguish "never existed" from "revoked" from
+// "expired". That difference is information about the carrier — that they once
+// shared something and then withdrew it — and whoever is holding a dead link has
+// not earned it.
+if (!link) Astro.response.status = 404
+
+const observedAt = new Date()
+
+let carrier: { legal_name?: string; dba_name?: string; dot_number?: string } | undefined
+let driver: { id: string; first_name: string; last_name: string; cdl_number?: string; cdl_state?: string; cdl_expires_on?: string } | undefined
+let counts: { active_drivers: number; power_units: number; trailers: number } | undefined
+let anchorRows: { subject_type: string; subject_id: string | null; anchor_key: string; occurred_on: string }[] = []
+let authority: Awaited<ReturnType<typeof lookupAuthority>> | undefined
+
+if (link) {
+  // Recorded separately from resolution, so a failed render cannot inflate the
+  // count. The owner's question is "did they open it", not "did it work".
+  await db.rpc('record_share_view', { p_token: token }).then(undefined, () => undefined)
+
+  const [c, a] = await Promise.all([
+    db.rpc('share_carrier', { p_token: token }),
+    db.rpc('share_anchors', { p_token: token }),
+  ])
+  carrier = (Array.isArray(c.data) ? c.data[0] : c.data) ?? undefined
+  anchorRows = (a.data ?? []) as typeof anchorRows
+
+  if (link.scope === 'driver_file') {
+    const d = await db.rpc('share_driver', { p_token: token })
+    driver = (Array.isArray(d.data) ? d.data[0] : d.data) ?? undefined
+  } else {
+    const f = await db.rpc('share_fleet_counts', { p_token: token })
+    counts = (Array.isArray(f.data) ? f.data[0] : f.data) ?? undefined
+
+    // The outward link is what makes this page credible, so the federal record
+    // is fetched live rather than repeated from our own copy. Failure-tolerant:
+    // a slow FMCSA must not stop the page rendering.
+    if (carrier?.dot_number) {
+      authority = await lookupAuthority(carrier.dot_number).catch(() => ({
+        state: 'error' as const,
+        message: 'unreachable',
+      }))
+    }
+  }
+}
+
+const parseDate = (v?: string) => {
+  if (!v) return undefined
+  const [y, m, d] = v.split('-').map(Number)
+  return y && m && d ? new Date(Date.UTC(y, m - 1, d)) : undefined
+}
+
+const anchorsFor = (type: string, id: string | null) => {
+  const out: Record<string, Date | undefined> = {}
+  for (const r of anchorRows) {
+    if (r.subject_type !== type) continue
+    if (type !== 'carrier' && r.subject_id !== id) continue
+    const d = parseDate(r.occurred_on)
+    if (d) out[r.anchor_key] = d
+  }
+  return out
+}
+
+let dqfItems: ReturnType<typeof assembleDqf> = []
+let summary: ReturnType<typeof summarise> | undefined
+
+if (link?.scope === 'driver_file' && driver) {
+  const a = anchorsFor('driver', driver.id)
+  const cdl = parseDate(driver.cdl_expires_on)
+  if (cdl && !a.cdl_expires) a.cdl_expires = cdl
+
+  const subject: EvaluationSubject = {
+    type: 'driver',
+    id: driver.id,
+    label: `${driver.first_name} ${driver.last_name}`.trim(),
+    context: { cdl: Boolean(driver.cdl_number) },
+    anchors: a,
+  }
+  const items = evaluate([subject], observedAt).filter((i) => i.subjectId === driver!.id)
+  dqfItems = assembleDqf({ items })
+  summary = summarise(dqfItems, observedAt)
+}
+
+const STATE_WORDS: Record<ItemState, string> = {
+  present: 'On file',
+  expiring: 'Expires soon',
+  expired: 'Expired',
+  missing: 'Not on file',
+  unknown: 'Not known',
+}
+
+const longDate = (d?: Date) =>
+  d ? d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' }) : '—'
+
+const saferUrl = carrier?.dot_number
+  ? `https://safer.fmcsa.dot.gov/query.asp?searchtype=ANY&query_type=queryCarrierSnapshot&query_param=USDOT&query_string=${encodeURIComponent(carrier.dot_number)}`
+  : null
+
+const driverName = driver ? `${driver.first_name} ${driver.last_name}`.trim() : ''
+const outstanding = gaps(dqfItems)
+const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.legal_name ?? 'Carrier record') : 'Link not valid'
+---
+
+<Public title={title} noindex>
+  <section class="mx-auto max-w-3xl px-4 py-12 sm:px-6">
+    {
+      !link ? (
+        <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+          <p class="font-medium">This link is not valid</p>
+          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+            It may never have existed, or it may no longer be in use. Ask whoever sent it for a
+            current one.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div class="mb-5 flex flex-wrap gap-3" data-screen-only>
+            <button
+              type="button"
+              id="print"
+              class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+            >
+              Print / Save as PDF
+            </button>
+          </div>
+
+          <article class="rounded-xl border border-ink-100 bg-white p-6 sm:p-8" id="sheet">
+            <header class="border-b border-ink-100 pb-5">
+              <p class="text-xs font-medium tracking-widest text-brand-600 uppercase">
+                Shared record
+              </p>
+              <h1 class="mt-2 text-2xl font-semibold tracking-tight">{carrier?.legal_name}</h1>
+              {carrier?.dba_name && (
+                <p class="mt-1 text-sm text-ink-500">Doing business as {carrier.dba_name}</p>
+              )}
+              <p class="mt-1 text-sm text-ink-500 tabular-nums">
+                USDOT {carrier?.dot_number ?? '—'}
+                {driver && <span> · {driverName}</span>}
+              </p>
+              <p class="mt-4 text-sm font-medium tabular-nums">
+                Observed on {longDate(observedAt)}
+              </p>
+            </header>
+
+            {/* Check us. The outward link is what makes this page worth reading. */}
+            {saferUrl && (
+              <p class="mt-5 rounded-lg bg-brand-500/[0.06] px-4 py-3 text-sm">
+                Do not take our word for any of this.{' '}
+                <a
+                  href={saferUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="font-medium text-brand-700 underline"
+                >
+                  Look this carrier up on FMCSA's public SAFER record →
+                </a>
+              </p>
+            )}
+
+            {link.scope === 'carrier_summary' && (
+              <section class="mt-6" data-block>
+                <h2 class="text-lg font-semibold tracking-tight">Fleet</h2>
+                <dl class="mt-3 grid gap-4 sm:grid-cols-3">
+                  <div class="rounded-xl border border-ink-100 p-4">
+                    <dt class="text-xs tracking-wide text-ink-500 uppercase">Drivers</dt>
+                    <dd class="mt-1 text-2xl font-semibold tabular-nums">
+                      {counts?.active_drivers ?? '—'}
+                    </dd>
+                  </div>
+                  <div class="rounded-xl border border-ink-100 p-4">
+                    <dt class="text-xs tracking-wide text-ink-500 uppercase">Power units</dt>
+                    <dd class="mt-1 text-2xl font-semibold tabular-nums">
+                      {counts?.power_units ?? '—'}
+                    </dd>
+                  </div>
+                  <div class="rounded-xl border border-ink-100 p-4">
+                    <dt class="text-xs tracking-wide text-ink-500 uppercase">Trailers</dt>
+                    <dd class="mt-1 text-2xl font-semibold tabular-nums">
+                      {counts?.trailers ?? '—'}
+                    </dd>
+                  </div>
+                </dl>
+
+                <h2 class="mt-8 text-lg font-semibold tracking-tight">
+                  Operating authority, from the federal record
+                </h2>
+                {authority?.state === 'rows' ? (
+                  <ul class="mt-3 space-y-2 text-sm">
+                    {authority.rows.map((r) => (
+                      <li class="flex flex-wrap items-center gap-2 rounded-lg border border-ink-100 px-4 py-3">
+                        <span class="font-medium tabular-nums">{r.docket_number}</span>
+                        <span class="text-ink-500">{r.op_auth_type}</span>
+                        <span
+                          class:list={[
+                            'rounded-md px-2 py-0.5 text-xs font-medium',
+                            r.op_auth_status === 'Active'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800',
+                          ]}
+                        >
+                          {r.op_auth_status}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : authority?.state === 'empty' ? (
+                  <p class="mt-3 rounded-lg bg-ink-50 px-4 py-3 text-sm text-ink-500">
+                    No authority record came back for this USDOT number.{' '}
+                    <strong>That is not the same as having none</strong> — the federal authority
+                    file does not cover every carrier, and an intrastate-only carrier never needed
+                    one. Read it as "we did not find one", not as "there is none".
+                  </p>
+                ) : (
+                  <p class="mt-3 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    We could not reach the federal authority file just now, so nothing here has
+                    been checked against it — including anything that might look reassuring. Use
+                    the SAFER link above.
+                  </p>
+                )}
+              </section>
+            )}
+
+            {link.scope === 'driver_file' && (
+              <>
+                <p class="mt-5 text-sm text-ink-500 tabular-nums">
+                  {summary?.present} of {summary?.total} items on file ·{' '}
+                  {summary?.expiring} expiring soon · {summary?.attention} needing attention
+                </p>
+
+                <section class="mt-6" data-block>
+                  <h2 class="text-lg font-semibold tracking-tight">What needs attention</h2>
+                  {outstanding.length === 0 ? (
+                    <p class="mt-2 rounded-lg bg-ink-50 px-4 py-3 text-sm">
+                      Every item below was on file on the date above. That is a statement about
+                      this carrier's records on that date and nothing more — no document in it has
+                      been examined by anyone here.
+                    </p>
+                  ) : (
+                    <ol class="mt-3 space-y-2">
+                      {outstanding.map((i) => (
+                        <li class="rounded-lg border border-red-200 bg-red-50/40 px-4 py-3 text-sm">
+                          <span class="font-medium">
+                            {i.paragraph} {i.title}
+                          </span>
+                          <span class="ml-2 text-ink-500">— {STATE_WORDS[i.state]}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </section>
+
+                <section class="mt-8">
+                  <h2 class="text-lg font-semibold tracking-tight">
+                    Driver qualification file, in 49 CFR 391.51(b) order
+                  </h2>
+                  <div class="mt-3 divide-y divide-ink-100 border-t border-ink-100">
+                    {dqfItems.map((i) => (
+                      <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-3" data-block>
+                        <span class="font-mono text-sm text-ink-500 tabular-nums">
+                          {i.paragraph}
+                        </span>
+                        <span class="flex-1 font-medium">{i.title}</span>
+                        <span class="text-sm text-ink-500">{STATE_WORDS[i.state]}</span>
+                        <div class="w-full text-xs text-ink-500">{i.citation}</div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </>
+            )}
+
+            <footer class="mt-8 border-t border-ink-100 pt-5 text-xs text-ink-500">
+              <p>
+                This is a record of what this carrier holds and what was observed on the date
+                above. It is not a certification of compliance, and it is not a statement that any
+                document in it is genuine, current, or sufficient.
+              </p>
+              <p class="mt-2">
+                FleetView Compliance is not affiliated with FMCSA, the DOT, or any government agency.
+              </p>
+            </footer>
+          </article>
+        </>
+      )
+    }
+  </section>
+</Public>
+
+<style is:global>
+  @media print {
+    @page {
+      margin: 18mm 14mm;
+    }
+    body > header,
+    footer.mt-20,
+    [data-screen-only] {
+      display: none !important;
+    }
+    #sheet {
+      border: 0;
+      padding: 0;
+    }
+    [data-block] {
+      break-inside: avoid;
+    }
+  }
+</style>
+
+<script>
+  document.getElementById('print')?.addEventListener('click', () => window.print())
+</script>

@@ -1,0 +1,153 @@
+---
+/**
+ * Features, written as outcomes rather than a capability list.
+ *
+ * Everything claimed here must be something the product does or will do. Where
+ * something is not built yet it says so — this audience checks, and a carrier
+ * who finds one overclaim stops believing the rest.
+ */
+import Public from '../layouts/Public.astro'
+import { coverage } from '../lib/site.ts'
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+
+const sections = [
+  {
+    eyebrow: 'Deadlines',
+    title: 'One list, soonest first',
+    body: `Every recurring obligation your fleet carries in a single ordered list — ${coverage.federal} federal rules that apply wherever you run, and ${coverage.california} California ones layered on top. Not a calendar you have to read — a queue you work down.`,
+    points: [
+      ['Drivers — federal', 'Medical certificates and their shorter 3-month and 1-year variants, CDL expiry, the annual MVR inquiry and the review note that has to accompany it, Clearinghouse queries, and the 30-day clock on a new hire’s previous-employer checks. Every one of these is a federal rule, so it reads the same in any state.'],
+      ['Trucks', 'Annual DOT inspection and the report you have to keep, federally. In California, on top of that: CVRA weight decals, Clean Truck Check testing windows and the fee that goes with them, and your CHP terminal inspection cycle.'],
+      ['The carrier', 'MCS-150 biennial update, UCR, Form 2290, operating authority and insurance on file — all federal. Then the Motor Carrier Permit, the quarterly fuel-tax return and the apportioned-plate renewal, as California administers them — those dates are keyed to a California base jurisdiction, not to yours.'],
+    ],
+  },
+  {
+    eyebrow: 'Alerts',
+    title: 'Told early, not told constantly',
+    body: 'The failure mode for software like this is not missing an alert. It is sending so many that you mute it, and then missing the one that mattered.',
+    points: [
+      ['One digest, not fourteen emails', 'Compliance items arrive in a single morning summary. Only genuinely overdue items interrupt you by text.'],
+      ['Your schedule, your people', 'Choose the lead times and the channel per deadline type, and who gets it. The medical cards can go to the office; the authority problems can go to you.'],
+      ['Quiet hours', 'We do not text you at 2am about a renewal due in a month. Critical items can still break through, and you can see exactly which ones are allowed to.'],
+      ['Snooze that sticks', 'An overdue item you have already handled stops nagging, and we record that you snoozed it and when.'],
+    ],
+  },
+  {
+    eyebrow: 'Custom reminders',
+    title: 'The dates that are yours alone',
+    body: 'Your insurance broker wants a call every March. Your best customer audits you every June. Your yard lease renews. None of that is in any regulation, and all of it costs you if it slips.',
+    points: [
+      ['Add anything', 'A name, a date, how often it repeats, who to tell and how far ahead. It lives in the same list as everything else.'],
+      ['Attach it to anything', 'To a driver, a truck, a customer, or to nothing at all.'],
+    ],
+  },
+  {
+    eyebrow: 'Loads',
+    title: 'Booked, dispatched, delivered, paid',
+    body: 'Real loads have several stops, a broker reference number that differs from yours, and detention terms buried in the rate confirmation. We store all three as fields, not as a PDF you have to reread.',
+    points: [
+      ['Multi-stop by default', 'Pickups, deliveries, drops and hooks in order, each with its own appointment window and reference numbers — and whether it is a hard appointment or first-come-first-served, because those fail differently.'],
+      ['Detention terms as data', 'Free hours, hourly rate, and whether the broker requires pre-approval. That last one is where small carriers lose money.'],
+      ['Delivered and unbilled are different things', 'Operational status and billing status move independently, so a load can be delivered, sitting on an unsent invoice, and show up correctly in both places.'],
+      ['Search by their number', 'Because the number on the paperwork in front of you is the broker’s, not yours.'],
+    ],
+  },
+  {
+    eyebrow: 'Dispatch',
+    title: 'The screen that knows the rules',
+    body: 'This is the part no one else in this price range does.',
+    points: [
+      ['A blocked assignment, not a report', 'If a driver’s medical card expired last week, you cannot assign him a load. You find out at the moment you are making the decision, not in a summary you read next month.'],
+      ['Driver, tractor and trailer separately', 'Because trailers get dropped and swapped, and power-only loads have no trailer of yours at all.'],
+      ['Deadhead counted honestly', 'Revenue per loaded mile flatters you. We show it next to revenue per total mile, and default to the total.'],
+    ],
+  },
+  {
+    eyebrow: 'Proof',
+    title: 'Something you can hand over',
+    body: 'A broker, an underwriter, or an officer at a scale asks what you have. A printable packet, dated, listing what we observed and when.',
+    points: [
+      ['Assembled in the order they read it', 'Driver qualification files laid out the way 49 CFR 391.51 lists them, with present, missing and expired marked, and the gaps summarised on the first page.'],
+      ['It links out', 'To the federal record, so the person reading it can check us rather than take our word.'],
+    ],
+  },
+]
+
+const notYet = [
+  // First in the list on purpose. It is the only entry here a buyer could be
+  // surprised by after paying, which makes it the one that has to be hardest to
+  // miss — the rest of this section is about things nobody expects us to do.
+  [
+    'State rules outside California',
+    `The ${coverage.federal} federal rules follow you into every state, and they are most of the catalogue. But California is the only state layer built so far. If your state adds an inspection, a permit or a filing of its own, it is not in here yet and we will not imply that it is. Other states are next, and because a rule is data — a citation, a schedule, and what proves it was done — adding one is rule rows rather than a new product.`,
+  ],
+  ['Automatic date reading from photos', 'An extracted date that is quietly wrong is worse than no feature. Not until the review step is genuinely fast.'],
+  ['Clearinghouse queries on your behalf', 'The rules forbid a service using your login, and prohibit blanket consent outright. We track when yours are due and hold the proof you ran them.'],
+  ['Filing anything', 'We track and remind. We are not a law firm and will not pretend to be one.'],
+  ['An ELD', 'You already have one. We read hours from Motive, Samsara and others instead.'],
+]
+---
+
+<Public
+  title="Features"
+  description="Deadline tracking, loads, trips and alerts for small US trucking fleets. Federal rules in every state, plus the California layer."
+>
+  <section class="border-b border-ink-100 bg-ink-50">
+    <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-20">
+      <h1 class="max-w-3xl text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
+        Everything that expires, and everything that moves.
+      </h1>
+      <p class="mt-4 max-w-2xl text-lg text-ink-500">
+        Two halves of the same job. The compliance calendar is only useful if someone opens it,
+        and people open the thing that has the loads in it.
+      </p>
+    </div>
+  </section>
+
+  {
+    sections.map((s, i) => (
+      <section class:list={['border-b border-ink-100', i % 2 === 1 && 'bg-ink-50']}>
+        <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6">
+          <p class="text-sm font-medium tracking-widest text-brand-600 uppercase">{s.eyebrow}</p>
+          <h2 class="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">{s.title}</h2>
+          <p class="mt-3 max-w-2xl text-ink-500">{s.body}</p>
+          <div class="mt-8 grid gap-4 sm:grid-cols-2">
+            {s.points.map(([t, b]) => (
+              <div class="rounded-xl border border-ink-100 bg-white p-5">
+                <p class="font-medium">{t}</p>
+                <p class="mt-2 text-sm text-ink-500">{b}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+    ))
+  }
+
+  <section class="mx-auto max-w-6xl px-4 py-14 sm:px-6">
+    <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">What we do not do</h2>
+    <p class="mt-3 max-w-2xl text-ink-500">
+      Worth saying plainly — the first because it is the edge of what we cover, the rest
+      because other people will happily sell them to you.
+    </p>
+    <div class="mt-8 grid gap-4 sm:grid-cols-2">
+      {
+        notYet.map(([t, b]) => (
+          <div class={card}>
+            <p class="font-medium">{t}</p>
+            <p class="mt-2 text-sm text-ink-500">{b}</p>
+          </div>
+        ))
+      }
+    </div>
+    <div class="mt-10">
+      <a
+        href="/check"
+        class="inline-block rounded-xl bg-ink-900 px-7 py-3.5 font-semibold text-white transition hover:bg-ink-700"
+      >
+        See your own deadlines →
+      </a>
+    </div>
+  </section>
+</Public>

@@ -1,0 +1,653 @@
+---
+/**
+ * The shoebox of fuel receipts, one quarter at a time.
+ *
+ * Two intents, one page, both ending in a 303 so a refresh cannot replay either.
+ * That matters more here than on most screens: `fuel_purchases` has no unique
+ * constraint on anything — two receipts from the same pump on the same day are a
+ * perfectly ordinary Tuesday — so a replayed POST would not collide with
+ * anything, it would just add a second copy of the same gallons. Duplicated
+ * gallons raise the fleet MPG, which lowers the taxable gallons computed for
+ * EVERY jurisdiction, which under-reports the whole return.
+ *
+ * The one control on this page that decides a credit from an audit finding is
+ * the tax-paid checkbox. It is labelled as plainly as it can be said.
+ */
+import App from '../../../layouts/App.astro'
+import { formText, formatDate } from '../../../lib/drivers.ts'
+import { gallons, quarterLabel, returnDueOn } from '../../../lib/ifta/compute.ts'
+import {
+  IFTA_JURISDICTIONS,
+  carrierToday,
+  daysUntil,
+  isoDay,
+  jurisdictionName,
+  nextQuarterStart,
+  parseGallonsToMilli,
+  parseJurisdiction,
+  periodFromParam,
+  implausible,
+  pricePerGallonMills,
+  recentQuarters,
+} from '../../../lib/ifta/input.ts'
+import { formatCents, parseMoneyToCents } from '../../../lib/loads.ts'
+import { vehicleLabel } from '../../../lib/vehicles.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+
+const today = carrierToday()
+const period = periodFromParam(Astro.url.searchParams.get('q'), today)
+const periodIso = isoDay(period)
+const nextIso = isoDay(nextQuarterStart(period))
+const label = quarterLabel(period)
+
+/**
+ * The last day of the quarter, for the date input's `max` only.
+ *
+ * Derived by stepping one day back from the next quarter's first day rather than
+ * by knowing that September has thirty days. Every query on this page uses the
+ * half-open range [periodIso, nextIso) and never this value.
+ */
+const lastDayIso = isoDay(new Date(nextQuarterStart(period).getTime() - 86_400_000))
+
+const go = (query: string) => Astro.redirect(`/app/ifta/fuel?q=${periodIso}${query}`, 303)
+const fail = (message: string) => go(`&error=${encodeURIComponent(message)}`)
+
+interface VehicleOption {
+  id: string
+  unit_number: string | null
+  vin: string | null
+}
+
+/**
+ * The carrier's trucks, loaded before the POST is dispatched.
+ *
+ * RLS on `fuel_purchases` checks one thing: that carrier_id is mine. It does NOT
+ * check that vehicle_id points at a vehicle of mine — so a crafted POST carrying
+ * another carrier's vehicle id and my carrier id passes the policy and writes a
+ * row referencing a truck I cannot see. Proving the id is in my own list first is
+ * what makes the vehicle_id below trustworthy, and it costs a query the form
+ * needs for rendering anyway.
+ */
+const { data: vehicleData, error: vehicleError } = await supabase
+  .from('vehicles')
+  .select('id, unit_number, vin')
+  .order('unit_number', { ascending: true })
+
+const vehicles = (vehicleData ?? []) as VehicleOption[]
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  if (intent === 'add_fuel') {
+    const purchasedOn = String(form.get('purchased_on') ?? '').trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(purchasedOn)) {
+      return fail('A fuel purchase needs the date off the receipt.')
+    }
+    /**
+     * The date decides which quarter the gallons land in, and this screen shows
+     * one quarter at a time. Without this check a receipt dated outside the
+     * selected quarter saves successfully and then vanishes from the list she is
+     * looking at — which reads as "it did not save", so she types it again, and
+     * the quarter it really belongs to quietly ends up with two of them.
+     *
+     * The input already carries min and max, so this only fires on a stale form
+     * or a crafted post. It is still checked here: the browser's validation is a
+     * convenience, never the rule.
+     */
+    if (purchasedOn < periodIso || purchasedOn >= nextIso) {
+      return fail(
+        `That receipt is dated ${formatDate(purchasedOn)}, which is not in ${label}. Switch to the quarter it belongs to and enter it there.`,
+      )
+    }
+
+    const jurisdiction = parseJurisdiction(form.get('jurisdiction'), { label: 'Jurisdiction' })
+    if (!jurisdiction.ok) return fail(jurisdiction.message)
+
+    const gallonsMilli = parseGallonsToMilli(form.get('gallons'), { label: 'Gallons' })
+    if (!gallonsMilli.ok) return fail(gallonsMilli.message)
+
+    // Integer cents, by the same parser the load rates use — `total_cents` is the
+    // same int4 cents column. The total is optional: a receipt whose ink has
+    // faded on the price still carries the gallons, and the gallons are what the
+    // return is built from.
+    const totalCents = parseMoneyToCents(form.get('total_cents'), { label: 'Total cost' })
+    if (!totalCents.ok) return fail(totalCents.message)
+
+    // The fleet could not be read, so "is this truck mine?" cannot be answered.
+    // Without this the check below refuses a perfectly good truck with "that
+    // truck is not in your fleet", which is a sentence about the wrong problem.
+    if (vehicleError) {
+      return fail(`Your trucks could not be read, so nothing was saved: ${vehicleError.message}`)
+    }
+    const requestedVehicle = String(form.get('vehicle_id') ?? '')
+    // Blank is a real answer: a receipt that does not say which truck fuelled is
+    // still a tax-paid gallon in that jurisdiction, and refusing it would keep
+    // the gallons out of the return entirely.
+    const vehicleId = requestedVehicle === '' ? null : requestedVehicle
+    if (vehicleId && !vehicles.some((v) => v.id === vehicleId)) {
+      return fail('That truck is not in your fleet.')
+    }
+
+    /**
+     * THE CHECKBOX THAT DECIDES A CREDIT FROM AN AUDIT FINDING.
+     *
+     * An unchecked checkbox posts NOTHING AT ALL — there is no 'false' value in
+     * a form body — so this is a presence test, not a value test. Reading it as
+     * `String(form.get('tax_paid')) === 'true'` would work while the box is
+     * ticked and silently do the right thing for the wrong reason; reading it
+     * with a default of true would make bulk fuel claim a credit it is not owed,
+     * which is the classic IFTA audit finding.
+     */
+    const taxPaid = form.get('tax_paid') !== null
+
+    const { error } = await supabase.from('fuel_purchases').insert({
+      // carrier_id is SET on insert and never filtered on. RLS checks it but does
+      // not fill it in, and a row inserted without it fails the WITH CHECK half
+      // of the policy — which surfaces as a permissions error about a receipt she
+      // has every right to enter.
+      carrier_id: carrierId,
+      vehicle_id: vehicleId,
+      purchased_on: purchasedOn,
+      jurisdiction: jurisdiction.value,
+      gallons_milli: gallonsMilli.value,
+      total_cents: totalCents.value,
+      tax_paid: taxPaid,
+      vendor: formText(form, 'vendor'),
+      receipt_number: formText(form, 'receipt_number'),
+    })
+    if (error) return fail(error.message)
+    return go('&added=1')
+  }
+
+  if (intent === 'remove_fuel') {
+    const id = String(form.get('purchase_id') ?? '')
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      return fail('That receipt is no longer on this quarter.')
+    }
+    // No .eq('carrier_id', …): RLS makes another carrier's row invisible to this
+    // statement, so the worst a crafted id achieves is deleting nothing.
+    const { data, error } = await supabase
+      .from('fuel_purchases')
+      .delete()
+      .eq('id', id)
+      .select('id')
+    if (error) return fail(error.message)
+    // A DELETE that matches nothing is not an error in Postgres, so without this
+    // the page would report a cheerful "Receipt removed" for a row that is still
+    // there, or for one somebody else removed a moment ago.
+    if (!data || data.length === 0) return fail('That receipt is no longer on this quarter.')
+    return go('&removed=1')
+  }
+
+  // An unknown intent is a form from an older deploy. Redirect rather than fall
+  // through to rendering: falling through answers a POST with a 200 page, and
+  // the next refresh replays it.
+  return go('')
+}
+
+interface PurchaseRow {
+  id: string
+  purchased_on: string
+  jurisdiction: string
+  vehicle_id: string | null
+  gallons_milli: number
+  total_cents: number | null
+  tax_paid: boolean
+  vendor: string | null
+  receipt_number: string | null
+}
+
+const { data: purchaseData, error: purchaseError } = await supabase
+  .from('fuel_purchases')
+  .select('id, purchased_on, jurisdiction, vehicle_id, gallons_milli, total_cents, tax_paid, vendor, receipt_number')
+  .gte('purchased_on', periodIso)
+  .lt('purchased_on', nextIso)
+  .order('purchased_on', { ascending: true })
+
+const purchases = (purchaseData ?? []) as PurchaseRow[]
+
+// Integer sums of integer units. Nothing here divides.
+const totalGallonsMilli = purchases.reduce((n, p) => n + Number(p.gallons_milli), 0)
+const taxPaidGallonsMilli = purchases
+  .filter((p) => p.tax_paid)
+  .reduce((n, p) => n + Number(p.gallons_milli), 0)
+const bulkGallonsMilli = totalGallonsMilli - taxPaidGallonsMilli
+const totalCents = purchases.reduce((n, p) => n + (p.total_cents ?? 0), 0)
+
+const vehicleById = new Map(vehicles.map((v) => [v.id, v]))
+
+const quarters = recentQuarters(today, 5)
+if (!quarters.some((q) => isoDay(q) === periodIso)) {
+  quarters.push(period)
+  quarters.sort((a, b) => b.getTime() - a.getTime())
+}
+
+const params = Astro.url.searchParams
+const error = params.get('error') ?? purchaseError?.message ?? vehicleError?.message ?? null
+const added = params.get('added') === '1'
+const removed = params.get('removed') === '1'
+/** Which row is asking to be removed. Carried in the URL because a dialog needs JavaScript. */
+const confirmRemove = params.get('confirm') ?? ''
+
+const daysLeft = daysUntil(returnDueOn(period), today)
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition'
+const usJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'US')
+const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
+---
+
+<App
+  title={`Fuel receipts · ${label}`}
+  subtitle="Every gallon counts toward the fleet average. Only the tax-paid ones earn a credit."
+>
+  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {
+    added && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Receipt recorded. IFTA requires the paper itself be kept four years.
+      </p>
+    )
+  }
+  {
+    removed && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Receipt removed.</p>
+    )
+  }
+
+  <div class="-mx-4 mb-5 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
+    {
+      quarters.map((q) => (
+        <a
+          href={`/app/ifta/fuel?q=${isoDay(q)}`}
+          class:list={[
+            tab,
+            'tabular-nums',
+            isoDay(q) === periodIso
+              ? 'bg-brand-500/10 text-brand-700'
+              : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
+          ]}
+        >
+          {quarterLabel(q)}
+        </a>
+      ))
+    }
+    <a
+      href={`/app/ifta?q=${periodIso}`}
+      class="ml-auto text-sm font-medium text-brand-600 hover:underline"
+    >
+      The {label} return →
+    </a>
+  </div>
+
+  <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]">
+    {/* ------------------------------------------------------- the receipts */}
+    <div class="min-w-0">
+      <div class="mb-4 grid gap-4 sm:grid-cols-3">
+        <div class={card}>
+          <div class="text-xs tracking-wide text-ink-500 uppercase">Gallons this quarter</div>
+          <div class="mt-1 text-2xl font-semibold tabular-nums">{gallons(totalGallonsMilli)}</div>
+          <div class="mt-1 text-xs text-ink-500">
+            <span class="tabular-nums">{purchases.length}</span>
+            {purchases.length === 1 ? ' receipt' : ' receipts'}
+          </div>
+        </div>
+        <div class={card}>
+          <div class="text-xs tracking-wide text-ink-500 uppercase">Tax paid at the pump</div>
+          <div class="mt-1 text-2xl font-semibold tabular-nums">{gallons(taxPaidGallonsMilli)}</div>
+          <div class="mt-1 text-xs text-ink-500">
+            {
+              bulkGallonsMilli > 0 ? (
+                <>
+                  <span class="tabular-nums">{gallons(bulkGallonsMilli)}</span> bulk, earning no
+                  credit
+                </>
+              ) : (
+                'No bulk fuel this quarter.'
+              )
+            }
+          </div>
+        </div>
+        <div class={card}>
+          <div class="text-xs tracking-wide text-ink-500 uppercase">Spent on fuel</div>
+          <div class="mt-1 text-2xl font-semibold tabular-nums">{formatCents(totalCents)}</div>
+          <div class="mt-1 text-xs text-ink-500">
+            {
+              /* The cost is not part of the return — IFTA is computed on gallons
+                 and rates, never on what was paid. It is here because it is on
+                 the receipt in her hand and because the per-gallon figure it
+                 gives is the cheapest check on a mistyped gallons column. */
+              'Not used in the return. It is the cross-check.'
+            }
+          </div>
+        </div>
+      </div>
+
+      {
+        /* A FAILED READ IS NOT AN EMPTY QUARTER. "No fuel recorded for Q3 2026"
+           under an error banner is a sentence she can act on — by typing every
+           receipt in again — and the list it is describing may be full. The
+           three tiles above read as zeros for the same reason and are covered by
+           the same branch. */
+        purchaseError ? (
+          <div class="rounded-xl border border-red-200 bg-red-50 p-10 text-center">
+            <p class="font-medium text-red-800">The {label} receipts could not be read</p>
+            <p class="mx-auto mt-2 max-w-md text-sm text-red-700">
+              Nothing is listed because nothing came back, which is not the same as nothing being
+              there. Reload before entering anything — a receipt typed now could be a duplicate of
+              one already recorded.
+            </p>
+          </div>
+        ) : purchases.length === 0 ? (
+          <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+            <p class="font-medium">No fuel recorded for {label}</p>
+            <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+              Without gallons there is no fleet average, and without a fleet average every
+              jurisdiction on the return computes zero tax owed — on however many miles the trucks
+              actually ran. Start with the receipts you have.
+            </p>
+          </div>
+        ) : (
+          <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
+            <table class="w-full min-w-[60rem] text-sm">
+              <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+                <tr>
+                  <th class="px-4 py-3 font-medium">Date</th>
+                  <th class="px-4 py-3 font-medium">Where</th>
+                  <th class="px-4 py-3 font-medium">Truck</th>
+                  <th class="px-4 py-3 text-right font-medium">Gallons</th>
+                  <th class="px-4 py-3 text-right font-medium">Cost</th>
+                  <th class="px-4 py-3 text-right font-medium">$/gal</th>
+                  <th class="px-4 py-3 font-medium">Vendor</th>
+                  <th class="px-4 py-3"></th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-ink-100">
+                {purchases.map((p) => {
+                  const vehicle = p.vehicle_id ? vehicleById.get(p.vehicle_id) : undefined
+                  const perGallon = pricePerGallonMills(p.total_cents, Number(p.gallons_milli))
+                  const removing = confirmRemove === p.id
+                  // Advisory, per row. The fleet MPG warning on the return page
+                  // only fires once the whole quarter is already wrong, and it
+                  // cannot say WHICH receipt did it — leaving the office to
+                  // audit every row by eye to find the one.
+                  const flags = implausible(Number(p.gallons_milli), p.total_cents)
+                  return (
+                    <tr class:list={[removing ? 'bg-red-50/60' : 'hover:bg-ink-50/60']}>
+                      <td class="px-4 py-3 whitespace-nowrap tabular-nums">
+                        {formatDate(p.purchased_on)}
+                      </td>
+                      <td class="px-4 py-3">
+                        <span class="font-medium">{p.jurisdiction}</span>
+                        {flags.length > 0 && (
+                          <span class="ml-2 rounded-md bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-700">
+                            check this
+                          </span>
+                        )}
+                        {flags.map((f) => (
+                          <div class="mt-1 max-w-xs text-xs text-red-700">{f.message}</div>
+                        ))}
+                        {/* The tax-paid state is in the LIST, not only in the
+                            form. It is the difference between a credit and an
+                            audit finding, and a bulk row that looks identical to
+                            a pump row is a row nobody ever re-checks. */}
+                        {!p.tax_paid && (
+                          <span class="ml-2 rounded-md bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+                            bulk · no credit
+                          </span>
+                        )}
+                      </td>
+                      <td class="px-4 py-3">
+                        {vehicle ? (
+                          vehicleLabel(vehicle)
+                        ) : (
+                          <span class="text-ink-300">not recorded</span>
+                        )}
+                      </td>
+                      <td class="px-4 py-3 text-right font-medium tabular-nums">
+                        {gallons(Number(p.gallons_milli))}
+                      </td>
+                      <td class="px-4 py-3 text-right tabular-nums">
+                        {p.total_cents === null ? (
+                          <span class="text-ink-300">—</span>
+                        ) : (
+                          formatCents(p.total_cents)
+                        )}
+                      </td>
+                      <td class="px-4 py-3 text-right tabular-nums text-ink-500">
+                        {perGallon === null ? (
+                          <span class="text-ink-300">—</span>
+                        ) : (
+                          `$${(perGallon / 1000).toFixed(3)}`
+                        )}
+                      </td>
+                      <td class="px-4 py-3">
+                        {p.vendor ?? <span class="text-ink-300">—</span>}
+                        {p.receipt_number && (
+                          <span class="block text-xs tabular-nums text-ink-300">
+                            #{p.receipt_number}
+                          </span>
+                        )}
+                      </td>
+                      <td class="px-4 py-3 text-right whitespace-nowrap">
+                        {/* Removal is two steps and the second one is a POST. A
+                            single button here is a receipt deleted by a thumb on
+                            a phone, and a deleted receipt is gallons missing
+                            from the fleet average. */}
+                        {removing ? (
+                          <form method="POST" class="flex items-center justify-end gap-2">
+                            <input type="hidden" name="purchase_id" value={p.id} />
+                            <button
+                              type="submit"
+                              name="intent"
+                              value="remove_fuel"
+                              class="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700"
+                            >
+                              Remove
+                            </button>
+                            <a
+                              href={`/app/ifta/fuel?q=${periodIso}`}
+                              class="text-xs font-medium text-brand-600 hover:underline"
+                            >
+                              Keep
+                            </a>
+                          </form>
+                        ) : (
+                          <a
+                            href={`/app/ifta/fuel?q=${periodIso}&confirm=${p.id}`}
+                            class="text-xs text-red-600 hover:underline"
+                          >
+                            Remove
+                          </a>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              <tfoot class="border-t border-ink-100">
+                <tr>
+                  <td class="px-4 py-3 font-medium" colspan="3">Total</td>
+                  <td class="px-4 py-3 text-right font-semibold tabular-nums">
+                    {gallons(totalGallonsMilli)}
+                  </td>
+                  <td class="px-4 py-3 text-right font-semibold tabular-nums">
+                    {formatCents(totalCents)}
+                  </td>
+                  <td class="px-4 py-3"></td>
+                  <td class="px-4 py-3"></td>
+                  <td class="px-4 py-3"></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        )
+      }
+    </div>
+
+    {/* ------------------------------------------------------- the add form */}
+    <form method="POST" class={`space-y-4 ${card} h-fit`}>
+      <div>
+        <h2 class="text-lg font-semibold tracking-tight">Add a receipt</h2>
+        <p class="mt-1 text-sm text-ink-500">
+          {label} ·{' '}
+          {daysLeft < 0 ? (
+            <span class="font-medium text-red-700">the return is {-daysLeft} days overdue</span>
+          ) : (
+            <span class="tabular-nums">{daysLeft} days to the deadline</span>
+          )}
+        </p>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">
+            Date <span class="text-red-600">*</span>
+          </span>
+          {/* min and max are the quarter, so the browser refuses a date that
+              would save into a quarter this page is not showing. The server
+              checks it again — the browser's validation is a convenience. */}
+          <input
+            type="date"
+            name="purchased_on"
+            required
+            min={periodIso}
+            max={lastDayIso}
+            class={`${field} tabular-nums`}
+          />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">
+            Jurisdiction <span class="text-red-600">*</span>
+          </span>
+          <select name="jurisdiction" required class={field}>
+            <option value="">—</option>
+            <optgroup label="United States">
+              {usJurisdictions.map((j) => (
+                <option value={j.code}>
+                  {j.code} — {j.name}
+                </option>
+              ))}
+            </optgroup>
+            {/* Canada is on the list because IFTA covers ten provinces. A
+                US-only dropdown tells a carrier running into BC that those
+                gallons do not count, and they do. */}
+            <optgroup label="Canada">
+              {caJurisdictions.map((j) => (
+                <option value={j.code}>
+                  {j.code} — {j.name}
+                </option>
+              ))}
+            </optgroup>
+          </select>
+        </label>
+      </div>
+
+      <label class="block">
+        <span class="text-sm font-medium">Truck</span>
+        <select name="vehicle_id" class={field}>
+          <option value="">Not recorded</option>
+          {
+            vehicles.map((v) => (
+              <option value={v.id}>{vehicleLabel(v)}</option>
+            ))
+          }
+        </select>
+        <span class="mt-1 block text-xs text-ink-500">
+          Optional. The return is filed for the fleet, so a receipt that does not say which truck is
+          still a gallon in that jurisdiction.
+        </span>
+      </label>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">
+            Gallons <span class="text-red-600">*</span>
+          </span>
+          <input
+            type="text"
+            name="gallons"
+            required
+            inputmode="decimal"
+            placeholder="125.400"
+            class={`${field} tabular-nums`}
+          />
+          <span class="mt-1 block text-xs text-ink-500">
+            To three decimals, as the pump prints them. 125.4 and 125.400 are the same thing.
+          </span>
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Total cost</span>
+          <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
+            <span class="pl-3 text-ink-300">$</span>
+            <input
+              type="text"
+              name="total_cents"
+              inputmode="decimal"
+              placeholder="501.60"
+              class="w-full bg-transparent px-2 py-2 text-base tabular-nums outline-none"
+            />
+          </div>
+          <span class="mt-1 block text-xs text-ink-500">
+            Not used in the return. It gives the per-gallon figure that catches a mistyped gallons
+            column.
+          </span>
+        </label>
+      </div>
+
+      {/* ------------------------------------------------- THE tax-paid box */}
+      <div class="rounded-lg border border-ink-100 bg-ink-50 p-4">
+        <label class="flex items-start gap-3">
+          {/* Defaults to CHECKED because the overwhelming majority of receipts
+              are pump purchases with the jurisdiction's tax already in the
+              price. The default is not the risk — the risk is a bulk row saved
+              with the box still ticked, which claims a credit for tax that was
+              never paid. That is the classic IFTA audit finding, so the label
+              says what unticking is FOR rather than restating the field name. */}
+          <input
+            type="checkbox"
+            name="tax_paid"
+            checked
+            class="mt-0.5 size-4 shrink-0 rounded border-ink-300"
+          />
+          <span>
+            <span class="text-sm font-medium">Tax paid at the pump</span>
+            <span class="mt-0.5 block text-xs text-ink-500">
+              Untick for bulk or farm-tank fuel. Those gallons still count toward the fleet average —
+              the engine burned them — but they earn no credit, and claiming that they do is the
+              classic IFTA audit finding.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">Vendor</span>
+          <input type="text" name="vendor" placeholder="Pilot #431" class={field} />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Receipt number</span>
+          <input type="text" name="receipt_number" class={`${field} tabular-nums`} />
+        </label>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+        <button
+          type="submit"
+          name="intent"
+          value="add_fuel"
+          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+        >
+          Add receipt
+        </button>
+        <span class="text-xs text-ink-500">Keep the paper four years.</span>
+      </div>
+    </form>
+  </div>
+</App>

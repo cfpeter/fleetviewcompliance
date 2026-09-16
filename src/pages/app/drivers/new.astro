@@ -1,0 +1,183 @@
+---
+/**
+ * Add a driver.
+ *
+ * Two required fields, and that is a decision rather than an omission. The
+ * office manager types what she has in front of her; a required field she cannot
+ * fill is a field she invents a value for, and an invented CDL number is worse
+ * than a blank one because it looks answered. Everything except the name can
+ * arrive later, from the detail page, when the paperwork does.
+ */
+import App from '../../../layouts/App.astro'
+import { US_STATE_CODES, formDate, formText, todayInCalifornia } from '../../../lib/drivers.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+
+/**
+ * Every exit from the POST is a 303, and the status code is not decoration.
+ * Astro.redirect() defaults to 302, which permits the browser to repeat the POST
+ * against the new location — and a refresh on the page that lands afterwards
+ * re-runs it, so the driver is added twice and nothing on screen says so. 303 is
+ * the code that turns the follow-up request into a GET.
+ */
+function back(message: string): Response {
+  return Astro.redirect(`/app/drivers/new?error=${encodeURIComponent(message)}`, 303)
+}
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  if (intent === 'create') {
+    const first = formText(form, 'first_name')
+    const last = formText(form, 'last_name')
+
+    // The browser's own `required` blocks this, so reaching it means a hand-made
+    // POST. The typed values are deliberately NOT carried back in the query
+    // string on the way out: a date of birth and a phone number in a URL land in
+    // every access log between here and her desk, which is not a trade worth
+    // making to repopulate a form that the browser was already guarding.
+    if (!first || !last) return back('A first and a last name are the two things we cannot store a driver without.')
+
+    const { data, error } = await supabase
+      .from('drivers')
+      .insert({
+        // carrier_id is set here and nowhere else in this file. RLS CHECKS it on
+        // the way in — an insert naming somebody else's carrier is rejected —
+        // but it does not SUPPLY it, and the column is NOT NULL, so leaving it
+        // out fails the insert rather than defaulting to anything sensible.
+        carrier_id: carrierId,
+        first_name: first,
+        last_name: last,
+        phone: formText(form, 'phone'),
+        email: formText(form, 'email'),
+        cdl_number: formText(form, 'cdl_number'),
+        cdl_state: formText(form, 'cdl_state'),
+        cdl_expires_on: formDate(form, 'cdl_expires_on'),
+        hired_on: formDate(form, 'hired_on'),
+        date_of_birth: formDate(form, 'date_of_birth'),
+      })
+      .select('id')
+      .single()
+
+    if (error || !data) return back(error?.message ?? 'That driver could not be saved.')
+
+    // Straight to the driver rather than back to the list: the next thing she
+    // has in her hand is the medical card, and the Compliance dates section is
+    // where it goes.
+    return Astro.redirect(`/app/drivers/${data.id}?added=1`, 303)
+  }
+
+  // An unrecognised intent is a bug or a crafted post; either way it must not
+  // fall through and render the form as though it were a GET.
+  return Astro.redirect('/app/drivers/new', 303)
+}
+
+const error = Astro.url.searchParams.get('error')
+const today = todayInCalifornia()
+
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+---
+
+<App title="Add a driver" subtitle="A name is enough. The rest can follow the paperwork.">
+  <div class="max-w-2xl">
+    {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+
+    <form method="POST" class="space-y-4 rounded-xl border border-ink-100 bg-white p-5">
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">First name <span class="text-red-600">*</span></span>
+          <input type="text" name="first_name" required autofocus class={field} />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Last name <span class="text-red-600">*</span></span>
+          <input type="text" name="last_name" required class={field} />
+        </label>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">
+            Phone <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input type="tel" name="phone" class={`${field} tabular-nums`} />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">
+            Email <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input type="email" name="email" class={field} />
+        </label>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">
+            CDL number <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input type="text" name="cdl_number" class={`${field} tabular-nums`} />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">
+            CDL state <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          {
+            /* No preselected California. A value she did not choose is
+               indistinguishable on the screen from one she did, and the annual
+               MVR has to be pulled from every state that licensed him. */
+          }
+          <select name="cdl_state" class={field}>
+            <option value="">—</option>
+            {US_STATE_CODES.map((code) => <option value={code}>{code}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">
+            CDL expires <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input type="date" name="cdl_expires_on" class={`${field} tabular-nums`} />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">
+            Hire date <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input type="date" name="hired_on" max={today} class={`${field} tabular-nums`} />
+          <span class="mt-1 block text-xs text-ink-500">
+            Five federal deadlines are counted from this day — the qualification file, the road
+            test, the pre-employment Clearinghouse query, and the 30-day driving-record and
+            previous-employer checks.
+          </span>
+        </label>
+      </div>
+
+      <label class="block">
+        <span class="text-sm font-medium">
+          Date of birth <span class="font-normal text-ink-300">(optional)</span>
+        </span>
+        <input type="date" name="date_of_birth" max={today} class={`${field} tabular-nums`} />
+        <span class="mt-1 block text-xs text-ink-500">
+          Needed to request a driving record or run a Clearinghouse query. Nothing else reads it.
+        </span>
+      </label>
+
+      <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+        <button
+          type="submit"
+          name="intent"
+          value="create"
+          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+        >
+          Add driver
+        </button>
+        <a href="/app/drivers" class="text-sm font-medium text-brand-600 hover:underline">
+          Back to drivers
+        </a>
+      </div>
+    </form>
+  </div>
+</App>

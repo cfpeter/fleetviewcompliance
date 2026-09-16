@@ -1,0 +1,134 @@
+---
+/**
+ * Values running both ways from a centre line — what you owe, and what is owed
+ * back to you.
+ *
+ * Built for the IFTA return, which is the case that makes the argument. A
+ * quarter is a list of jurisdictions billing you and jurisdictions crediting
+ * you, and the question an owner actually has — where is the money going, and
+ * is any of it coming back — is invisible when both are drawn as positive bars
+ * under a column headed "amount". He has to read the sign on every row.
+ *
+ * Both halves share ONE scale (see `divergingRows`): scaled independently, a
+ * $40 credit draws as wide as a $4,000 bill, which is the exact misreading this
+ * chart exists to prevent.
+ */
+import type { Value } from '../../lib/charts/scale.ts'
+import { divergingRows } from '../../lib/charts/scale.ts'
+import { UNKNOWN_SLOT } from '../../lib/charts/tones.ts'
+
+export interface DivergingItem {
+  label: string
+  /** Signed. Negative is money coming back. `null` when we have no figure. */
+  value: Value
+  /** The exact formatted figure, sign and all. */
+  display: string
+  note?: string
+  href?: string
+}
+
+interface Props {
+  items: readonly DivergingItem[]
+  /** What the left half means, e.g. 'Credit'. */
+  negativeLabel: string
+  /** What the right half means, e.g. 'You owe'. */
+  positiveLabel: string
+  emptyMessage?: string
+}
+
+const {
+  items,
+  negativeLabel,
+  positiveLabel,
+  emptyMessage = 'Nothing to show yet.',
+} = Astro.props
+const { rows } = divergingRows(items.map((i) => i.value))
+---
+
+{
+  items.length === 0 ? (
+    <p class="py-6 text-center text-sm text-ink-500">{emptyMessage}</p>
+  ) : (
+    <div>
+      {/*
+        The two halves are named once, at the top. Without this the centre line
+        is just a line and which side is good news is a guess.
+
+        Built on the SAME three-column skeleton as a row — spacer, plot, spacer
+        — rather than as a plain full-width flex. Laid out independently the
+        seam between the two labels sits at the centre of the card while the
+        centre line sits at the centre of the plot, which is 16px to the left of
+        it, so each label points at the wrong half by a hair on every row below.
+      */}
+      <div class="flex items-center gap-2 text-[10px] tracking-wide text-ink-500 uppercase">
+        <div class="w-16 shrink-0 sm:w-24" />
+        <div class="flex min-w-0 flex-1 gap-2">
+          <div class="flex-1 text-right text-emerald-800">← {negativeLabel}</div>
+          <div class="flex-1 text-red-700">{positiveLabel} →</div>
+        </div>
+        <div class="w-20 shrink-0 sm:w-24" />
+      </div>
+
+      <ul class="mt-2 space-y-2">
+        {items.map((item, i) => {
+          const r = rows[i]
+          return (
+            <li>
+              <div class="flex items-center gap-2">
+                <div class="w-16 shrink-0 truncate text-sm font-medium sm:w-24">
+                  {item.href ? (
+                    <a href={item.href} class="hover:text-brand-600 hover:underline">
+                      {item.label}
+                    </a>
+                  ) : (
+                    item.label
+                  )}
+                </div>
+
+                {r.unknown ? (
+                  /* Spanning the centre rather than sitting on one side of it.
+                     A row we cannot price has not been found to be settled —
+                     which is exactly what a bare centre line would claim. */
+                  <div class="flex min-w-0 flex-1 items-center">
+                    <div class:list={['h-2.5 flex-1 rounded-sm', UNKNOWN_SLOT]} />
+                  </div>
+                ) : (
+                  <div class="flex min-w-0 flex-1 items-center">
+                    <div class="flex flex-1 justify-end">
+                      <div
+                        class="h-2.5 rounded-l-sm bg-emerald-500"
+                        style={`width:${r.negative}%`}
+                      />
+                    </div>
+                    {/* The centre line is a real element, not a border on a
+                        neighbour, so it stays put when one side is empty. */}
+                    <div class="h-4 w-px shrink-0 bg-ink-300" />
+                    <div class="flex flex-1 justify-start">
+                      <div class="h-2.5 rounded-r-sm bg-red-500" style={`width:${r.positive}%`} />
+                    </div>
+                  </div>
+                )}
+
+                <div
+                  class:list={[
+                    'w-20 shrink-0 text-right text-sm font-medium tabular-nums sm:w-24',
+                    item.value === null
+                      ? 'text-ink-300 italic'
+                      : item.value < 0
+                        ? 'text-emerald-800'
+                        : item.value > 0
+                          ? 'text-red-700'
+                          : 'text-ink-300',
+                  ]}
+                >
+                  {item.display}
+                </div>
+              </div>
+              {item.note && <div class="mt-0.5 pl-18 text-xs text-ink-500 sm:pl-26">{item.note}</div>}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}

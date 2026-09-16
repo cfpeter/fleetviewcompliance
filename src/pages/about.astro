@@ -1,0 +1,103 @@
+---
+/**
+ * About.
+ *
+ * Deliberately about principles rather than biography — the founder's own story
+ * is the one thing this page cannot write for him. The TODO block below is his
+ * to fill; everything else here is true as written.
+ */
+import Public from '../layouts/Public.astro'
+import { coverage } from '../lib/site.ts'
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+
+const principles = [
+  {
+    title: 'We show you the citation',
+    body: 'Every deadline names the rule it comes from. If we say your MCS-150 is due in October, you can see that it is 49 CFR 390.19T and check us. A compliance product that asks to be trusted without being checkable is asking for the wrong thing.',
+  },
+  {
+    title: 'We would rather say "we don’t know"',
+    body: 'If we do not have a driver’s medical card date, we show that as unknown and treat it as urgently as if it were overdue — because your exposure is identical either way. What we will not do is show you a confident date we guessed.',
+  },
+  {
+    title: 'We do not use numbers we cannot verify',
+    body: 'The trucking compliance industry repeats fines that are not in the regulation. The most common one — ten thousand dollars a day for not having a testing program — does not exist in the penalty schedule. The real figures are bad enough.',
+  },
+  {
+    title: 'Your records are yours',
+    body: 'We do not sell your data, we do not share it with brokers or insurers unless you hand them a proof link yourself, and if you leave you can take everything with you.',
+  },
+]
+---
+
+<Public
+  title="About"
+  description="Why FleetView Compliance exists and how it is built."
+>
+  <section class="border-b border-ink-100 bg-ink-50">
+    <div class="mx-auto max-w-3xl px-4 py-14 sm:px-6 sm:py-20">
+      <h1 class="text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
+        Built in Glendale, for fleets too small to hire a compliance manager.
+      </h1>
+      <p class="mt-4 text-lg text-ink-500">
+        A twelve-truck carrier carries the same regulatory load as a five-hundred-truck carrier,
+        with none of the staff. The software written for the big ones costs more than a truck
+        payment and needs a full-time person to run it. Most small fleets end up on a
+        spreadsheet and a wall calendar, which works right up until it doesn’t.
+      </p>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-3xl px-4 py-14 sm:px-6">
+    <h2 class="text-2xl font-semibold tracking-tight">How we build it</h2>
+    <div class="mt-6 space-y-4">
+      {
+        principles.map((p) => (
+          <div class={card}>
+            <p class="font-medium">{p.title}</p>
+            <p class="mt-2 text-sm text-ink-500">{p.body}</p>
+          </div>
+        ))
+      }
+    </div>
+
+    <h2 class="mt-12 text-2xl font-semibold tracking-tight">Federal everywhere, California first</h2>
+    <p class="mt-3 text-ink-500">
+      Most of what a carrier owes is federal, and federal rules do not stop at a state line:
+      <strong class="tabular-nums">{coverage.federal}</strong> of the
+      <strong class="tabular-nums">{coverage.total}</strong> rules in our catalogue are the same
+      whether you run out of Glendale or out of a yard two thousand miles from here. Every
+      carrier gets all of them.
+    </p>
+    <p class="mt-3 text-ink-500">
+      National compliance software tends to stop there. But a California carrier also answers to
+      CARB’s Clean Truck Check, a CHP terminal inspection programme that moved to a ninety-day
+      cycle in January 2026, a Motor Carrier Permit on its own staggered clock, and CVRA weight
+      decals. Those are the ones that actually put a hold on your registration, and they are the
+      ones most software ignores. So California is the state layer we built first — the other
+      <strong class="tabular-nums">{coverage.california}</strong> rules.
+    </p>
+    <p class="mt-3 text-ink-500">
+      It is also the only state layer so far, and we say that on the home page rather than in a
+      footnote. We would rather do one state properly than fifty badly, and we will not list a
+      state we have not done. What makes the next ones cheap is a decision taken on the first
+      day: a rule here is <em>data</em> — a citation, a schedule, what proves it was done, what
+      happens if you miss it — and not code. Adding California cost us rule rows. Adding the
+      next state has to cost rule rows too, or we built it wrong.
+    </p>
+
+    <div class="mt-12 rounded-2xl border border-brand-500/30 bg-brand-500/[0.04] p-6 sm:p-8">
+      <h2 class="text-2xl font-semibold tracking-tight">Talk to a person</h2>
+      <p class="mt-2 text-ink-500">
+        We are small enough that you will reach someone who actually built this.
+      </p>
+      <a
+        href="/check"
+        class="mt-5 inline-block rounded-xl bg-ink-900 px-7 py-3.5 font-semibold text-white transition hover:bg-ink-700"
+      >
+        Start with your DOT number →
+      </a>
+    </div>
+  </section>
+</Public>

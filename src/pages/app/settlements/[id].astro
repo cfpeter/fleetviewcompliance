@@ -1,0 +1,1323 @@
+---
+/**
+ * One settlement: every line, where each line came from, and the net.
+ *
+ * NOT PAYROLL. This page produces a settlement STATEMENT — the sheet handed to
+ * a driver beside the cheque — and prints it. No withholding, no filings. It
+ * says so on screen and again in the printed footer, because a carrier who
+ * believes otherwise is a carrier who stops withholding.
+ *
+ * TWO THINGS ON EVERY COMPUTED LINE, and they are the reason this module exists:
+ * WHICH MILES it was paid on, and WHAT the percentage was a percentage of. Both
+ * are copied onto the line at the moment it is created, never read back through
+ * the agreement. The agreement WILL be edited — the cents-per-mile goes up in
+ * April — and a March statement that re-renders through today's agreement
+ * silently starts claiming it paid the April rate. A document that says
+ * something different a year later is a document nobody can win an argument with.
+ *
+ * THE LOCK. A settlement that has been PAID cannot be edited: not its header,
+ * not its lines. 0016_settlements.sql enforces it with a trigger, so it holds
+ * against a crafted POST and against psql, not only against this page hiding the
+ * buttons. Corrections are made by REVISING — a new settlement at revision N+1
+ * that supersedes the paid one, with the paid one annotated rather than altered.
+ * `approved` deliberately does NOT lock; see isLocked() in the compute module.
+ *
+ * Nine intents, one page, and every one ends in a 303. On this page a replayed
+ * POST would not merely duplicate a row — a second "mark paid" on a settlement
+ * that has since been revised, or a second advance line, is money.
+ */
+import App from '../../../layouts/App.astro'
+import { formatDate, fullName, todayInCalifornia } from '../../../lib/drivers.ts'
+import { formatCents, loadLabel, parseMoneyToCents, textOrNull } from '../../../lib/loads.ts'
+import {
+  LINE_KINDS,
+  SETTLEMENT_CATEGORIES,
+  type ComputedLine,
+  type MileageBasis,
+  type PayAgreement,
+  type PayMethod,
+  type SettlementCategory,
+  agreementsInForce,
+  categoryOfKind,
+  computeEarning,
+  describePercentScope,
+  formatPercentBp,
+  formatQuantity,
+  formatRateMills,
+  isLineKind,
+  isLocked,
+  isMileageBasis,
+  lineKindLabel,
+  mileageBasisLabel,
+  missingTerms,
+  parseQuantityToMilli,
+  payMethodLabel,
+  rateSummary,
+  settlementStatusLabel,
+  settlementStatusPillClass,
+  settlementTotals,
+  signedAmount,
+  termsSummary,
+} from '../../../lib/settlements/compute.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+const userId = Astro.locals.userId!
+const id = Astro.params.id ?? ''
+
+const back = (params: string) =>
+  Astro.redirect(`/app/settlements/${id}${params ? `?${params}` : ''}`, 303)
+const fail = (message: string) => back(`error=${encodeURIComponent(message)}`)
+const toList = (message: string) =>
+  Astro.redirect(`/app/settlements?error=${encodeURIComponent(message)}`, 303)
+
+const NOT_YOURS = 'That settlement is not one of yours.'
+const LOCKED = 'That settlement has been paid and cannot be changed. Revise it instead.'
+
+// A hand-edited URL is not a missing row, it is a failed uuid cast: Postgres
+// raises and the office manager gets "invalid input syntax for type uuid" across
+// the top of her screen. Checked here so a REAL database failure further down
+// still reaches her as a real database failure.
+if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+  return toList(NOT_YOURS)
+}
+
+interface SettlementRow {
+  id: string
+  driver_id: string
+  period_start: string
+  period_end: string
+  status: string
+  revision: number
+  supersedes_id: string | null
+  superseded_at: string | null
+  net_cents: number | null
+  paid_on: string | null
+  payment_reference: string | null
+  note: string | null
+  created_at: string
+}
+
+const SETTLEMENT_COLUMNS =
+  'id, driver_id, period_start, period_end, status, revision, supersedes_id, superseded_at, net_cents, paid_on, payment_reference, note, created_at'
+
+/**
+ * THE SETTLEMENT IS FETCHED BEFORE THE POST IS DISPATCHED, ON PURPOSE.
+ *
+ * RLS on settlement_lines checks one thing: that carrier_id is mine. It does
+ * not check that settlement_id points at a settlement of mine — a trigger does
+ * that separately — but proving it is visible here means every handler below can
+ * trust the id, and it costs one query the page needs for its heading anyway.
+ *
+ * It also gives the handlers the STATUS, which is what the lock is read from.
+ *
+ * No .eq('carrier_id', …). RLS already scopes this, and repeating the filter
+ * would say in code that we do not quite believe the policy.
+ */
+const { data: settlementData, error: settlementError } = await supabase
+  .from('settlements')
+  .select(SETTLEMENT_COLUMNS)
+  .eq('id', id)
+  .maybeSingle()
+
+if (settlementError) return toList(settlementError.message)
+// maybeSingle() returns null for "no such settlement" and for "another
+// carrier's settlement" alike, because RLS makes the second look exactly like
+// the first. That is the point.
+if (!settlementData) return toList(NOT_YOURS)
+const settlement = settlementData as SettlementRow
+const locked = isLocked(settlement.status)
+
+interface LineRow {
+  id: string
+  category: SettlementCategory
+  kind: string
+  description: string | null
+  amount_cents: number
+  load_id: string | null
+  method: PayMethod | null
+  quantity_milli: number | null
+  rate_mills: number | null
+  percent_bp: number | null
+  rate_cents: number | null
+  basis_cents: number | null
+  mileage_basis: string | null
+  percent_includes_fuel_surcharge: boolean | null
+  percent_includes_accessorials: boolean | null
+  created_at: string
+}
+
+// Kept on one line: supabase-js reads the select list as a string LITERAL to
+// type the row it returns, and a string built by concatenation is just `string`
+// to the compiler — which turns every column into GenericStringError.
+const LINE_COLUMNS =
+  'id, category, kind, description, amount_cents, load_id, method, quantity_milli, rate_mills, percent_bp, rate_cents, basis_cents, mileage_basis, percent_includes_fuel_surcharge, percent_includes_accessorials, created_at'
+
+/** The columns a computed line writes. Shared by the compute path and revise. */
+function lineInsert(line: ComputedLine, loadId: string | null): Record<string, unknown> {
+  return {
+    // Supplied on INSERT, never filtered on SELECT.
+    carrier_id: carrierId,
+    settlement_id: id,
+    category: line.category,
+    kind: line.kind,
+    description: line.description,
+    amount_cents: line.amountCents,
+    load_id: loadId,
+    pay_agreement_id: line.payAgreementId ?? null,
+    method: line.method,
+    quantity_milli: line.quantityMilli,
+    rate_mills: line.rateMills,
+    percent_bp: line.percentBp,
+    rate_cents: line.rateCents,
+    basis_cents: line.basisCents,
+    mileage_basis: line.mileageBasis,
+    percent_includes_fuel_surcharge: line.percentIncludesFuelSurcharge,
+    percent_includes_accessorials: line.percentIncludesAccessorials,
+  }
+}
+
+/** What the lines add up to, right now, straight from the database. */
+async function currentNet(): Promise<number> {
+  const { data } = await supabase
+    .from('settlement_lines')
+    .select('category, amount_cents')
+    .eq('settlement_id', id)
+  const rows = (data ?? []) as { category: SettlementCategory; amount_cents: number }[]
+  return settlementTotals(rows.map((r) => ({ category: r.category, amountCents: r.amount_cents })))
+    .netCents
+}
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  // One gate for every writing intent, read from the row we just fetched rather
+  // than from a hidden field. The database refuses these writes anyway — this
+  // exists so the refusal is a sentence instead of a raw trigger exception.
+  const WRITES = [
+    'apply_agreement',
+    'add_line',
+    'remove_line',
+    'approve',
+    'reopen',
+    'mark_paid',
+    'void',
+    'save_note',
+  ]
+  if (locked && WRITES.includes(intent)) return fail(LOCKED)
+
+  if (intent === 'apply_agreement') {
+    const agreementId = String(form.get('agreement_id') ?? '')
+    if (!agreementId) return fail('Pick an agreement to pay from.')
+
+    const { data: agreementData, error: agreementError } = await supabase
+      .from('pay_agreements')
+      .select(
+        'id, label, method, rate_mills, percent_bp, rate_cents, mileage_basis, percent_includes_fuel_surcharge, percent_includes_accessorials, effective_on, ends_on, driver_id',
+      )
+      .eq('id', agreementId)
+      .maybeSingle()
+
+    if (agreementError) return fail(agreementError.message)
+    if (!agreementData) return fail('That pay agreement is no longer on file.')
+    const row = agreementData as {
+      id: string
+      label: string
+      method: PayMethod
+      rate_mills: number | null
+      percent_bp: number | null
+      rate_cents: number | null
+      mileage_basis: string | null
+      percent_includes_fuel_surcharge: boolean | null
+      percent_includes_accessorials: boolean | null
+      effective_on: string
+      ends_on: string | null
+      driver_id: string
+    }
+    // Both rows are inside one carrier, so no policy anywhere would catch this.
+    // A database trigger refuses it too; here it becomes a sentence.
+    if (row.driver_id !== settlement.driver_id) {
+      return fail('That agreement belongs to a different driver.')
+    }
+
+    const agreement: PayAgreement = {
+      id: row.id,
+      label: row.label,
+      method: row.method,
+      rateMills: row.rate_mills,
+      percentBp: row.percent_bp,
+      rateCents: row.rate_cents,
+      mileageBasis: isMileageBasis(row.mileage_basis ?? '')
+        ? (row.mileage_basis as MileageBasis)
+        : null,
+      percentIncludesFuelSurcharge: row.percent_includes_fuel_surcharge,
+      percentIncludesAccessorials: row.percent_includes_accessorials,
+      effectiveOn: row.effective_on,
+      endsOn: row.ends_on,
+    }
+
+    // IN FORCE ON THE LAST DAY OF THE PERIOD, not today.
+    //
+    // The list above only offers agreements that were running during the period,
+    // but a submitted id is a submitted id: a stale tab open since before the
+    // rate changed, or a back button, would otherwise settle March at April's
+    // rate. Back-dating a rate change onto a week it was never agreed for is the
+    // second-most expensive thing this module can get wrong.
+    if (agreementsInForce([agreement], settlement.period_end).length === 0) {
+      return fail(
+        `"${agreement.label}" was not in force on ${formatDate(settlement.period_end)}, so it cannot be settled for this period.`,
+      )
+    }
+
+    let loadId: string | null = null
+    let load: {
+      linehaulCents: number | null
+      fuelSurchargeCents: number | null
+      accessorialsCents: number | null
+    } | null = null
+    let quantityMilli: number | null = null
+
+    if (agreement.method === 'percentage') {
+      loadId = String(form.get('load_id') ?? '') || null
+      if (!loadId) return fail('Pick the load this percentage is of.')
+      const { data: loadData, error: loadError } = await supabase
+        .from('loads')
+        .select('id, linehaul_cents, fuel_surcharge_cents, accessorials_cents')
+        .eq('id', loadId)
+        .maybeSingle()
+      if (loadError) return fail(loadError.message)
+      if (!loadData) return fail('That load is no longer on your board.')
+      load = {
+        linehaulCents: loadData.linehaul_cents,
+        fuelSurchargeCents: loadData.fuel_surcharge_cents,
+        accessorialsCents: loadData.accessorials_cents,
+      }
+    } else {
+      const label =
+        agreement.method === 'per_mile'
+          ? 'Miles'
+          : agreement.method === 'hourly'
+            ? 'Hours'
+            : 'How many'
+      const parsed = parseQuantityToMilli(form.get('quantity'), { label })
+      if (!parsed.ok) return fail(parsed.message)
+      if (parsed.value === null || parsed.value <= 0) {
+        return fail(`Enter the ${label.toLowerCase()} to pay on.`)
+      }
+      quantityMilli = parsed.value
+    }
+
+    const outcome = computeEarning(agreement, {
+      milesMilli: agreement.method === 'per_mile' ? quantityMilli : null,
+      hoursMilli: agreement.method === 'hourly' ? quantityMilli : null,
+      quantityMilli: agreement.method === 'flat_per_trip' ? quantityMilli : null,
+      load,
+    })
+
+    // An agreement missing its mileage basis or its percentage scope comes back
+    // 'incomplete' and is REFUSED rather than settled at zero. A zero line reads
+    // as "this run paid nothing" on a statement, and the driver is the one who
+    // finds it.
+    if (outcome.kind === 'incomplete') return fail(outcome.reason)
+    if (outcome.kind === 'no_input') return fail('Nothing to pay on.')
+
+    const { error } = await supabase.from('settlement_lines').insert({
+      ...lineInsert(outcome.line, loadId),
+      created_by: userId,
+    })
+    if (error) return fail(error.message)
+    // Redirect rather than render: a refresh would add the same 2,500 miles a
+    // second time, and a doubled linehaul line looks exactly like a generous week.
+    return back('added=1')
+  }
+
+  if (intent === 'add_line') {
+    const kind = String(form.get('kind') ?? '')
+    if (!isLineKind(kind)) return fail('Pick what kind of line this is.')
+    // THE CATEGORY IS DERIVED, NEVER SUBMITTED. A form that posted both could be
+    // made to file an escrow deduction as an earning, which pays the driver the
+    // $250 instead of holding it. One select, one lookup, one answer.
+    const category = categoryOfKind(kind)
+    if (!category) return fail('Pick what kind of line this is.')
+
+    const amount = parseMoneyToCents(form.get('amount'), { label: 'The amount' })
+    if (!amount.ok) return fail(amount.message)
+    if (amount.value === null) return fail('Enter the amount.')
+
+    const loadId = String(form.get('load_id') ?? '') || null
+
+    const { error } = await supabase.from('settlement_lines').insert({
+      carrier_id: carrierId,
+      settlement_id: id,
+      category,
+      kind,
+      description: textOrNull(form.get('description')),
+      // The form collects a POSITIVE figure — nobody types "-250" into a
+      // deduction box, and a form that demanded it would collect a positive
+      // number from somebody eventually. signedAmount is the ONE place the
+      // direction is decided, and a CHECK constraint catches every other path.
+      amount_cents: signedAmount(category, amount.value),
+      load_id: loadId,
+      created_by: userId,
+    })
+    if (error) return fail(error.message)
+    return back('added=1')
+  }
+
+  if (intent === 'remove_line') {
+    const lineId = String(form.get('line_id') ?? '')
+    if (!lineId) return fail('Nothing to remove.')
+    // Scoped to THIS settlement, not just to the id.
+    //
+    // Not a defensive carrier_id filter — RLS covers tenancy. This is about a
+    // line id from a DIFFERENT settlement of the same carrier: it passes every
+    // policy, and the lock trigger would check that other settlement's status
+    // rather than this one's. A stale tab or a hand-edited form would then
+    // delete a line off a statement nobody was looking at.
+    const { error } = await supabase
+      .from('settlement_lines')
+      .delete()
+      .eq('id', lineId)
+      .eq('settlement_id', id)
+    if (error) return fail(error.message)
+    return back('removed=1')
+  }
+
+  if (intent === 'save_note') {
+    const { error } = await supabase
+      .from('settlements')
+      .update({ note: textOrNull(form.get('note')) })
+      .eq('id', id)
+    if (error) return fail(error.message)
+    return back('saved=1')
+  }
+
+  if (intent === 'approve') {
+    const { error } = await supabase
+      .from('settlements')
+      .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: userId })
+      .eq('id', id)
+    if (error) return fail(error.message)
+    return back('approved=1')
+  }
+
+  if (intent === 'reopen') {
+    // Approved is deliberately not a lock. An owner who approves on Friday and
+    // finds a missing toll receipt on Saturday must be able to add it; forcing a
+    // formal revision there trains people to leave everything in draft, which
+    // defeats the lock that actually matters.
+    const { error } = await supabase
+      .from('settlements')
+      .update({ status: 'draft', approved_at: null, approved_by: null })
+      .eq('id', id)
+    if (error) return fail(error.message)
+    return back('reopened=1')
+  }
+
+  if (intent === 'mark_paid') {
+    const paidOn = String(form.get('paid_on') ?? '')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(paidOn)) return fail('When was it paid?')
+
+    // An empty statement locks just as hard as a full one, and unlocking it
+    // means a revision — so a settlement nobody has put a line on is almost
+    // certainly the wrong row rather than a genuinely empty week. Void is the
+    // way to close one of those.
+    const { count } = await supabase
+      .from('settlement_lines')
+      .select('id', { count: 'exact', head: true })
+      .eq('settlement_id', id)
+    if (!count) {
+      return fail('There is nothing on this statement to pay. Add a line, or void it.')
+    }
+
+    // THE TOTAL IS SNAPSHOTTED HERE, and this is the only place it is written.
+    // Re-derived from the lines one last time rather than taken from the page
+    // that rendered the button: the page may have been open in a tab since
+    // yesterday, and the number that gets frozen has to be the number that is
+    // true at the moment the row locks.
+    const net = await currentNet()
+
+    const { error } = await supabase
+      .from('settlements')
+      .update({
+        status: 'paid',
+        net_cents: net,
+        paid_on: paidOn,
+        payment_reference: textOrNull(form.get('payment_reference')),
+      })
+      .eq('id', id)
+    if (error) return fail(error.message)
+    return back('paid=1')
+  }
+
+  if (intent === 'void') {
+    const net = await currentNet()
+    // Voided, never deleted. "He was never paid for that week" is a conversation
+    // that needs a row to point at, and there is no DELETE grant on the table.
+    const { error } = await supabase
+      .from('settlements')
+      .update({ status: 'void', net_cents: net })
+      .eq('id', id)
+    if (error) return fail(error.message)
+    return back('voided=1')
+  }
+
+  if (intent === 'revise') {
+    /**
+     * THE CORRECTION ROUTE for a settlement that is already paid.
+     *
+     * Order matters and it is chosen so a failure half-way leaves something
+     * usable rather than nothing:
+     *   1. create revision N+1 (if this fails, nothing has changed)
+     *   2. copy the lines onto it (if this fails, an empty revision exists and
+     *      can be deleted or filled in by hand — the paid one is untouched)
+     *   3. annotate the paid one as superseded (the only field the lock allows
+     *      to change on it, same allowance the append-only compliance_records
+     *      trigger makes)
+     *
+     * The reverse order would, on a failure at step 2, leave a settlement marked
+     * "replaced" by something that does not exist.
+     */
+    // Only a LOCKED settlement needs revising. An open one is simply edited, and
+    // a revision of a draft is a second row for the same week that nobody asked
+    // for — two statements for one week is exactly the thing a driver notices
+    // and nobody in the office does.
+    if (!locked) {
+      return fail('This settlement is still open — edit it instead of revising it.')
+    }
+    if (settlement.superseded_at) {
+      return fail('This settlement has already been revised. Open the revision from the list.')
+    }
+
+    const { data: created, error: createError } = await supabase
+      .from('settlements')
+      .insert({
+        carrier_id: carrierId,
+        driver_id: settlement.driver_id,
+        period_start: settlement.period_start,
+        period_end: settlement.period_end,
+        revision: settlement.revision + 1,
+        supersedes_id: settlement.id,
+        note: settlement.note,
+        created_by: userId,
+      })
+      .select('id')
+      .single()
+
+    if (createError) {
+      if (createError.code === '23505') {
+        return fail('A revision of this settlement already exists. Open it from the list.')
+      }
+      return fail(createError.message)
+    }
+
+    const { data: oldLines, error: readError } = await supabase
+      .from('settlement_lines')
+      .select(LINE_COLUMNS)
+      .eq('settlement_id', id)
+      .order('created_at', { ascending: true })
+
+    if (readError) return fail(readError.message)
+
+    const copies = ((oldLines ?? []) as unknown as LineRow[]).map((l) => ({
+      carrier_id: carrierId,
+      settlement_id: created.id,
+      category: l.category,
+      kind: l.kind,
+      description: l.description,
+      amount_cents: l.amount_cents,
+      load_id: l.load_id,
+      method: l.method,
+      quantity_milli: l.quantity_milli,
+      rate_mills: l.rate_mills,
+      percent_bp: l.percent_bp,
+      rate_cents: l.rate_cents,
+      basis_cents: l.basis_cents,
+      mileage_basis: l.mileage_basis,
+      percent_includes_fuel_surcharge: l.percent_includes_fuel_surcharge,
+      percent_includes_accessorials: l.percent_includes_accessorials,
+      created_by: userId,
+      // pay_agreement_id is deliberately NOT copied. The terms travel with the
+      // line; the link back to an agreement that may since have been ended would
+      // only invite somebody to re-read the rate through it.
+    }))
+
+    if (copies.length > 0) {
+      const { error: copyError } = await supabase.from('settlement_lines').insert(copies)
+      if (copyError) return fail(copyError.message)
+    }
+
+    const { error: markError } = await supabase
+      .from('settlements')
+      .update({ superseded_at: new Date().toISOString() })
+      .eq('id', id)
+    if (markError) return fail(markError.message)
+
+    return Astro.redirect(`/app/settlements/${created.id}?revised=1`, 303)
+  }
+
+  return back('')
+}
+
+// ---------------------------------------------------------------- render
+
+const [
+  { data: driverData },
+  { data: lineData, error: lineError },
+  { data: agreementData },
+  { data: assignmentData },
+  { data: carrierData },
+  { data: revisionData },
+] = await Promise.all([
+  supabase
+    .from('drivers')
+    .select('id, first_name, last_name')
+    .eq('id', settlement.driver_id)
+    .maybeSingle(),
+  supabase
+    .from('settlement_lines')
+    .select(LINE_COLUMNS)
+    .eq('settlement_id', id)
+    .order('created_at', { ascending: true }),
+  supabase
+    .from('pay_agreements')
+    .select(
+      'id, label, method, rate_mills, percent_bp, rate_cents, mileage_basis, percent_includes_fuel_surcharge, percent_includes_accessorials, effective_on, ends_on',
+    )
+    .eq('driver_id', settlement.driver_id)
+    .order('effective_on', { ascending: false }),
+  /**
+   * The driver's loads, for a percentage agreement to be taken OF.
+   *
+   * Deliberately NOT filtered to the settlement period. A load picked up on the
+   * Friday delivers and settles the following week, and a list filtered by the
+   * assignment date would hide exactly the load she is looking for — which reads
+   * as "the load is not in the system" rather than "the filter is wrong".
+   */
+  supabase
+    .from('load_assignments')
+    .select(
+      'load_id, assigned_at, loads ( id, load_number, broker_reference, linehaul_cents, fuel_surcharge_cents, accessorials_cents )',
+    )
+    .eq('driver_id', settlement.driver_id)
+    .is('unassigned_at', null)
+    .order('assigned_at', { ascending: false })
+    .limit(60),
+  supabase.from('carriers').select('legal_name, dot_number').eq('id', carrierId).maybeSingle(),
+  supabase
+    .from('settlements')
+    .select('id, revision, status')
+    .eq('supersedes_id', id)
+    .maybeSingle(),
+])
+
+const driver = driverData as { id: string; first_name: string; last_name: string } | null
+const lines = (lineData ?? []) as unknown as LineRow[]
+const carrier = carrierData as { legal_name: string; dot_number: string | null } | null
+const replacedBy = revisionData as { id: string; revision: number; status: string } | null
+
+interface AgreementRow {
+  id: string
+  label: string
+  method: PayMethod
+  rate_mills: number | null
+  percent_bp: number | null
+  rate_cents: number | null
+  mileage_basis: string | null
+  percent_includes_fuel_surcharge: boolean | null
+  percent_includes_accessorials: boolean | null
+  effective_on: string
+  ends_on: string | null
+}
+
+const asAgreement = (r: AgreementRow): PayAgreement => ({
+  id: r.id,
+  label: r.label,
+  method: r.method,
+  rateMills: r.rate_mills,
+  percentBp: r.percent_bp,
+  rateCents: r.rate_cents,
+  mileageBasis: isMileageBasis(r.mileage_basis ?? '') ? (r.mileage_basis as MileageBasis) : null,
+  percentIncludesFuelSurcharge: r.percent_includes_fuel_surcharge,
+  percentIncludesAccessorials: r.percent_includes_accessorials,
+  effectiveOn: r.effective_on,
+  endsOn: r.ends_on,
+})
+
+/**
+ * The agreements to offer, chosen by the LAST DAY OF THE PERIOD.
+ *
+ * Not today. A settlement for March that is being typed up in April must apply
+ * March's rates, and picking "whatever is live right now" is exactly how a rate
+ * change gets back-dated onto a period it was never agreed for.
+ */
+const inForce = (agreementData ?? [])
+  .map((a) => ({ row: a as unknown as AgreementRow, ag: asAgreement(a as unknown as AgreementRow) }))
+  .filter((a) => agreementsInForce([a.ag], settlement.period_end).length === 1)
+
+interface AssignmentRow {
+  load_id: string
+  loads:
+    | {
+        id: string
+        load_number: string | null
+        broker_reference: string | null
+        linehaul_cents: number | null
+      }
+    | {
+        id: string
+        load_number: string | null
+        broker_reference: string | null
+        linehaul_cents: number | null
+      }[]
+    | null
+}
+
+/** PostgREST returns a to-one embed as an object OR a one-element array. */
+const driverLoads = ((assignmentData ?? []) as unknown as AssignmentRow[])
+  .map((a) => (Array.isArray(a.loads) ? a.loads[0] : a.loads))
+  .filter((l): l is NonNullable<typeof l> => Boolean(l))
+
+const totals = settlementTotals(
+  lines.map((l) => ({ category: l.category, amountCents: l.amount_cents })),
+)
+
+// A locked settlement shows what was PAID; an open one shows what its lines add
+// up to right now. They can only disagree if somebody has been in the database
+// by hand, and a silently wrong total on a paid statement is the worst number on
+// this page — so it is reported rather than hidden.
+const shownNet = locked && settlement.net_cents !== null ? settlement.net_cents : totals.netCents
+const drift = locked && settlement.net_cents !== null && settlement.net_cents !== totals.netCents
+
+const byCategory = SETTLEMENT_CATEGORIES.map((c) => ({
+  ...c,
+  lines: lines.filter((l) => l.category === c.value),
+  subtotal:
+    c.value === 'earning'
+      ? totals.earningsCents
+      : c.value === 'reimbursement'
+        ? totals.reimbursementsCents
+        : c.value === 'advance'
+          ? totals.advancesCents
+          : totals.deductionsCents,
+})).filter((c) => c.lines.length > 0)
+
+/** The terms that settle an argument, per line, straight off the line itself. */
+function lineTerms(l: LineRow): string {
+  if (l.method === 'per_mile') {
+    const basis = isMileageBasis(l.mileage_basis ?? '') ? mileageBasisLabel(l.mileage_basis) : '—'
+    return `${formatQuantity(l.quantity_milli)} mi × ${formatRateMills(l.rate_mills)} · ${basis.toLowerCase()} miles`
+  }
+  if (l.method === 'percentage') {
+    const fsc = l.percent_includes_fuel_surcharge
+    const acc = l.percent_includes_accessorials
+    const of =
+      fsc === null || acc === null
+        ? 'an unstated basis'
+        : describePercentScope({ includesFuelSurcharge: fsc, includesAccessorials: acc })
+    return `${formatPercentBp(l.percent_bp)} of ${of} (${formatCents(l.basis_cents)})`
+  }
+  if (l.method === 'hourly') {
+    return `${formatQuantity(l.quantity_milli)} h × ${formatCents(l.rate_cents)}`
+  }
+  if (l.method === 'flat_per_trip') {
+    return `${formatQuantity(l.quantity_milli)} × ${formatCents(l.rate_cents)}`
+  }
+  return ''
+}
+
+const params = Astro.url.searchParams
+const error = params.get('error') ?? lineError?.message ?? null
+const notice = params.has('created')
+  ? 'Settlement started. Pay from an agreement below, or add lines by hand.'
+  : params.has('added')
+    ? 'Line added.'
+    : params.has('removed')
+      ? 'Line removed.'
+      : params.has('approved')
+        ? 'Approved. It is still editable until you mark it paid.'
+        : params.has('reopened')
+          ? 'Back to draft.'
+          : params.has('paid')
+            ? 'Marked paid and locked. A correction now needs a revision.'
+            : params.has('voided')
+              ? 'Voided. It stays on the list so it can be pointed at.'
+              : params.has('revised')
+                ? 'This is the revision. The paid statement it replaces is unchanged.'
+                : params.has('saved')
+                  ? 'Saved.'
+                  : null
+
+const today = todayInCalifornia()
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const primary =
+  'rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700'
+const secondary =
+  'rounded-lg border border-ink-100 px-4 py-2.5 font-medium transition hover:bg-ink-50'
+
+const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(settlement.period_end)}`
+---
+
+<App
+  title={driver ? fullName(driver) : 'Settlement'}
+  subtitle={`${periodLabel}${settlement.revision > 1 ? ` · revision ${settlement.revision}` : ''}`}
+>
+  <div data-screen-only>
+    {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+    {
+      notice && (
+        <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{notice}</p>
+      )
+    }
+    {
+      drift && (
+        <p class="mb-5 rounded-lg bg-red-100 px-4 py-3 text-sm text-red-800">
+          The frozen total on this paid settlement
+          (<span class="tabular-nums">{formatCents(settlement.net_cents)}</span>) does not match
+          what its lines add up to
+          (<span class="tabular-nums">{formatCents(totals.netCents)}</span>). That cannot happen
+          through this app — somebody has changed the database by hand.
+        </p>
+      )
+    }
+    {
+      settlement.superseded_at && replacedBy && (
+        <p class="mb-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          Replaced by revision <span class="tabular-nums">{replacedBy.revision}</span>.{' '}
+          <a href={`/app/settlements/${replacedBy.id}`} class="font-medium underline">
+            Open it →
+          </a>{' '}
+          This one is kept exactly as it was paid.
+        </p>
+      )
+    }
+    {
+      settlement.supersedes_id && (
+        <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+          This is revision <span class="tabular-nums">{settlement.revision}</span>, correcting an
+          earlier statement.{' '}
+          <a href={`/app/settlements/${settlement.supersedes_id}`} class="font-medium underline">
+            See what it replaces →
+          </a>
+        </p>
+      )
+    }
+
+    <div class="mb-6 flex flex-wrap items-center gap-3">
+      <span
+        class:list={[
+          'rounded-md px-2.5 py-1 text-sm font-medium',
+          settlementStatusPillClass(settlement.status),
+        ]}
+      >
+        {settlementStatusLabel(settlement.status)}
+      </span>
+      {
+        settlement.paid_on && (
+          <span class="text-sm text-ink-500 tabular-nums">
+            Paid {formatDate(settlement.paid_on)}
+            {settlement.payment_reference ? ` · ${settlement.payment_reference}` : ''}
+          </span>
+        )
+      }
+      <span class="flex-1"></span>
+      <button type="button" id="print" class={secondary}>Print / Save as PDF</button>
+      <a href="/app/settlements" class="text-sm font-medium text-brand-600 hover:underline">
+        All settlements
+      </a>
+      {
+        driver && (
+          <a
+            href={`/app/drivers/${driver.id}/pay`}
+            class="text-sm font-medium text-brand-600 hover:underline"
+          >
+            His pay agreements →
+          </a>
+        )
+      }
+    </div>
+  </div>
+
+  {/* ---------------------------------------------------------------- the statement */}
+  <article class="rounded-xl border border-ink-100 bg-white p-6 sm:p-8" id="statement">
+    <header class="border-b border-ink-100 pb-5">
+      <div class="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 class="text-2xl font-semibold tracking-tight">Settlement statement</h2>
+          <p class="mt-1 text-sm text-ink-500">
+            Not a payroll document. No tax has been withheld and nothing has been filed.
+          </p>
+        </div>
+        <div class="text-right text-sm">
+          <div class="font-medium">{carrier?.legal_name ?? '—'}</div>
+          <div class="text-ink-500 tabular-nums">USDOT {carrier?.dot_number ?? '—'}</div>
+        </div>
+      </div>
+      <dl class="mt-4 grid gap-x-8 gap-y-1 text-sm sm:grid-cols-2">
+        <div class="flex gap-2">
+          <dt class="text-ink-500">Driver</dt>
+          <dd class="font-medium">{driver ? fullName(driver) : '—'}</dd>
+        </div>
+        <div class="flex gap-2">
+          <dt class="text-ink-500">Period</dt>
+          <dd class="font-medium tabular-nums">{periodLabel}</dd>
+        </div>
+        <div class="flex gap-2">
+          <dt class="text-ink-500">Status</dt>
+          <dd class="font-medium">{settlementStatusLabel(settlement.status)}</dd>
+        </div>
+        <div class="flex gap-2">
+          <dt class="text-ink-500">Revision</dt>
+          <dd class="font-medium tabular-nums">{settlement.revision}</dd>
+        </div>
+      </dl>
+    </header>
+
+    {
+      lines.length === 0 ? (
+        <p class="mt-6 rounded-xl border border-dashed border-ink-100 p-8 text-center text-sm text-ink-500">
+          No lines yet. Pay from an agreement below, or add one by hand.
+        </p>
+      ) : (
+        <div class="mt-6 space-y-6">
+          {byCategory.map((group) => (
+            <section data-block>
+              <div class="flex items-baseline justify-between gap-4 border-b border-ink-100 pb-2">
+                <h3 class="font-medium tracking-tight">{group.label}</h3>
+                <span class="font-semibold tabular-nums">{formatCents(group.subtotal)}</span>
+              </div>
+              <table class="w-full text-sm">
+                <tbody class="divide-y divide-ink-100">
+                  {group.lines.map((l) => (
+                    <tr>
+                      <td class="py-2.5 pr-4 align-top">
+                        <div class="font-medium">
+                          {l.description || lineKindLabel(l.kind)}
+                        </div>
+                        <div class="text-xs text-ink-500">
+                          {lineKindLabel(l.kind)}
+                          {/* THE TERMS, ON THE LINE. Which miles, and what the
+                              percentage was of. Copied here when the line was
+                              made, so a later edit to the agreement cannot
+                              change what this statement says it paid. */}
+                          {lineTerms(l) && <span class="text-ink-300"> · {lineTerms(l)}</span>}
+                        </div>
+                      </td>
+                      <td class="w-32 py-2.5 text-right align-top font-medium tabular-nums">
+                        {formatCents(l.amount_cents)}
+                      </td>
+                      <td class="w-24 py-2.5 pl-2 text-right align-top" data-screen-only>
+                        {!locked && (
+                          <form method="POST" class="inline">
+                            <input type="hidden" name="line_id" value={l.id} />
+                            <button
+                              type="submit"
+                              name="intent"
+                              value="remove_line"
+                              class="text-xs text-red-600 hover:underline"
+                            >
+                              Remove
+                            </button>
+                          </form>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          ))}
+        </div>
+      )
+    }
+
+    <div class="mt-6 border-t-2 border-ink-900 pt-4" data-block>
+      <dl class="ml-auto max-w-sm space-y-1.5 text-sm">
+        <div class="flex justify-between gap-6">
+          <dt class="text-ink-500">Earnings</dt>
+          <dd class="tabular-nums">{formatCents(totals.earningsCents)}</dd>
+        </div>
+        <div class="flex justify-between gap-6">
+          <dt class="text-ink-500">Reimbursements</dt>
+          <dd class="tabular-nums">{formatCents(totals.reimbursementsCents)}</dd>
+        </div>
+        <div class="flex justify-between gap-6">
+          <dt class="text-ink-500">Advances</dt>
+          <dd class="tabular-nums">{formatCents(totals.advancesCents)}</dd>
+        </div>
+        <div class="flex justify-between gap-6">
+          <dt class="text-ink-500">Deductions</dt>
+          <dd class="tabular-nums">{formatCents(totals.deductionsCents)}</dd>
+        </div>
+        <div class="flex justify-between gap-6 border-t border-ink-100 pt-2 text-lg font-semibold">
+          <dt>Net</dt>
+          <dd class="tabular-nums">{formatCents(shownNet)}</dd>
+        </div>
+      </dl>
+      <p class="mt-3 text-right text-xs text-ink-500">
+        {locked ? 'The figure as paid.' : 'Adds up the lines above. Nothing is stored until it is paid.'}
+      </p>
+    </div>
+
+    {settlement.note && <p class="mt-6 text-sm text-ink-700">{settlement.note}</p>}
+
+    <footer class="mt-8 border-t border-ink-100 pt-4 text-xs text-ink-500">
+      <p>
+        This is a settlement statement, not a payroll record. No federal or state tax has been
+        withheld, no FICA has been calculated and nothing has been filed with any authority. Gross
+        pay, withholding and reporting are handled by whoever runs this carrier’s payroll.
+      </p>
+      <p class="mt-2 tabular-nums">
+        Produced {formatDate(today)} · {carrier?.legal_name ?? ''} · settlement {settlement.id.slice(0, 8)}
+      </p>
+    </footer>
+  </article>
+
+  {/* ---------------------------------------------------------------- controls */}
+  <div data-screen-only>
+    {
+      locked ? (
+        <div class="mt-6 rounded-xl border border-brand-500/30 bg-brand-500/[0.04] p-5">
+          <h2 class="font-semibold tracking-tight">
+            This statement is {settlement.status === 'paid' ? 'paid' : 'void'} and locked
+          </h2>
+          <p class="mt-2 max-w-3xl text-sm text-ink-500">
+            Its lines cannot be added to, changed or removed — by this page or by anything else,
+            because the database refuses it. That is deliberate: the driver is holding a copy of
+            this sheet, and a statement that quietly changes afterwards is one nobody can argue
+            from. A correction goes on a new revision, which copies these lines onto a fresh draft
+            and marks this one as replaced.
+          </p>
+          {!settlement.superseded_at && (
+            <form method="POST" class="mt-4">
+              <button type="submit" name="intent" value="revise" class={primary}>
+                Revise — create revision {settlement.revision + 1}
+              </button>
+            </form>
+          )}
+        </div>
+      ) : (
+        <>
+          <section class="mt-6">
+            <h2 class="text-lg font-semibold tracking-tight">Pay from an agreement</h2>
+            <p class="mt-1 max-w-3xl text-sm text-ink-500">
+              These are the agreements in force on{' '}
+              <span class="tabular-nums">{formatDate(settlement.period_end)}</span> — the last day
+              of this period, not today, so a settlement typed up late still applies the rates
+              that were agreed for the week it covers.
+            </p>
+
+            {inForce.length === 0 ? (
+              <div class="mt-4 rounded-xl border border-dashed border-ink-100 bg-white p-8 text-center">
+                <p class="font-medium">No pay agreement covers this period</p>
+                <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+                  Add one and every settlement from its start date applies it automatically.
+                </p>
+                {driver && (
+                  <a
+                    href={`/app/drivers/${driver.id}/pay`}
+                    class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+                  >
+                    Set up his pay →
+                  </a>
+                )}
+              </div>
+            ) : (
+              <ul class="mt-4 space-y-3">
+                {inForce.map(({ row, ag }) => {
+                  const gap = missingTerms(ag)
+                  return (
+                    <li class:list={[card, gap && 'border-amber-300 bg-amber-50/40']}>
+                      <form method="POST" class="flex flex-wrap items-end gap-4">
+                        <input type="hidden" name="agreement_id" value={row.id} />
+                        <div class="min-w-0 flex-1">
+                          <div class="flex flex-wrap items-center gap-2">
+                            <span class="font-medium">{row.label}</span>
+                            <span class="rounded-md bg-ink-100 px-2 py-0.5 text-xs font-medium text-ink-500">
+                              {payMethodLabel(row.method)}
+                            </span>
+                            <span class="font-semibold tabular-nums">{rateSummary(ag)}</span>
+                          </div>
+                          {termsSummary(ag) && (
+                            <p class="mt-0.5 text-sm text-ink-500">{termsSummary(ag)}</p>
+                          )}
+                          {gap && (
+                            <p class="mt-2 rounded-lg bg-amber-100 px-3 py-2 text-sm text-amber-900">
+                              {gap} Nothing can be settled from it until that is answered.
+                            </p>
+                          )}
+                        </div>
+
+                        {row.method === 'percentage' ? (
+                          <label class="block w-full sm:w-72">
+                            <span class="text-sm font-medium">Which load</span>
+                            <select name="load_id" required class={field} disabled={Boolean(gap)}>
+                              <option value="">— choose —</option>
+                              {driverLoads.map((l) => (
+                                <option value={l.id}>
+                                  {loadLabel(l)} · {formatCents(l.linehaul_cents)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : (
+                          <label class="block w-full sm:w-44">
+                            <span class="text-sm font-medium">
+                              {row.method === 'per_mile'
+                                ? 'Miles'
+                                : row.method === 'hourly'
+                                  ? 'Hours'
+                                  : 'How many'}
+                            </span>
+                            <input
+                              name="quantity"
+                              required
+                              inputmode="decimal"
+                              placeholder={row.method === 'hourly' ? '7.5' : '1250'}
+                              class={`${field} tabular-nums`}
+                              disabled={Boolean(gap)}
+                            />
+                          </label>
+                        )}
+
+                        <button
+                          type="submit"
+                          name="intent"
+                          value="apply_agreement"
+                          disabled={Boolean(gap)}
+                          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-300 disabled:hover:bg-ink-100"
+                        >
+                          Add line
+                        </button>
+                      </form>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </section>
+
+          <section class="mt-6">
+            <h2 class="text-lg font-semibold tracking-tight">Add a line by hand</h2>
+            <p class="mt-1 max-w-3xl text-sm text-ink-500">
+              Detention, a toll receipt, an advance he took on Wednesday, the weekly escrow. Type
+              the amount as a plain positive figure — advances and deductions are taken off the net
+              automatically, and there is exactly one place in the code that decides that.
+            </p>
+
+            <form method="POST" class={`mt-4 ${card}`}>
+              <div class="grid gap-4 sm:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_minmax(0,10rem)_auto] sm:items-end">
+                <label class="block">
+                  <span class="text-sm font-medium">What kind <span class="text-red-600">*</span></span>
+                  {/* One select, grouped. The CATEGORY is looked up from the kind
+                      on the server and is never submitted — a form that posted
+                      both could file an escrow deduction as an earning, which
+                      pays him the $250 instead of holding it. */}
+                  <select name="kind" required class={field}>
+                    <option value="">— choose —</option>
+                    {SETTLEMENT_CATEGORIES.map((c) => (
+                      <optgroup label={c.label}>
+                        {LINE_KINDS.filter((k) => k.category === c.value).map((k) => (
+                          <option value={k.value}>{k.label}</option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </label>
+
+                <label class="block">
+                  <span class="text-sm font-medium">
+                    Description <span class="font-normal text-ink-300">(optional)</span>
+                  </span>
+                  <input
+                    type="text"
+                    name="description"
+                    placeholder="Detention at Fontana, 3 hours over"
+                    class={field}
+                  />
+                </label>
+
+                <label class="block">
+                  <span class="text-sm font-medium">Amount <span class="text-red-600">*</span></span>
+                  <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
+                    <span class="pl-3 text-ink-300">$</span>
+                    <input
+                      name="amount"
+                      required
+                      inputmode="decimal"
+                      placeholder="250.00"
+                      class="w-full bg-transparent px-2 py-2 text-base tabular-nums outline-none"
+                    />
+                  </div>
+                </label>
+
+                <button type="submit" name="intent" value="add_line" class={primary}>
+                  Add
+                </button>
+              </div>
+
+              {driverLoads.length > 0 && (
+                <label class="mt-4 block sm:max-w-sm">
+                  <span class="text-sm font-medium">
+                    Against a load <span class="font-normal text-ink-300">(optional)</span>
+                  </span>
+                  <select name="load_id" class={field}>
+                    <option value="">Not load-specific</option>
+                    {driverLoads.map((l) => (
+                      <option value={l.id}>{loadLabel(l)}</option>
+                    ))}
+                  </select>
+                  <span class="mt-1 block text-xs text-ink-500">
+                    Escrow, insurance and the ELD fee belong to the period, not to a load. Tolls
+                    and lumpers usually belong to one.
+                  </span>
+                </label>
+              )}
+            </form>
+          </section>
+
+          <section class="mt-6 grid gap-6 lg:grid-cols-2">
+            <form method="POST" class={card}>
+              <h2 class="font-semibold tracking-tight">Note on the statement</h2>
+              <textarea
+                name="note"
+                rows="3"
+                class={field}
+                placeholder="Anything he should read alongside the numbers.">{settlement.note ?? ''}</textarea>
+              <button type="submit" name="intent" value="save_note" class={`mt-3 ${secondary}`}>
+                Save note
+              </button>
+            </form>
+
+            <div class={card}>
+              <h2 class="font-semibold tracking-tight">Finish it</h2>
+              <p class="mt-1 text-sm text-ink-500">
+                Approving is a signature, not a lock — you can still correct it. Marking it paid
+                freezes the figure and the lines for good.
+              </p>
+
+              <div class="mt-4 flex flex-wrap gap-3">
+                {settlement.status === 'draft' && (
+                  <form method="POST">
+                    <button type="submit" name="intent" value="approve" class={secondary}>
+                      Approve
+                    </button>
+                  </form>
+                )}
+                {settlement.status === 'approved' && (
+                  <form method="POST">
+                    <button type="submit" name="intent" value="reopen" class={secondary}>
+                      Back to draft
+                    </button>
+                  </form>
+                )}
+                <form method="POST">
+                  <button
+                    type="submit"
+                    name="intent"
+                    value="void"
+                    class="rounded-lg border border-red-200 px-4 py-2.5 font-medium text-red-700 transition hover:bg-red-50"
+                  >
+                    Void
+                  </button>
+                </form>
+              </div>
+
+              <form method="POST" class="mt-5 border-t border-ink-100 pt-4">
+                <div class="grid gap-4 sm:grid-cols-2">
+                  <label class="block">
+                    <span class="text-sm font-medium">Paid on <span class="text-red-600">*</span></span>
+                    <input
+                      type="date"
+                      name="paid_on"
+                      value={today}
+                      required
+                      class={`${field} tabular-nums`}
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-sm font-medium">
+                      Reference <span class="font-normal text-ink-300">(optional)</span>
+                    </span>
+                    <input
+                      type="text"
+                      name="payment_reference"
+                      placeholder="check 1042"
+                      class={`${field} tabular-nums`}
+                    />
+                  </label>
+                </div>
+                <button type="submit" name="intent" value="mark_paid" class={`mt-3 ${primary}`}>
+                  Mark paid — {formatCents(totals.netCents)}
+                </button>
+                <p class="mt-2 text-xs text-ink-500">
+                  This freezes <span class="tabular-nums">{formatCents(totals.netCents)}</span> onto
+                  the row and locks every line. After that, a correction is a revision.
+                </p>
+              </form>
+            </div>
+          </section>
+        </>
+      )
+    }
+  </div>
+</App>
+
+<style is:global>
+  /*
+   * Every rule here is a defect somebody would only find after printing: the
+   * app's navigation across the top of a statement that goes in an envelope, a
+   * subtotal split across a page boundary, a status pill coming out of a mono
+   * laser as grey mush.
+   */
+  @media print {
+    @page {
+      margin: 18mm 14mm;
+    }
+
+    /* The app shell has no business on a document handed to a driver. */
+    body > header,
+    [data-screen-only] {
+      display: none !important;
+    }
+
+    body {
+      background: #fff;
+    }
+
+    main {
+      max-width: none;
+      padding: 0;
+    }
+
+    #statement {
+      border: 0;
+      padding: 0;
+    }
+
+    /* A subtotal broken over two pages is a subtotal that gets read twice. */
+    [data-block] {
+      break-inside: avoid;
+    }
+
+    /* Tinted backgrounds are grey mush on a monochrome printer, and grey mush
+       all looks alike — which on a money document is worse than no colour. */
+    [class*='bg-'] {
+      background: transparent !important;
+      color: #000 !important;
+    }
+  }
+</style>
+
+<script>
+  /*
+   * The only script on this page, and it is one line of work: the browser's
+   * print dialog. There is no framework here and nothing depends on this running
+   * — with JavaScript off the statement still renders and Ctrl+P still prints
+   * it correctly, because the layout is done in CSS above.
+   */
+  document.getElementById('print')?.addEventListener('click', () => window.print())
+</script>

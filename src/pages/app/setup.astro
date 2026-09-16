@@ -1,0 +1,1243 @@
+---
+/**
+ * First run: prove the USDOT number is yours, claim the carrier, then find out
+ * what we cannot do for you.
+ *
+ * The middleware sends anyone here who has a session but no membership, so this
+ * is the only /app page that must work without a carrier. That redirect is the
+ * whole onboarding mechanism: it cannot be dismissed like a modal, it survives a
+ * refresh, and it needs no JavaScript.
+ *
+ * One URL, six states, each decided by server state rather than by a step
+ * counter — so every one of them is linkable, refreshable and back-buttonable:
+ *
+ *   no carrier, no ?dot        ask for the USDOT number
+ *   no carrier, ?dot=N         show what the federal file says and ask "is this you"
+ *   ?verify=1, or nothing to
+ *     confirm                  the masked contacts we may send a code to
+ *   a live claim on ?dot=N     enter the code
+ *   an open manual request     the request is with a person
+ *   carrier                    what the federal file cannot give us
+ *
+ * WHY THE CODE EXISTS AT ALL. A USDOT number is public, printed on the door of
+ * every truck on the interstate, and `carriers.dot_number` is UNIQUE — so before
+ * this flow the first account to type a number owned it for good. The numbers
+ * are sequential, there is no invite mechanism and no transfer path, so the
+ * entire market was claimable from a script. Sending a code to a contact on the
+ * carrier's own federal record and creating nothing until it comes back is the
+ * smallest real proof available. docs/design/dot-verification.md has the
+ * measurements that chose phone over email, and src/lib/claims.ts holds the
+ * decisions this page renders.
+ *
+ * NOTHING HERE IS THE ENFORCEMENT POINT. 0021_carrier_claims.sql is — it revokes
+ * `create_carrier` from `authenticated` so that `complete_carrier_claim` is the
+ * only door left, and a rule that lived only in this page is a rule a curl
+ * command would walk past.
+ */
+import App from '../../layouts/App.astro'
+import {
+  attemptsLeft,
+  CLAIM_POLICY,
+  claimMessage,
+  claimOptions,
+  hashClaimCode,
+  newClaimCode,
+  normalizeClaimCode,
+  pickOption,
+} from '../../lib/claims.ts'
+import {
+  type CensusRow,
+  lookupCarrier,
+  normalizeDot,
+  parseCensusDate,
+  statusLabel,
+} from '../../lib/fmcsa.ts'
+import { send, smsBody } from '../../lib/notify/send.ts'
+import {
+  addressLine,
+  censusAddress,
+  claimNotice,
+  claimStartNotice,
+  claimStatusOutcome,
+  type FleetTarget,
+  fleetTarget,
+  notice,
+  operationLabel,
+  type RosterProgress,
+  rosterProgress,
+  safetyRating,
+} from '../../lib/onboarding.ts'
+import { MCS150_RULE_CODE } from '../../lib/rules/federal-carrier.ts'
+import { site, telHref } from '../../lib/site.ts'
+
+const supabase = Astro.locals.supabase!
+const userId = Astro.locals.userId!
+const carrierId = Astro.locals.carrierId ?? null
+
+// Astro.locals.runtime.env was REMOVED in Astro v6. Worker bindings and secrets
+// now come from the `cloudflare:workers` module, which does not exist outside
+// the Worker runtime — hence the dynamic import and the fallback to
+// import.meta.env for `astro dev` and for tests. Same shape as the digest route.
+let workerEnv: Record<string, string> = {}
+try {
+  workerEnv = (await import('cloudflare:workers')).env as unknown as Record<string, string>
+} catch {
+  // Not running in the Worker runtime; import.meta.env carries the values.
+}
+const env = (k: string) => workerEnv[k] ?? (import.meta.env as unknown as Record<string, string>)[k]
+
+const pepper = env('CLAIM_CODE_PEPPER')
+
+/**
+ * Whether this deployment can mint a code at all.
+ *
+ * `hashClaimCode` THROWS below 32 characters, deliberately — a six-digit code
+ * behind a bare SHA-256 is a million digests away from plaintext, so an
+ * unpeppered hash is not a secret and the library refuses to pretend otherwise.
+ * That refusal is right and it must not reach a customer as a 500. So the check
+ * happens here instead, the flow says what is wrong in one sentence an operator
+ * can act on, and manual review — which mints no code and needs no pepper —
+ * keeps working.
+ */
+const canSendCodes = (pepper ?? '').trim().length >= 32
+
+/** Whether outbound messages actually reach the recipient. See notify/guard.ts. */
+const isProduction = env('DEPLOY_ENV') === 'production'
+
+/**
+ * Every exit is a 303 carrying CODES, never a message.
+ *
+ * Astro.redirect defaults to 302, which permits the browser to repeat the POST
+ * at the new location — and repeating one of these means a second code sent to
+ * somebody's phone, against a per-number budget of three an hour. The code
+ * rather than the text is the same rule as on /login: a page that renders
+ * whatever the URL says is a page anyone can put words into, and this one also
+ * used to forward raw Postgres error text to the customer.
+ */
+const go = (params: Record<string, string | null | undefined>) => {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) if (value) query.set(key, value)
+  const search = query.toString()
+  return Astro.redirect(`/app/setup${search ? `?${search}` : ''}`, 303)
+}
+
+const fail = (code: string, dot?: string | null) => go({ notice: code, dot })
+
+/** Back to the channel picker, where the other channel and manual review both are. */
+const backToChannels = (dot: string, code?: string) => go({ dot, verify: '1', notice: code })
+
+/** PostgREST returns a `returns table (...)` function as an array of rows. */
+const rowStatus = (data: unknown): string | null => {
+  const row = Array.isArray(data) ? data[0] : data
+  const status = (row as { status?: unknown } | null)?.status
+  return typeof status === 'string' ? status : null
+}
+
+if (Astro.request.method === 'POST') {
+  // Somebody who already has a carrier has nothing to claim, and every intent
+  // below would be a second claim on a number they already hold.
+  if (carrierId) return go({})
+
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+  const dot = normalizeDot(String(form.get('dot') ?? ''))
+
+  if (!dot) return fail('dot_invalid')
+
+  // Step one exists only to turn a typed number into a URL. The confirmation
+  // screen has to be reachable by GET or a refresh on it re-POSTs the lookup.
+  if (intent === 'lookup') return go({ dot })
+
+  // "Yes, this is us" no longer creates anything. It moves to the channel
+  // picker, and the first row in `carrier_claims` is written a click later when
+  // a channel is chosen — so a mistyped digit still costs nobody a message.
+  if (intent === 'verify') return backToChannels(dot)
+
+  // ------------------------------------------------------- manual review
+  //
+  // FIRST-CLASS, NOT A FALLBACK. Measured over the census file: 37% of the
+  // oldest registrations carry no phone and no email, and the operating-
+  // authority dataset has neither for that same population — tested, 0 of 60.
+  // There is no second source, so for those carriers a person is not the
+  // backup path, it is the only path.
+  if (intent === 'manual') {
+    // Capped at the column's 2000, and null rather than '' so an empty box does
+    // not put a blank string in front of whoever reads the queue.
+    const note =
+      String(form.get('note') ?? '')
+        .trim()
+        .slice(0, 2000) || null
+
+    const { data, error } = await supabase.rpc('start_carrier_claim', {
+      p_dot_number: dot,
+      p_channel: 'manual',
+      p_code_hash: null,
+      p_destination_mask: null,
+      p_note: note,
+    })
+    if (error) return backToChannels(dot, 'manual_failed')
+
+    const refused = claimStartNotice(rowStatus(data))
+    if (refused) return backToChannels(dot, refused)
+
+    // Without ?verify the next render finds the open manual row and shows the
+    // "it is with a person" state rather than the picker it was just submitted
+    // from.
+    return go({ dot, notice: 'manual_queued' })
+  }
+
+  // ------------------------------------------------------------ send a code
+  if (intent === 'send') {
+    if (!canSendCodes) return backToChannels(dot, 'claim_unconfigured')
+
+    // THE DESTINATION IS RESOLVED HERE, FROM THE FEDERAL RECORD, and only the
+    // channel name comes off the form. A destination read out of a form field
+    // is a destination the claimant chose, which would turn this whole flow
+    // into a way of mailing yourself a code for somebody else's carrier.
+    let census: CensusRow | null = null
+    try {
+      census = await lookupCarrier(dot)
+    } catch {
+      // Unlike the old create path, this one cannot carry on without the census
+      // row: the contact to send to is in it.
+      return backToChannels(dot, 'claim_census_down')
+    }
+
+    const option = pickOption(claimOptions(census), String(form.get('channel') ?? ''))
+    if (!option) return backToChannels(dot, 'claim_channel_gone')
+
+    const code = newClaimCode()
+    let codeHash: string
+    try {
+      codeHash = await hashClaimCode({ pepper, dotNumber: dot, userId, code })
+    } catch {
+      // canSendCodes should have caught this. A second guard because the
+      // alternative is an exception escaping into a 500 on a customer's screen.
+      return backToChannels(dot, 'claim_unconfigured')
+    }
+
+    const { data, error } = await supabase.rpc('start_carrier_claim', {
+      p_dot_number: dot,
+      p_channel: option.channel,
+      p_code_hash: codeHash,
+      // What we SHOW, never the real destination. The claimant can read their
+      // own claim row, and a value that is only masked in the page is not
+      // masked.
+      p_destination_mask: option.mask,
+      p_note: null,
+    })
+    if (error) return backToChannels(dot, 'claim_failed')
+
+    const refused = claimStartNotice(rowStatus(data))
+    if (refused) return backToChannels(dot, refused)
+
+    const message = claimMessage(dot, code)
+    const result = await send(
+      {
+        channel: option.channel === 'phone' ? 'sms' : 'email',
+        to: option.destination,
+        subject: message.subject,
+        body: option.channel === 'phone' ? smsBody([message.body]) : message.body,
+      },
+      // Outside production every message is redirected to the developer and
+      // never reaches the carrier. That is guard.ts doing its job, it is why
+      // anyone who can reach the dev host can claim any carrier there, and it
+      // is said out loud on the next screen rather than left to be discovered.
+      {
+        mode: env('DEPLOY_ENV'),
+        redirectEmail: env('DEV_REDIRECT_EMAIL'),
+        redirectPhone: env('DEV_REDIRECT_PHONE'),
+      },
+      {
+        resendApiKey: env('RESEND_API_KEY'),
+        fromEmail: env('DIGEST_FROM_EMAIL'),
+        twilioSid: env('TWILIO_ACCOUNT_SID'),
+        twilioToken: env('TWILIO_AUTH_TOKEN'),
+        twilioFrom: env('TWILIO_FROM_NUMBER'),
+      },
+    )
+
+    if (result.status !== 'sent') {
+      // THE CLAIM DIES WITH THE SEND. The row exists and its fifteen minutes
+      // are already running, so leaving it alive would park the claimant on
+      // "enter the code we sent you" about a message that never left the
+      // building — and a landline that cannot receive SMS looks exactly like a
+      // code that has not arrived yet. The void does NOT refund the rate limit;
+      // see void_carrier_claim in 0021 for why that is the point.
+      await supabase.rpc('void_carrier_claim', { p_dot_number: dot })
+      return backToChannels(
+        dot,
+        result.status === 'skipped' ? 'claim_send_blocked' : 'claim_send_failed',
+      )
+    }
+
+    return go({ dot, notice: 'claim_sent' })
+  }
+
+  // --------------------------------------------------------- spend a guess
+  if (intent === 'code') {
+    if (!canSendCodes) return fail('claim_unconfigured', dot)
+
+    // People paste "123 456" off a text message. Rejecting that is a support
+    // ticket, not a security control — but it is rejected BEFORE the database
+    // is touched, so a fat finger does not spend one of five attempts.
+    const typed = normalizeClaimCode(String(form.get('code') ?? ''))
+    if (!typed) return go({ dot, notice: 'claim_code_shape' })
+
+    let codeHash: string
+    try {
+      codeHash = await hashClaimCode({ pepper, dotNumber: dot, userId, code: typed })
+    } catch {
+      return fail('claim_unconfigured', dot)
+    }
+
+    // The legal name is read from the census and never from this page. The
+    // settings page states the rule — "a legal name typed over FMCSA's is a
+    // second answer nobody can adjudicate" — and `complete_carrier_claim`
+    // raises on a blank one, which would abort the transaction and take the
+    // attempts increment and the verified stamp with it.
+    let census: CensusRow | null = null
+    try {
+      census = await lookupCarrier(dot)
+    } catch {
+      // The claim is untouched and the code is still alive, so this costs the
+      // claimant nothing but a retry.
+      return go({ dot, notice: 'claim_census_down' })
+    }
+
+    const legalName = census?.legal_name?.trim() ?? ''
+    if (!legalName) return go({ dot, notice: 'name_needed' })
+
+    const { data, error } = await supabase.rpc('complete_carrier_claim', {
+      p_dot_number: dot,
+      p_code_hash: codeHash,
+      p_legal_name: legalName,
+      p_dba_name: census?.dba_name?.trim() || null,
+    })
+    if (error) return go({ dot, notice: 'create_failed' })
+
+    const outcome = claimStatusOutcome(typeof data === 'string' ? data : null)
+    if (!outcome) return go({ dot, notice: 'create_failed' })
+
+    const refused = claimNotice(outcome)
+    // A wrong guess lands back on the code screen, which re-reads `attempts`
+    // from the database and says how many are left. The count is deliberately
+    // not in the notice text: it changes on every attempt.
+    if (refused) return go({ dot, notice: refused })
+
+    // ---- created. Everything below is best-effort enrichment of a carrier
+    // that already exists; a failure here is a blank block on a settings page,
+    // not a signup that did not happen.
+    const { data: created } = await supabase
+      .from('carriers')
+      .select('id')
+      .eq('dot_number', dot)
+      .maybeSingle()
+    const newCarrierId = (created as { id: string } | null)?.id ?? null
+
+    if (newCarrierId && census) {
+      // `carriers` has held the address columns since 0001 and the settings page
+      // renders them, but nothing in the application had ever written one — so
+      // that block was blank for every customer, and "your federal record will
+      // start filling in the rest" was a promise no code kept.
+      const address = censusAddress(census)
+      if (address) await supabase.from('carriers').update(address).eq('id', newCarrierId)
+
+      // Seed the dates the federal record already knows, so the owner does not
+      // type what we were just told. Without this the MCS-150 row computes the
+      // right date and still says "not sure" — which makes the whole "we fill in
+      // what we can" promise ring hollow on the very first screen he sees.
+      const on = parseCensusDate(census.mcs150_date)
+      if (on) {
+        await supabase
+          .from('compliance_records')
+          .insert({
+            carrier_id: newCarrierId,
+            subject_type: 'carrier',
+            subject_id: newCarrierId,
+            anchor_key: MCS150_RULE_CODE,
+            occurred_on: on.toISOString().slice(0, 10),
+            // Marked as coming from FMCSA, not from the owner. "The carrier said"
+            // and "the federal record said" are different claims and must stay
+            // distinguishable when they disagree.
+            source: 'fmcsa',
+            note: 'Read from the FMCSA census file at signup.',
+          })
+          .then(undefined, () => undefined)
+      }
+    }
+
+    // Back to this same page, which now renders its last state. Not straight to
+    // the dashboard: a dashboard with no trucks and no drivers on it is an empty
+    // screen that says nothing about what to do next, and the one thing this
+    // customer needs next is the thing the federal file could not give us.
+    return go({ created: '1' })
+  }
+
+  return go({})
+}
+
+// ---------------------------------------------------------------- loading
+
+const params = Astro.url.searchParams
+const msg = notice(params.get('notice'))
+const dotParam = normalizeDot(params.get('dot') ?? '')
+const justCreated = params.get('created') === '1'
+/** Explicit, so "send it somewhere else" can leave a live claim's code screen. */
+const wantsChannels = params.get('verify') === '1'
+
+type Step = 'ask' | 'confirm' | 'choose' | 'code' | 'queued' | 'done'
+
+// --- which claim, if any, this person has open on this number.
+interface ClaimRow {
+  id: string
+  channel: 'phone' | 'email' | 'manual'
+  destination_mask: string | null
+  expires_at: string
+  attempts: number
+  note: string | null
+  created_at: string
+}
+let codeClaim: ClaimRow | null = null
+let manualClaim: ClaimRow | null = null
+
+if (!carrierId && dotParam) {
+  // No .eq('user_id', ...). The policy on carrier_claims is `user_id =
+  // auth.uid()` and the grant is column-by-column with `code_hash` left out, so
+  // this returns this person's own rows and cannot return the hash of their own
+  // code. Repeating the filter would say in code that we do not trust that.
+  const { data } = await supabase
+    .from('carrier_claims')
+    .select('id, channel, destination_mask, expires_at, attempts, note, created_at')
+    .eq('dot_number', dotParam)
+    .is('verified_at', null)
+    .is('voided_at', null)
+    .order('created_at', { ascending: false })
+    .limit(5)
+
+  const rows = (data ?? []) as ClaimRow[]
+  const unexpired = (r: ClaimRow) => new Date(r.expires_at).getTime() > Date.now()
+
+  // An expired claim, or one with its five guesses spent, is NOT the code
+  // screen: there is nothing left to type into it. Those fall through to the
+  // channel picker, where a new code is one click away, and the notice from the
+  // redirect says which of the two happened.
+  codeClaim =
+    rows.find((r) => r.channel !== 'manual' && unexpired(r) && attemptsLeft(r.attempts) > 0) ?? null
+  manualClaim = rows.find((r) => r.channel === 'manual' && unexpired(r)) ?? null
+}
+
+const provisional: Step = carrierId
+  ? 'done'
+  : !dotParam
+    ? 'ask'
+    : wantsChannels
+      ? 'choose'
+      : codeClaim
+        ? 'code'
+        : manualClaim
+          ? 'queued'
+          : 'confirm'
+
+// --- confirm and choose: what the federal file says about the number typed.
+//
+// `lookupCarrier` returns null for "no such carrier" and throws when the service
+// is unreachable. Collapsing the two would tell a carrier his number does not
+// exist because Socrata was down, which is the one thing fmcsa.ts is built to
+// keep apart. Not fetched on the code screen: the mask there comes off the claim
+// row, so a second federal request per keystroke-retry would buy nothing.
+let found: CensusRow | null = null
+let lookupFailed = false
+if ((provisional === 'confirm' || provisional === 'choose') && dotParam) {
+  try {
+    found = await lookupCarrier(dotParam)
+  } catch {
+    lookupFailed = true
+  }
+}
+
+// There is nothing to confirm when the file had nothing to show, so that case
+// goes straight to the picker — which, with no census row, offers the one path
+// that exists for it.
+const step: Step = provisional === 'confirm' && !found ? 'choose' : provisional
+
+const options = step === 'choose' ? claimOptions(found) : []
+
+/**
+ * Which picker this is. Four cases, because collapsing any two of them says
+ * something untrue:
+ *
+ *   auto        the record carries a contact and we can send to it
+ *   none        the record was read and carries neither. MEASURED and normal.
+ *   missing     the file has no row for this number at all
+ *   unreachable we could not read the file just now and do not know
+ *
+ * `none` and `unreachable` are the pair that matters most: telling somebody
+ * their federal record holds no contact, when in truth Socrata timed out, is a
+ * confident lie about a public document they can go and check.
+ */
+const chooseVariant: 'auto' | 'none' | 'missing' | 'unreachable' = lookupFailed
+  ? 'unreachable'
+  : !found
+    ? 'missing'
+    : options.length > 0
+      ? 'auto'
+      : 'none'
+
+// --- who the manual queue would be answering.
+let accountEmail: string | null = null
+if (step === 'choose' || step === 'queued') {
+  const { data } = await supabase.from('profiles').select('email').eq('id', userId).maybeSingle()
+  accountEmail = (data as { email: string | null } | null)?.email ?? null
+}
+
+// --- done: the counts to aim at, and how far in they are.
+interface CarrierRow {
+  dot_number: string | null
+  legal_name: string
+  dba_name: string | null
+}
+let carrier: CarrierRow | null = null
+let target: FleetTarget = { powerUnits: null, drivers: null, cdl: null }
+let trucks: RosterProgress = { state: 'unknown', added: 0 }
+let drivers: RosterProgress = { state: 'unknown', added: 0 }
+
+if (step === 'done' && carrierId) {
+  // No .eq('carrier_id', ...) on the counts. RLS already scopes both tables to
+  // this user's carrier, and repeating the filter would say in code that we do
+  // not quite trust the policy.
+  const [carrierResult, truckResult, driverResult] = await Promise.all([
+    supabase
+      .from('carriers')
+      .select('dot_number, legal_name, dba_name')
+      .eq('id', carrierId)
+      .maybeSingle(),
+    supabase
+      .from('vehicles')
+      .select('id', { count: 'exact', head: true })
+      .eq('kind', 'power_unit')
+      .eq('status', 'active'),
+    supabase.from('drivers').select('id', { count: 'exact', head: true }).eq('status', 'active'),
+  ])
+
+  carrier = (carrierResult.data as CarrierRow | null) ?? null
+
+  if (carrier?.dot_number) {
+    try {
+      target = fleetTarget(await lookupCarrier(carrier.dot_number))
+    } catch {
+      // Counts we could not fetch stay null, and null prints as "not on file"
+      // rather than as a target of zero.
+    }
+  }
+
+  trucks = rosterProgress(truckResult.count ?? 0, target.powerUnits)
+  drivers = rosterProgress(driverResult.count ?? 0, target.drivers)
+} else if (step === 'confirm') {
+  target = fleetTarget(found)
+}
+
+const rosterLine = (p: RosterProgress, noun: string) => {
+  switch (p.state) {
+    case 'unknown':
+      return `The federal file does not list a ${noun} count for you. You have added ${p.added}.`
+    case 'partial':
+      return `FMCSA has you at ${p.target}. You have added ${p.added} — ${p.remaining} to go.`
+    case 'met':
+      return `FMCSA has you at ${p.target} and you have added ${p.added}. That matches.`
+    case 'over':
+      return `FMCSA has you at ${p.target}; you have added ${p.added}. Your last MCS-150 is behind your yard.`
+  }
+}
+
+const lastFiled = parseCensusDate(found?.mcs150_date)
+const fmt = (d: Date) =>
+  d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
+
+const status = statusLabel(found?.status_code)
+const rating = safetyRating(found?.safety_rating)
+const where = addressLine(found)
+
+// --- code: what the claim row says, read back rather than remembered.
+const codeMask = codeClaim?.destination_mask ?? 'the contact on your federal record'
+const codeByText = codeClaim?.channel === 'phone'
+const attemptsRemaining = codeClaim ? attemptsLeft(codeClaim.attempts) : 0
+const attemptsSpent = codeClaim?.attempts ?? 0
+// Minutes rather than a clock time. There is no carrier row yet, so there is no
+// carrier timezone to render a wall clock in, and a deadline printed in the
+// wrong zone is worse than no deadline at all.
+const minutesLeft = codeClaim
+  ? Math.max(0, Math.ceil((new Date(codeClaim.expires_at).getTime() - Date.now()) / 60_000))
+  : 0
+
+// --- manual: the words, and a way to reach a person.
+//
+// `site.email` and `site.phone` are the single place the business's contact
+// details live, and both are still the TODO they were on day one. Until one is
+// filled, this screen says what it can honestly say — the request is recorded
+// and the reply goes to the account address — rather than printing an inbox
+// nobody reads. Filling either one in site.ts lights up the links below.
+const contactEmail: string = site.email
+const contactPhone: string = site.phone
+const manualSubject = `USDOT ${dotParam ?? ''} — manual ownership review`
+const manualIntro = [
+  `USDOT number: ${dotParam ?? ''}`,
+  `Account email: ${accountEmail ?? '(the address I signed up with)'}`,
+  '',
+  'I cannot verify this number by code because the federal record has no contact on it.',
+].join('\n')
+const manualMailto = contactEmail
+  ? `mailto:${contactEmail}?subject=${encodeURIComponent(manualSubject)}&body=${encodeURIComponent(manualIntro)}`
+  : ''
+
+const recordHeading =
+  chooseVariant === 'unreachable'
+    ? 'We could not read the federal record'
+    : chooseVariant === 'missing'
+      ? 'No federal record for that number'
+      : (found?.legal_name ?? '')
+
+const manualLead =
+  chooseVariant === 'none'
+    ? // THE MEASURED CASE, and the reason this path is not an apology. Sampled
+      // from the live census: 37% of the oldest registrations carry neither a
+      // phone nor an email. The operating-authority dataset does not rescue
+      // them — tested against 60 such carriers, it had a phone for 0 of them —
+      // so there is genuinely no second source and no code we could send.
+      `The federal record for USDOT ${dotParam} carries no phone number and no email address. That is normal for a registration filed before FMCSA collected them, and it is not a mark against you. There is no second public source to fall back on — the operating-authority file holds no email at all, and for carriers in this position it holds no phone either. So there is nothing for us to send a code to, and a person checks this one by hand.`
+    : chooseVariant === 'missing'
+      ? `Nothing came back for USDOT ${dotParam}. Check the digits first — a brand-new registration can take a few days to appear in the public file. If the number is right, there is no federal record for us to send a code to yet, so a person can check it by hand.`
+      : chooseVariant === 'unreachable'
+        ? 'We could not read the federal record just now, so we do not know what contact it carries. Try the number again in a moment. If it keeps failing, a person can check this by hand instead.'
+        : 'If neither of those reaches you any more — an old office line, a mailbox nobody reads — a person can check this by hand instead.'
+
+const READS = [
+  'Your legal name, and the name you do business as',
+  'Your physical address and the phone number on file',
+  'Interstate or intrastate, and whether you are flagged for hazmat',
+  'How many power units and drivers you last reported',
+  'Your safety rating, if a compliance review ever gave you one',
+  'The date of your last MCS-150, which sets when the next one is due',
+]
+
+// The last state is reachable twice: once on the redirect after the carrier is
+// created, and for good afterwards, since /app/setup stays a real page for a
+// user who already has one. "Your fleet is set up" is right the first time and
+// odd the fiftieth, so the heading follows which visit this is.
+const manualHeading = chooseVariant === 'auto' ? 'Prove the number is yours' : 'A person has to check this one'
+const title =
+  step === 'done'
+    ? justCreated
+      ? 'Your fleet is set up'
+      : 'Finish setting up your fleet'
+    : step === 'queued'
+      ? 'Your request is with a person'
+      : step === 'code'
+        ? 'Enter the code'
+        : step === 'choose'
+          ? manualHeading
+          : step === 'confirm'
+            ? 'Is this your carrier?'
+            : 'Set up your fleet'
+
+const subtitle =
+  step === 'done'
+    ? 'The part the federal file cannot do for you.'
+    : step === 'queued'
+      ? `Manual review of USDOT ${dotParam}.`
+      : step === 'code'
+        ? `Six digits, good for ${CLAIM_POLICY.ttlMinutes} minutes from when we sent them.`
+        : step === 'choose'
+          ? chooseVariant === 'auto'
+            ? 'The code goes to the contact FMCSA holds for you, never to anything typed here.'
+            : 'There is no contact on the federal record to send a code to.'
+          : step === 'confirm'
+            ? 'Read from the public federal record, live, just now.'
+            : 'Start with your USDOT number. We fill in what the federal record knows.'
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2.5 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const primary =
+  'w-full rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700'
+const secondary =
+  'w-full rounded-lg border border-ink-100 px-5 py-2.5 font-medium transition hover:bg-ink-50'
+const tone =
+  msg?.tone === 'ok'
+    ? 'bg-emerald-50 text-emerald-800'
+    : msg?.tone === 'info'
+      ? 'bg-sky-50 text-sky-900'
+      : 'bg-red-50 text-red-700'
+---
+
+<App title={title} subtitle={subtitle}>
+  <div class="max-w-2xl">
+    {msg && <p class:list={['mb-5 rounded-lg px-4 py-3 text-sm', tone]}>{msg.text}</p>}
+
+    {/* ============================================================ ask */}
+    {
+      step === 'ask' && (
+        <>
+          <form method="POST" class={card}>
+            <label class="block">
+              <span class="text-sm font-medium">Your USDOT number</span>
+              <input
+                type="text"
+                name="dot"
+                inputmode="numeric"
+                autocomplete="off"
+                required
+                autofocus
+                placeholder="1234567"
+                class={`${field} text-xl tabular-nums`}
+              />
+            </label>
+            <button type="submit" name="intent" value="lookup" class={`${primary} mt-4`}>
+              Look up my carrier
+            </button>
+          </form>
+
+          <div class={`${card} mt-6`}>
+            <p class="font-medium">What we read out of the federal file</p>
+            <ul class="mt-3 space-y-2 text-sm text-ink-700">
+              {READS.map((line) => (
+                <li class="flex gap-2">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    aria-hidden="true"
+                    class="mt-0.5 size-4 shrink-0 text-brand-600"
+                  >
+                    <path d="M20 6 9 17l-5-5" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  <span>{line}</span>
+                </li>
+              ))}
+            </ul>
+
+            {/*
+              Said here, before the number is even typed, because the expectation
+              it corrects is the one people arrive with: that a DOT number pulls
+              in the trucks and the drivers themselves. It does not, and finding
+              that out two screens later feels like a bait and switch.
+            */}
+            <p class="mt-4 border-t border-ink-100 pt-4 text-sm text-ink-500">
+              What it does <strong class="font-medium text-ink-700">not</strong> hold: VINs, plates,
+              driver names, CDL numbers, medical card dates. No public source holds any of those.
+              The federal file knows how many trucks and drivers you have, not which ones — so the
+              roster itself is typing, and it is the screen after this one.
+            </p>
+          </div>
+        </>
+      )
+    }
+
+    {/* ======================================================== confirm */}
+    {
+      step === 'confirm' && found && (
+        <>
+          <div class={card}>
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="min-w-0">
+                <h2 class="text-xl font-semibold tracking-tight">{found.legal_name}</h2>
+                {found.dba_name && (
+                  <p class="mt-1 text-sm text-ink-500">Doing business as {found.dba_name}</p>
+                )}
+                <p class="mt-1 text-sm text-ink-500">
+                  USDOT <span class="tabular-nums">{dotParam}</span>
+                  {where && (
+                    <>
+                      <span aria-hidden="true" class="mx-2 text-ink-300">
+                        ·
+                      </span>
+                      {where}
+                    </>
+                  )}
+                </p>
+              </div>
+              <span class:list={['rounded-md px-2.5 py-1 text-sm font-medium', status.tone]}>
+                {status.label}
+              </span>
+            </div>
+
+            <dl class="mt-5 grid gap-4 border-t border-ink-100 pt-5 sm:grid-cols-3">
+              <div>
+                <dt class="text-xs tracking-wide text-ink-500 uppercase">Power units</dt>
+                <dd class="mt-1 text-2xl font-semibold tabular-nums">
+                  {target.powerUnits === null ? '—' : target.powerUnits}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-xs tracking-wide text-ink-500 uppercase">Drivers</dt>
+                <dd class="mt-1 text-2xl font-semibold tabular-nums">
+                  {target.drivers === null ? '—' : target.drivers}
+                </dd>
+                <dd class="mt-1 text-xs text-ink-500">
+                  {target.cdl === null ? 'CDL count not on file' : `${target.cdl} hold a CDL`}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-xs tracking-wide text-ink-500 uppercase">Operation</dt>
+                <dd class="mt-1 text-lg font-semibold">
+                  {operationLabel(found.carrier_operation)}
+                </dd>
+                <dd class="mt-1 text-xs text-ink-500">
+                  {found.hm_ind === 'Y' ? 'Hazmat flag on file' : 'No hazmat flag on file'}
+                </dd>
+              </div>
+            </dl>
+
+            <dl class="mt-5 grid gap-4 border-t border-ink-100 pt-5 sm:grid-cols-2">
+              <div>
+                <dt class="text-xs tracking-wide text-ink-500 uppercase">Safety rating</dt>
+                <dd class="mt-1">
+                  <span class:list={['rounded-md px-2 py-0.5 text-sm font-medium', rating.tone]}>
+                    {rating.label}
+                  </span>
+                </dd>
+                <dd class="mt-1.5 text-xs text-ink-500">{rating.note}</dd>
+              </div>
+              <div>
+                <dt class="text-xs tracking-wide text-ink-500 uppercase">Last MCS-150</dt>
+                <dd class="mt-1 font-semibold tabular-nums">
+                  {lastFiled ? fmt(lastFiled) : 'No date on file'}
+                </dd>
+                <dd class="mt-1.5 text-xs text-ink-500">
+                  {lastFiled
+                    ? 'We record this for you, so the biennial deadline is right from day one.'
+                    : 'Without it we can say when the next one falls, but not whether you are current.'}
+                </dd>
+              </div>
+            </dl>
+          </div>
+
+          {/*
+            No name fields on this branch, and no carrier written by it either.
+            The button moves to the channel picker; nothing exists in the
+            database until a code has come back. A USDOT number is public and
+            `carriers.dot_number` is UNIQUE, so "typed it first" was never a
+            claim of ownership.
+          */}
+          <form method="POST" class="mt-5">
+            <input type="hidden" name="dot" value={dotParam} />
+            <button type="submit" name="intent" value="verify" class={primary}>
+              Yes — this is us
+            </button>
+          </form>
+
+          <p class="mt-3 text-center text-sm">
+            <a href="/app/setup" class="text-ink-500 hover:underline">
+              That is not us — try another number
+            </a>
+          </p>
+        </>
+      )
+    }
+
+    {/* ========================================================= choose */}
+    {
+      step === 'choose' && (
+        <>
+          {chooseVariant === 'auto' && (
+            <>
+              <div class={card}>
+                <p class="font-medium">{found?.legal_name}</p>
+                <p class="mt-1 text-sm text-ink-500">
+                  USDOT <span class="tabular-nums">{dotParam}</span>
+                </p>
+                {/*
+                  Said before the buttons, because the thing that makes this
+                  proof worth anything is that the destination is NOT a field on
+                  this page. Whoever reads the code is someone the federal
+                  record already says is the carrier.
+                */}
+                <p class="mt-3 text-sm text-ink-700">
+                  We send a {CLAIM_POLICY.codeDigits}-digit code to a contact on this carrier's own
+                  federal record. You cannot change where it goes, and we do not show the whole
+                  number or address — only enough for you to recognise your own.
+                </p>
+              </div>
+
+              {!canSendCodes && (
+                <p class="mt-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+                  Verification is not configured on this deployment — CLAIM_CODE_PEPPER is unset —
+                  so no code can be sent. Nothing you did caused this, and a manual review below
+                  still works.
+                </p>
+              )}
+
+              {canSendCodes && (
+                <div class="mt-5 space-y-3">
+                  {options.map((option) => (
+                    <form method="POST">
+                      <input type="hidden" name="dot" value={dotParam} />
+                      <input type="hidden" name="channel" value={option.channel} />
+                      <button type="submit" name="intent" value="send" class={primary}>
+                        {option.channel === 'phone'
+                          ? `Text a code to ${option.mask}`
+                          : `Email a code to ${option.mask}`}
+                      </button>
+                    </form>
+                  ))}
+                </div>
+              )}
+
+              {canSendCodes && options.length === 1 && options[0].channel === 'phone' && (
+                /*
+                  The single most common support ticket this flow will generate.
+                  A census phone is very often the office landline the carrier
+                  filed, SMS to it goes nowhere, and Twilio reports that long
+                  after the page has said "on its way".
+                */
+                <p class="mt-3 text-sm text-ink-500">
+                  That is the only contact on your federal record. If it is a landline the text
+                  will not arrive — nothing is wrong with your account, and the manual review below
+                  is the way round it.
+                </p>
+              )}
+            </>
+          )}
+
+          {chooseVariant !== 'auto' && (
+            <div class={card}>
+              {/*
+                On the `none` branch we DID read the federal record — it simply
+                carries no contact — and printing the name we read is the
+                difference between "we found you and there is nothing to send
+                to" and "we could not find you". The other two branches say
+                which of those actually happened rather than sharing a heading.
+              */}
+              <p class="font-medium">{recordHeading}</p>
+              <p class="mt-1 text-sm text-ink-500">
+                USDOT <span class="tabular-nums">{dotParam}</span>
+              </p>
+              <p class="mt-3 text-sm text-ink-700">{manualLead}</p>
+              {chooseVariant === 'unreachable' && (
+                <a href={`/app/setup?dot=${dotParam}`} class={`${secondary} mt-4 block text-center`}>
+                  Read the federal record again
+                </a>
+              )}
+            </div>
+          )}
+
+          {/* ---------------------------------------- manual review, always */}
+          <div class={`${card} mt-5`}>
+            <p class="font-medium">Have a person check it</p>
+            {chooseVariant === 'auto' && <p class="mt-2 text-sm text-ink-700">{manualLead}</p>}
+            <p class="mt-2 text-sm text-ink-700">
+              We do not hand over a carrier record on somebody's say-so, so this takes longer than a
+              code does. It is a real queue with a real person on the end of it, not a form that
+              goes nowhere.
+            </p>
+
+            <form method="POST" class="mt-4">
+              <input type="hidden" name="dot" value={dotParam} />
+              <label class="block">
+                <span class="text-sm font-medium">
+                  What should we know? <span class="font-normal text-ink-300">(optional)</span>
+                </span>
+                <textarea
+                  name="note"
+                  rows="3"
+                  maxlength="2000"
+                  class={field}
+                  placeholder="Your MC number, the name on your operating authority, a phone we can call back on."
+                ></textarea>
+              </label>
+              {/*
+                The two facts that make the request actionable on arrival are
+                printed here rather than assumed: the number being claimed, and
+                the address the answer goes back to. Somebody who reads this and
+                decides to phone instead already has both in front of them.
+              */}
+              <p class="mt-2 text-sm text-ink-500">
+                {`This goes to us with USDOT ${dotParam}, and we answer at `}
+                <span class="font-medium text-ink-700">
+                  {accountEmail ?? 'the email address on your account'}
+                </span>
+                {`. We hold a request like this for ${CLAIM_POLICY.manualDays} days.`}
+              </p>
+              <button type="submit" name="intent" value="manual" class={`${secondary} mt-4`}>
+                Ask for a manual review
+              </button>
+            </form>
+          </div>
+
+          <p class="mt-3 text-center text-sm">
+            {/*
+              This picker is reachable from a live claim — "send it somewhere
+              else" lands here — so there has to be a way back to the code that
+              is already on somebody's phone. Without it, changing your mind
+              costs a send out of three an hour.
+            */}
+            {codeClaim && (
+              <>
+                <a href={`/app/setup?dot=${dotParam}`} class="text-ink-500 hover:underline">
+                  Enter the code we already sent
+                </a>
+                <span aria-hidden="true" class="mx-2 text-ink-300">·</span>
+              </>
+            )}
+            <a href="/app/setup" class="text-ink-500 hover:underline">
+              Start over with a different number
+            </a>
+          </p>
+        </>
+      )
+    }
+
+    {/* =========================================================== code */}
+    {
+      step === 'code' && codeClaim && (
+        <>
+          <div class={card}>
+            <p class="text-sm text-ink-700">
+              We sent a {CLAIM_POLICY.codeDigits}-digit code
+              {codeByText ? ' by text to ' : ' by email to '}
+              <span class="font-medium text-ink-900 tabular-nums">{codeMask}</span>, the contact on
+              the federal record for USDOT <span class="tabular-nums">{dotParam}</span>.
+            </p>
+
+            <form method="POST" class="mt-4">
+              <input type="hidden" name="dot" value={dotParam} />
+              <label class="block">
+                <span class="text-sm font-medium">The code</span>
+                <input
+                  type="text"
+                  name="code"
+                  inputmode="numeric"
+                  autocomplete="one-time-code"
+                  required
+                  autofocus
+                  placeholder="123456"
+                  class={`${field} text-2xl tracking-[0.3em] tabular-nums`}
+                />
+              </label>
+              <button type="submit" name="intent" value="code" class={`${primary} mt-4`}>
+                Confirm this carrier
+              </button>
+            </form>
+
+            <p class="mt-4 border-t border-ink-100 pt-4 text-sm text-ink-500">
+              {minutesLeft > 0
+                ? `Good for another ${minutesLeft} ${minutesLeft === 1 ? 'minute' : 'minutes'}.`
+                : 'This one has just run out — send yourself another.'}
+              {/*
+                Shown only once a guess has been spent. Printing "5 attempts
+                left" to somebody who has not typed anything yet reads as a
+                warning about a hostile system rather than as the help it is
+                after a mistyped digit.
+              */}
+              {attemptsSpent > 0 && (
+                <>
+                  {' '}
+                  {attemptsRemaining === 1
+                    ? 'One more wrong guess and this code stops working.'
+                    : `${attemptsRemaining} more guesses before this code stops working.`}
+                </>
+              )}
+            </p>
+
+            {!isProduction && (
+              /*
+                Said out loud, because on this deployment it is the difference
+                between a working flow and a mystery. guard.ts redirects every
+                outbound message outside production, so the code went to the
+                developer and never to the carrier — which also means anybody
+                who can reach this host can claim any carrier on it.
+              */
+              <p class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                This is not the production deployment. The code was redirected to the developer and
+                did not go to the carrier.
+              </p>
+            )}
+          </div>
+
+          <div class="mt-4 grid gap-3 sm:grid-cols-2">
+            <form method="POST">
+              <input type="hidden" name="dot" value={dotParam} />
+              <input type="hidden" name="channel" value={codeClaim.channel} />
+              <button type="submit" name="intent" value="send" class={secondary}>
+                Send it again
+              </button>
+            </form>
+            <a
+              href={`/app/setup?dot=${dotParam}&verify=1`}
+              class={`${secondary} block text-center`}
+            >
+              Send it somewhere else
+            </a>
+          </div>
+
+          <p class="mt-3 text-center text-sm text-ink-500">
+            A resend replaces the old code, so the last message is the one to use. There is a
+            {' '}{CLAIM_POLICY.resendCooldownSeconds}-second wait between them.
+          </p>
+        </>
+      )
+    }
+
+    {/* ========================================================= queued */}
+    {
+      step === 'queued' && manualClaim && (
+        <>
+          <div class={card}>
+            <p class="font-medium">A person has your request</p>
+            <p class="mt-2 text-sm text-ink-700">
+              Nothing is set up yet, and nothing will be until somebody confirms the number is
+              yours. That is the same rule every carrier here is held to — it is what stops a
+              stranger taking yours.
+            </p>
+
+            <dl class="mt-5 grid gap-4 border-t border-ink-100 pt-5 sm:grid-cols-2">
+              <div>
+                <dt class="text-xs tracking-wide text-ink-500 uppercase">USDOT number</dt>
+                <dd class="mt-1 font-semibold tabular-nums">{dotParam}</dd>
+              </div>
+              <div>
+                <dt class="text-xs tracking-wide text-ink-500 uppercase">We answer at</dt>
+                <dd class="mt-1 font-semibold break-all">
+                  {accountEmail ?? 'the email address on your account'}
+                </dd>
+              </div>
+            </dl>
+
+            {/*
+              Every claim gets a horizon, manual ones included. A support
+              request with no end date is a support request nobody ever closes,
+              and the person waiting on it deserves to know which it is.
+            */}
+            <p class="mt-4 text-sm text-ink-500">
+              {`We hold this request for ${CLAIM_POLICY.manualDays} days. After that it needs asking again.`}
+            </p>
+
+            {manualClaim.note && (
+              <div class="mt-5 border-t border-ink-100 pt-5">
+                <p class="text-xs tracking-wide text-ink-500 uppercase">What you told us</p>
+                <p class="mt-1 text-sm whitespace-pre-line text-ink-700">{manualClaim.note}</p>
+              </div>
+            )}
+
+            {/*
+              A real endpoint, not a promise. When site.ts still has its TODO
+              contact details, the honest version of this is the account address
+              above plus the fact that the request is recorded — printing an
+              inbox nobody reads would be worse than printing nothing.
+            */}
+            {(manualMailto || contactPhone) && (
+              <div class="mt-5 space-y-3 border-t border-ink-100 pt-5">
+                <p class="text-sm text-ink-700">
+                  If you want to add something, or you would rather get on with it:
+                </p>
+                {manualMailto && (
+                  <a href={manualMailto} class={`${secondary} block text-center`}>
+                    Email us about USDOT {dotParam}
+                  </a>
+                )}
+                {contactPhone && (
+                  <a href={telHref(contactPhone)} class={`${secondary} block text-center`}>
+                    Call {contactPhone}
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
+
+          <p class="mt-3 text-center text-sm">
+            <a href={`/app/setup?dot=${dotParam}&verify=1`} class="text-ink-500 hover:underline">
+              Send a code instead
+            </a>
+            <span aria-hidden="true" class="mx-2 text-ink-300">·</span>
+            <a href="/app/setup" class="text-ink-500 hover:underline">
+              Try a different number
+            </a>
+          </p>
+        </>
+      )
+    }
+
+    {/* =========================================================== done */}
+    {
+      step === 'done' && (
+        <>
+          {justCreated && carrier && (
+            <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+              {carrier.legal_name} is set up
+              {carrier.dot_number && (
+                <>
+                  , USDOT <span class="tabular-nums">{carrier.dot_number}</span>
+                </>
+              )}
+              . Your MCS-150 deadline is already on the dashboard.
+            </p>
+          )}
+
+          <div class={card}>
+            <p class="font-medium">The federal file holds counts, not records</p>
+            {/*
+              THE expectation to correct. FMCSA publishes how many power units
+              and drivers a carrier reported, and nothing else about them — no
+              VIN, no plate, no name, no CDL. There is no public API that returns
+              a roster, so there is no import to build and none to promise. What
+              the counts ARE good for is a target: the number below is what the
+              carrier told the government he runs, so anything short of it is
+              either a truck we are not watching or an MCS-150 that is stale.
+            */}
+            <p class="mt-2 text-sm text-ink-700">
+              FMCSA knows how many power units and drivers you reported on your last MCS-150. It
+              does not hold a single VIN or driver name, and no public source does — so this next
+              part is typing. The counts below are what to aim at.
+            </p>
+
+            <div class="mt-5 grid gap-4 sm:grid-cols-2">
+              <div class="rounded-lg border border-ink-100 p-4">
+                <p class="text-xs tracking-wide text-ink-500 uppercase">Trucks</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums">
+                  {trucks.state === 'unknown'
+                    ? trucks.added
+                    : `${trucks.added} of ${trucks.target}`}
+                </p>
+                <p class="mt-1 text-sm text-ink-500">{rosterLine(trucks, 'power-unit')}</p>
+                <a href="/app/vehicles/new" class={`${primary} mt-4 block text-center`}>
+                  Add a truck
+                </a>
+              </div>
+
+              <div class="rounded-lg border border-ink-100 p-4">
+                <p class="text-xs tracking-wide text-ink-500 uppercase">Drivers</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums">
+                  {drivers.state === 'unknown'
+                    ? drivers.added
+                    : `${drivers.added} of ${drivers.target}`}
+                </p>
+                <p class="mt-1 text-sm text-ink-500">{rosterLine(drivers, 'driver')}</p>
+                <a href="/app/drivers/new" class={`${primary} mt-4 block text-center`}>
+                  Add a driver
+                </a>
+              </div>
+            </div>
+
+            <p class="mt-5 border-t border-ink-100 pt-4 text-sm text-ink-500">
+              Every truck you add starts its own annual inspection and Clean Truck Check clocks;
+              every driver starts a medical card, a CDL expiry, an MVR review and a Clearinghouse
+              query. Those are the dates that park a truck, and none of them are in any federal
+              file we can read.
+            </p>
+          </div>
+
+          <p class="mt-5 text-center text-sm">
+            <a href="/app" class="text-ink-500 hover:underline">
+              Skip for now — go to the dashboard
+            </a>
+          </p>
+
+          <p class="mt-2 text-center text-xs text-ink-300">
+            This page stays at /app/setup. Come back to it any time to see how the count is going.
+          </p>
+        </>
+      )
+    }
+  </div>
+</App>

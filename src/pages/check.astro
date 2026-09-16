@@ -1,0 +1,328 @@
+---
+/**
+ * The DOT lookup the hero points at.
+ *
+ * This runs before signup and asks for nothing. It exists to answer one
+ * question honestly — "does this thing actually know anything about MY fleet?"
+ * — so every number on it is either read from the federal record or computed
+ * from the DOT number itself. Nothing here is estimated.
+ */
+import Public from '../layouts/Public.astro'
+import {
+  lookupAuthority,
+  lookupCarrier,
+  normalizeDot,
+  parseCensusDate,
+  statusLabel,
+  type AuthorityRow,
+  type CensusRow,
+  type FederalResult,
+} from '../lib/fmcsa.ts'
+import { mcs150Status } from '../lib/mcs150.ts'
+
+const raw = Astro.url.searchParams.get('dot') ?? ''
+const dot = normalizeDot(raw)
+
+let carrier: CensusRow | null = null
+let authority: FederalResult<AuthorityRow> = { state: 'empty' }
+let failed = false
+
+if (dot) {
+  try {
+    // One round trip each, in parallel — together well under a second.
+    // lookupAuthority never throws: it reports its own failure as a state, so a
+    // dead authority endpoint cannot take down a carrier lookup that succeeded.
+    const [c, a] = await Promise.all([lookupCarrier(dot), lookupAuthority(dot)])
+    carrier = c
+    authority = a
+  } catch {
+    failed = true
+  }
+}
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const fmt = (d: Date) =>
+  d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
+// Socrata OMITS null keys rather than sending null, so a missing count arrives
+// as undefined. Number('') is 0, though, so an empty string would render as a
+// real zero — guard the blank explicitly rather than relying on isFinite.
+const num = (v: string | undefined) => {
+  if (v === undefined || v === null || v === '') return '—'
+  const n = Number(v)
+  return Number.isFinite(n) ? n.toLocaleString('en-US') : '—'
+}
+const money = (v: string | undefined) => {
+  const n = Number(v)
+  return Number.isFinite(n) ? `$${Math.round(n).toLocaleString('en-US')}` : null
+}
+
+const lastFiled = parseCensusDate(carrier?.mcs150_date)
+const mcs150 = dot ? mcs150Status(dot, lastFiled) : null
+const status = statusLabel(carrier?.status_code)
+
+// Required vs actually on file. Both come from the same authority row, so this
+// comparison is the federal record disagreeing with itself when it disagrees.
+const authRows = authority.state === 'rows' ? authority.rows : []
+const required = Number(authRows[0]?.min_cov_amount)
+const onFile = Number(authRows[0]?.bipd_file)
+const insuranceShort =
+  Number.isFinite(required) && Number.isFinite(onFile) && onFile < required
+
+const title = carrier ? `USDOT ${dot} · ${carrier.legal_name ?? 'Carrier'}` : 'Check your DOT number'
+---
+
+<Public title={title} description="Look up a carrier's federal record and upcoming deadlines." noindex>
+  <section class="mx-auto max-w-4xl px-4 py-10 sm:px-6 sm:py-14">
+    <form method="GET" action="/check" class="mb-8 flex max-w-md flex-col gap-3 sm:flex-row">
+      <input
+        type="text"
+        name="dot"
+        inputmode="numeric"
+        value={dot ?? ''}
+        required
+        placeholder="USDOT number"
+        aria-label="USDOT number"
+        class="w-full rounded-xl border border-ink-100 bg-white px-4 py-3 text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+      />
+      <button
+        type="submit"
+        class="shrink-0 rounded-xl bg-brand-600 px-6 py-3 font-medium text-white transition hover:bg-brand-700"
+      >
+        Check
+      </button>
+    </form>
+
+    {!dot && raw && (
+      <p class="mb-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        That does not look like a USDOT number. It is between one and eight digits.
+      </p>
+    )}
+
+    {failed && (
+      <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+        The federal data service did not answer just now. That is their end, not yours — try again
+        in a moment.
+      </p>
+    )}
+
+    {dot && !failed && !carrier && (
+      <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+        <p class="font-medium">No carrier found for USDOT {dot}</p>
+        <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+          Check the digits. Brand-new registrations can also take a few days to appear in the
+          public file.
+        </p>
+      </div>
+    )}
+
+    {carrier && (
+      <>
+        <div class="flex flex-wrap items-start justify-between gap-4">
+          <div class="min-w-0">
+            <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">
+              {carrier.legal_name}
+            </h1>
+            {carrier.dba_name && (
+              <p class="mt-1 text-sm text-ink-500">Doing business as {carrier.dba_name}</p>
+            )}
+            <p class="mt-1 text-sm text-ink-500">
+              USDOT <span class="tabular-nums">{dot}</span>
+              {carrier.phy_city && (
+                <>
+                  <span aria-hidden="true" class="mx-2 text-ink-300">·</span>
+                  {carrier.phy_city}, {carrier.phy_state}
+                </>
+              )}
+            </p>
+          </div>
+          <span class:list={['rounded-md px-2.5 py-1 text-sm font-medium', status.tone]}>
+            {status.label}
+          </span>
+        </div>
+
+        {carrier.status_code === 'I' && (
+          <p class="mt-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <strong>"Inactive" here means one specific thing</strong> — the biennial MCS-150 update
+            was not completed (49 CFR 390.19(b)(4)). It is not a safety finding. Filing the update
+            clears it.
+          </p>
+        )}
+
+        <div class="mt-6 grid gap-4 sm:grid-cols-3">
+          <div class={card}>
+            <div class="text-xs tracking-wide text-ink-500 uppercase">Power units</div>
+            <div class="mt-1 text-3xl font-semibold tabular-nums">{num(carrier.power_units)}</div>
+          </div>
+          <div class={card}>
+            <div class="text-xs tracking-wide text-ink-500 uppercase">Drivers</div>
+            <div class="mt-1 text-3xl font-semibold tabular-nums">{num(carrier.total_drivers)}</div>
+            <div class="mt-1 text-xs text-ink-500">{num(carrier.total_cdl)} hold a CDL</div>
+          </div>
+          <div class={card}>
+            <div class="text-xs tracking-wide text-ink-500 uppercase">Operation</div>
+            <div class="mt-1 text-lg font-semibold">
+              {carrier.carrier_operation === 'A' ? 'Interstate' : 'Intrastate'}
+            </div>
+            <div class="mt-1 text-xs text-ink-500">
+              {carrier.hm_ind === 'Y' ? 'Carries hazardous materials' : 'No hazmat flag on file'}
+            </div>
+          </div>
+        </div>
+
+        <h2 class="mt-10 text-xl font-semibold tracking-tight">What we can already tell you</h2>
+
+        <div class="mt-4 space-y-4">
+          {mcs150 && (
+            <div
+              class:list={[
+                'rounded-xl border p-5',
+                mcs150.state === 'overdue'
+                  ? 'border-red-200 bg-red-50/60'
+                  : mcs150.state === 'unknown'
+                    ? 'border-ink-100 bg-white'
+                    : 'border-brand-500/30 bg-brand-500/[0.04]',
+              ]}
+            >
+              <div class="flex flex-wrap items-center gap-2">
+                <p class="font-medium">MCS-150 biennial update</p>
+                <span
+                  class:list={[
+                    'rounded-md px-2 py-0.5 text-xs font-medium',
+                    mcs150.state === 'overdue'
+                      ? 'bg-red-100 text-red-700'
+                      : mcs150.state === 'unknown'
+                        ? 'bg-ink-100 text-ink-500'
+                        : 'bg-emerald-100 text-emerald-800',
+                  ]}
+                >
+                  {mcs150.state === 'overdue'
+                    ? 'Overdue'
+                    : mcs150.state === 'unknown'
+                      ? 'Not sure'
+                      : 'Current'}
+                </span>
+              </div>
+
+              {mcs150.state === 'overdue' ? (
+                <>
+                  <p class="mt-1 text-2xl font-semibold text-red-700 tabular-nums">
+                    Was due {fmt(mcs150.lastDue)}
+                  </p>
+                  <p class="mt-2 text-sm text-ink-700">
+                    The federal record shows your last filing on {fmt(lastFiled!)}, which is before
+                    that deadline. This is the most likely reason a carrier shows as Inactive, and
+                    filing the update is what clears it.
+                  </p>
+                  <p class="mt-2 text-sm text-ink-500">
+                    Your next one after that falls {fmt(mcs150.nextDue)}.
+                  </p>
+                </>
+              ) : mcs150.state === 'unknown' ? (
+                <>
+                  <p class="mt-1 text-2xl font-semibold tabular-nums">{fmt(mcs150.nextDue)}</p>
+                  <p class="mt-2 text-sm text-ink-500">
+                    We could not read a last-filed date from the federal record, so we cannot tell
+                    you whether you are current — only when the next one falls. We would rather say
+                    that than guess.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p class="mt-1 text-2xl font-semibold tabular-nums">{fmt(mcs150.nextDue)}</p>
+                  <p class="mt-2 text-sm text-ink-500">
+                    Last filed {fmt(lastFiled!)}, which covers the deadline on{' '}
+                    {fmt(mcs150.lastDue)}.
+                  </p>
+                </>
+              )}
+
+              <p class="mt-3 text-xs text-ink-500">
+                Your filing month comes from the last digit of your DOT number and the year from the
+                digit before it, so yours falls in {mcs150.oddYears ? 'odd' : 'even'}-numbered years
+                — 49 CFR 390.19T(b). Missing it carries a civil penalty and deactivation of the
+                USDOT number.
+              </p>
+            </div>
+          )}
+
+          {authority.state === 'rows' && (
+            <div class={card}>
+              <p class="font-medium">Operating authority</p>
+              <ul class="mt-2 space-y-1 text-sm">
+                {authRows.map((a) => (
+                  <li class="flex flex-wrap items-center gap-2">
+                    <span class="font-medium tabular-nums">{a.docket_number}</span>
+                    <span class="text-ink-500">{a.op_auth_type}</span>
+                    <span
+                      class:list={[
+                        'rounded-md px-2 py-0.5 text-xs font-medium',
+                        a.op_auth_status === 'Active'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : 'bg-amber-100 text-amber-800',
+                      ]}
+                    >
+                      {a.op_auth_status}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {money(authRows[0]?.min_cov_amount) && (
+                <p class="mt-3 text-sm text-ink-500">
+                  Liability required {money(authRows[0]?.min_cov_amount)}, on file{' '}
+                  {money(authRows[0]?.bipd_file) ?? '—'}.
+                  {insuranceShort && (
+                    <strong class="text-red-700"> That is below the requirement.</strong>
+                  )}
+                </p>
+              )}
+            </div>
+          )}
+
+          {authority.state === 'empty' && (
+            <div class={card}>
+              <p class="font-medium">Operating authority</p>
+              <p class="mt-2 text-sm text-ink-500">
+                No authority record came back for this DOT number. That is not the same as having
+                none — the federal authority file does not cover every carrier, and an
+                intrastate-only carrier never needed one. We would confirm this with you rather
+                than guess.
+              </p>
+            </div>
+          )}
+
+          {authority.state === 'error' && (
+            <div class="rounded-xl border border-ink-100 bg-white p-5">
+              <p class="font-medium">Operating authority</p>
+              <p class="mt-2 text-sm text-ink-500">
+                We could not reach the federal authority file just now, so we are not going to tell
+                you anything about your authority — including that it looks fine. Reload in a
+                moment.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div class="mt-10 rounded-2xl border border-ink-100 bg-ink-50 p-6 sm:p-8">
+          <h2 class="text-xl font-semibold tracking-tight">And what we cannot see from here</h2>
+          <p class="mt-2 text-sm text-ink-500">
+            The federal file holds no driver-level data at all. Medical card expiries, CDL
+            expiries, annual MVR reviews, Clearinghouse queries, your CHP terminal inspection and
+            your Clean Truck Check dates all live in your office. Those are the ones that actually
+            park a truck — and the ones we would set up with you once, then watch.
+          </p>
+          <a
+            href="/pricing"
+            class="mt-5 inline-block rounded-xl bg-ink-900 px-7 py-3.5 font-semibold text-white transition hover:bg-ink-700"
+          >
+            See what it costs →
+          </a>
+        </div>
+
+        <p class="mt-8 text-xs text-ink-300">
+          Carrier data from the FMCSA public census and authority files, retrieved live. FleetView
+          Compliance is not affiliated with FMCSA, the DOT, or any government agency.
+        </p>
+      </>
+    )}
+  </section>
+</Public>

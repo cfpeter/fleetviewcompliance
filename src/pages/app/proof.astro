@@ -1,0 +1,224 @@
+---
+/**
+ * Creating and managing proof links.
+ *
+ * A link is an unauthenticated credential handed to a stranger, so two things
+ * are non-negotiable here: the token is unguessable (see lib/proof/token.ts),
+ * and every link expires. There is no "never" option, because a statement about
+ * a moment should not still be answering questions next year.
+ */
+import App from '../../layouts/App.astro'
+import { newProofToken } from '../../lib/proof/token.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+const userId = Astro.locals.userId!
+
+const notice = Astro.url.searchParams.get('created')
+const error = Astro.url.searchParams.get('error')
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+  const back = (q: string) => Astro.redirect(`/app/proof?${q}`, 303)
+
+  if (intent === 'create') {
+    const scope = String(form.get('scope') ?? 'carrier_summary')
+    const subjectId = String(form.get('subject_id') ?? '').trim() || null
+    const days = Number(form.get('days') ?? 30)
+
+    if (scope === 'driver_file' && !subjectId) {
+      return back('error=' + encodeURIComponent('Choose which driver the link is for.'))
+    }
+    // Clamped rather than trusted: a hand-edited form must not mint a link that
+    // outlives the conversation it was made for.
+    const validDays = Number.isFinite(days) && days > 0 && days <= 365 ? days : 30
+    const expires = new Date(Date.now() + validDays * 86_400_000)
+
+    const { error: e } = await supabase.from('share_links').insert({
+      carrier_id: carrierId,
+      token: newProofToken(),
+      scope,
+      subject_id: scope === 'driver_file' ? subjectId : null,
+      label: String(form.get('label') ?? '').trim() || null,
+      recipient: String(form.get('recipient') ?? '').trim() || null,
+      expires_at: expires.toISOString(),
+      created_by: userId,
+    })
+    return e ? back('error=' + encodeURIComponent(e.message)) : back('created=1')
+  }
+
+  if (intent === 'revoke') {
+    const id = String(form.get('id') ?? '')
+    // Revoked, never deleted. "Did we ever send this to that broker" is the
+    // question, and a deleted row cannot answer it.
+    const { error: e } = await supabase
+      .from('share_links')
+      .update({ revoked_at: new Date().toISOString() })
+      .eq('id', id)
+    return e ? back('error=' + encodeURIComponent(e.message)) : back('created=revoked')
+  }
+
+  return back('error=' + encodeURIComponent('Unrecognised action.'))
+}
+
+const [{ data: links }, { data: drivers }] = await Promise.all([
+  supabase.from('share_links').select('*').order('created_at', { ascending: false }),
+  supabase.from('drivers').select('id, first_name, last_name').eq('status', 'active'),
+])
+
+const now = Date.now()
+const isLive = (l: { revoked_at: string | null; expires_at: string }) =>
+  !l.revoked_at && new Date(l.expires_at).getTime() > now
+
+const live = (links ?? []).filter(isLive)
+const dead = (links ?? []).filter((l) => !isLive(l))
+
+const base = import.meta.env.PUBLIC_SITE_URL || Astro.url.origin
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2.5 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const when = (v: string) =>
+  new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+const driverName = (id: string | null) => {
+  const d = (drivers ?? []).find((x) => x.id === id)
+  return d ? `${d.first_name} ${d.last_name}`.trim() : '—'
+}
+---
+
+<App title="Proof links" subtitle="Share a dated record with a broker or an underwriter.">
+  {notice && (
+    <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+      {notice === 'revoked' ? 'Link revoked. It stops working immediately.' : 'Link created.'}
+    </p>
+  )}
+  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+
+  <div class="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
+    <form method="POST" class={card}>
+      <p class="font-medium">New link</p>
+
+      <label class="mt-4 block">
+        <span class="text-sm font-medium">What it shows</span>
+        <select name="scope" class={field}>
+          <option value="carrier_summary">The fleet: authority, size, dated observations</option>
+          <option value="driver_file">One driver's qualification file</option>
+        </select>
+      </label>
+
+      <label class="mt-4 block">
+        <span class="text-sm font-medium">
+          Which driver <span class="font-normal text-ink-300">(only for a driver file)</span>
+        </span>
+        <select name="subject_id" class={field}>
+          <option value="">—</option>
+          {(drivers ?? []).map((d) => (
+            <option value={d.id}>{`${d.first_name} ${d.last_name}`.trim()}</option>
+          ))}
+        </select>
+      </label>
+
+      <label class="mt-4 block">
+        <span class="text-sm font-medium">Who is it for</span>
+        <input name="recipient" placeholder="e.g. Acme Logistics" class={field} />
+      </label>
+
+      <label class="mt-4 block">
+        <span class="text-sm font-medium">Label <span class="font-normal text-ink-300">(optional)</span></span>
+        <input name="label" placeholder="e.g. insurance renewal" class={field} />
+      </label>
+
+      <label class="mt-4 block">
+        <span class="text-sm font-medium">Stops working after</span>
+        <select name="days" class={field}>
+          <option value="7">7 days</option>
+          <option value="30" selected>30 days</option>
+          <option value="90">90 days</option>
+        </select>
+        <span class="mt-1 block text-xs text-ink-500">
+          Every link expires. A record of one day should not still be answering questions next year.
+        </span>
+      </label>
+
+      <button
+        type="submit"
+        name="intent"
+        value="create"
+        class="mt-5 w-full rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+      >
+        Create the link
+      </button>
+    </form>
+
+    <div>
+      <p class="font-medium">Working links</p>
+      {live.length === 0 ? (
+        <p class="mt-3 rounded-xl border border-dashed border-ink-100 bg-white p-8 text-center text-sm text-ink-500">
+          No links are active. Anything you create appears here with its address.
+        </p>
+      ) : (
+        <ul class="mt-3 space-y-3">
+          {live.map((l) => (
+            <li class={card}>
+              <div class="flex flex-wrap items-baseline justify-between gap-2">
+                <span class="font-medium">
+                  {l.label || (l.scope === 'driver_file' ? driverName(l.subject_id) : 'Fleet summary')}
+                </span>
+                <span class="text-xs text-ink-500 tabular-nums">
+                  expires {when(l.expires_at)}
+                </span>
+              </div>
+              <p class="mt-1 text-xs text-ink-500">
+                {l.scope === 'driver_file' ? `Driver file · ${driverName(l.subject_id)}` : 'Fleet summary'}
+                {l.recipient && <> · for {l.recipient}</>}
+                <> · opened <span class="tabular-nums">{l.view_count}</span> times</>
+                {l.last_viewed_at && <> · last {when(l.last_viewed_at)}</>}
+              </p>
+              {/*
+                A selectable input rather than a copy button alone: the clipboard
+                API is unavailable on non-HTTPS origins, which includes local dev,
+                and a button that silently does nothing is worse than no button.
+              */}
+              <input
+                readonly
+                value={`${base}/proof/${l.token}`}
+                onclick="this.select()"
+                class="mt-3 w-full rounded-lg border border-ink-100 bg-ink-50 px-3 py-2 font-mono text-xs"
+              />
+              <form method="POST" class="mt-3">
+                <input type="hidden" name="id" value={l.id} />
+                <button
+                  type="submit"
+                  name="intent"
+                  value="revoke"
+                  class="text-sm text-red-600 hover:underline"
+                >
+                  Revoke this link
+                </button>
+              </form>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {dead.length > 0 && (
+        <>
+          <p class="mt-8 font-medium">No longer working</p>
+          <ul class="mt-3 space-y-2">
+            {dead.map((l) => (
+              <li class="rounded-lg border border-ink-100 bg-ink-50/60 px-4 py-3 text-sm">
+                <span class="font-medium">
+                  {l.label || (l.scope === 'driver_file' ? driverName(l.subject_id) : 'Fleet summary')}
+                </span>
+                <span class="text-ink-500">
+                  {' '}— {l.revoked_at ? `revoked ${when(l.revoked_at)}` : `expired ${when(l.expires_at)}`}
+                  {l.recipient && <> · was for {l.recipient}</>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  </div>
+</App>

@@ -1,0 +1,1051 @@
+---
+/**
+ * Putting a driver and equipment under a load.
+ *
+ * This is the screen the whole product is built around. Compliance stops being a
+ * tab somebody visits when they remember and becomes a precondition on the
+ * action a dispatcher takes twenty times a week — which only works if the check
+ * is genuinely part of the action, not a decoration on it.
+ *
+ * So there are two independent gates, and they are independent on purpose:
+ *
+ *   1. The submit button is disabled while a `block` issue stands.
+ *   2. The POST handler re-runs `eligibility()` from the posted ids and refuses,
+ *      having never looked at what the page rendered.
+ *
+ * Gate 1 is a courtesy. `disabled` is one devtools keystroke, one saved copy of
+ * the form, one `curl` away from gone, and a dispatcher under pressure is not
+ * even the attacker here — a stale tab is. Gate 2 is the actual rule. If you are
+ * editing this file and find yourself passing "was it blocked?" from the render
+ * into the handler, stop: that is the same gate twice, and the second one is the
+ * only one that counts.
+ *
+ * Choosing a driver to see their issues is a GET round-trip (`?driver=<id>`),
+ * not JavaScript. A dispatcher on one bar of signal in a yard gets the same
+ * screen as one at a desk, and the URL is a thing she can send to the owner.
+ */
+import App from '../../../../layouts/App.astro'
+import { loadDeadlines } from '../../../../lib/deadlines.ts'
+import {
+  conflicts,
+  eligibility,
+  isBlocked,
+  type EligibilityIssue,
+} from '../../../../lib/dispatch/eligibility.ts'
+import { formText } from '../../../../lib/drivers.ts'
+import type { DeadlineItem } from '../../../../lib/rules/index.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+const userId = Astro.locals.userId!
+const id = Astro.params.id ?? ''
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Back to the board, for every case where this load is not ours to assign. */
+function toBoard(message: string): Response {
+  return Astro.redirect(`/app/dispatch?error=${encodeURIComponent(message)}`, 303)
+}
+
+const NOT_YOURS = 'That load is not on your board.'
+
+// A hand-edited URL like /app/loads/abc/assign is not a missing row, it is a
+// failed uuid cast: Postgres raises, and without this check the dispatcher gets
+// "invalid input syntax for type uuid" across the top of her screen. Checked
+// here rather than swallowing the error later, so a REAL database failure still
+// reaches her as a real database failure instead of "no such load".
+if (!UUID.test(id)) return toBoard(NOT_YOURS)
+
+// ---------------------------------------------------------------------------
+// The four slots
+// ---------------------------------------------------------------------------
+
+type Slot = 'driver' | 'co_driver' | 'tractor' | 'trailer'
+
+interface Choice {
+  driver: string | null
+  co_driver: string | null
+  tractor: string | null
+  trailer: string | null
+}
+
+const EMPTY: Choice = { driver: null, co_driver: null, tractor: null, trailer: null }
+
+/**
+ * A uuid or nothing.
+ *
+ * Every id on this page arrives from a query string or a form field, which means
+ * it arrives from the client. Anything that is not the shape of a uuid is
+ * dropped rather than handed to Postgres — the same failed-cast 500 as above,
+ * except reached by clicking a stale link rather than by typing.
+ */
+function uuidOrNull(raw: unknown): string | null {
+  const v = String(raw ?? '').trim()
+  return UUID.test(v) ? v : null
+}
+
+function choiceFrom(get: (key: string) => unknown): Choice {
+  return {
+    driver: uuidOrNull(get('driver')),
+    co_driver: uuidOrNull(get('co_driver')),
+    tractor: uuidOrNull(get('tractor')),
+    trailer: uuidOrNull(get('trailer')),
+  }
+}
+
+function choiceParams(c: Choice): URLSearchParams {
+  const p = new URLSearchParams()
+  for (const slot of ['driver', 'co_driver', 'tractor', 'trailer'] as Slot[]) {
+    if (c[slot]) p.set(slot, c[slot] as string)
+  }
+  return p
+}
+
+/** Back to this screen, with the same selection still made. */
+function back(c: Choice, extra: Record<string, string> = {}): Response {
+  const p = choiceParams(c)
+  for (const [k, v] of Object.entries(extra)) p.set(k, v)
+  const q = p.toString()
+  return Astro.redirect(`/app/loads/${id}/assign${q ? `?${q}` : ''}`, 303)
+}
+
+function fail(c: Choice, message: string): Response {
+  return back(c, { error: message })
+}
+
+// ---------------------------------------------------------------------------
+// Loading
+// ---------------------------------------------------------------------------
+
+interface LoadRow {
+  id: string
+  load_number: string | null
+  broker_reference: string | null
+  customer_id: string | null
+  status: string
+  exception: string | null
+  equipment_type: string | null
+  commodity: string | null
+  weight_lbs: number | null
+}
+
+interface DriverRow {
+  id: string
+  first_name: string
+  last_name: string
+  status: string
+}
+
+interface VehicleRow {
+  id: string
+  kind: string
+  unit_number: string | null
+  vin: string | null
+  status: string
+}
+
+interface OpenAssignmentRow {
+  id: string
+  load_id: string
+  driver_id: string | null
+  co_driver_id: string | null
+  tractor_id: string | null
+  trailer_id: string | null
+}
+
+// No .eq('carrier_id', ...) on any SELECT here. RLS scopes every row to the
+// signed-in user's carrier; a load belonging to somebody else comes back as "no
+// such row", which is exactly what this page should be able to find out about it.
+async function fetchLoad(): Promise<LoadRow | null> {
+  const { data } = await supabase
+    .from('loads')
+    .select(
+      'id, load_number, broker_reference, customer_id, status, exception, equipment_type, commodity, weight_lbs',
+    )
+    .eq('id', id)
+    .maybeSingle()
+  return (data as LoadRow) ?? null
+}
+
+async function fetchRoster(): Promise<{ drivers: DriverRow[]; vehicles: VehicleRow[] }> {
+  const [{ data: d }, { data: v }] = await Promise.all([
+    supabase
+      .from('drivers')
+      .select('id, first_name, last_name, status')
+      .order('last_name', { ascending: true }),
+    supabase
+      .from('vehicles')
+      .select('id, kind, unit_number, vin, status')
+      .order('unit_number', { ascending: true }),
+  ])
+  return { drivers: (d ?? []) as DriverRow[], vehicles: (v ?? []) as VehicleRow[] }
+}
+
+async function fetchOpenAssignments(): Promise<OpenAssignmentRow[]> {
+  // Every open assignment the carrier has, not just this load's. The whole
+  // point of the double-booking check is to find the OTHER load, and a carrier
+  // has tens of open assignments, not tens of thousands.
+  const { data } = await supabase
+    .from('load_assignments')
+    .select('id, load_id, driver_id, co_driver_id, tractor_id, trailer_id')
+    .is('unassigned_at', null)
+  return (data ?? []) as OpenAssignmentRow[]
+}
+
+function driverName(d: DriverRow | undefined): string {
+  return d ? `${d.first_name} ${d.last_name}`.trim() : 'Unknown driver'
+}
+
+function unitName(v: VehicleRow | undefined): string {
+  if (!v) return 'Unknown unit'
+  return v.unit_number || (v.vin ? `VIN ${v.vin.slice(-6)}` : 'Unnumbered unit')
+}
+
+function loadLabel(l: LoadRow): string {
+  return l.load_number || l.broker_reference || `Load ${l.id.slice(0, 8)}`
+}
+
+// ---------------------------------------------------------------------------
+// The assessment — the same code path for the screen and for the POST handler
+// ---------------------------------------------------------------------------
+
+interface SlotAssessment {
+  slot: Slot
+  /** 'Driver', 'Co-driver', 'Tractor', 'Trailer'. */
+  role: string
+  name: string
+  /** Where the dispatcher goes to put the problem right. */
+  href: string
+  issues: EligibilityIssue[]
+  /** True when the rule engine has no record of this subject at all. */
+  unknownSubject: boolean
+}
+
+interface Assessment {
+  slots: SlotAssessment[]
+  blocks: EligibilityIssue[]
+  warns: EligibilityIssue[]
+  blocked: boolean
+}
+
+/**
+ * Run the engine over one combination of driver, co-driver, tractor and trailer.
+ *
+ * Called by the GET render to draw the screen AND by the POST handler to decide
+ * whether the assignment happens. It takes ids and reads the database itself —
+ * it is handed nothing by the form except which four records to look at. That is
+ * what makes the server-side refusal independent of anything the browser was
+ * shown or chose to send back.
+ */
+async function assess(
+  c: Choice,
+  drivers: DriverRow[],
+  vehicles: VehicleRow[],
+): Promise<Assessment> {
+  const [deadlines, open] = await Promise.all([
+    loadDeadlines(supabase, carrierId),
+    fetchOpenAssignments(),
+  ])
+
+  /**
+   * One subject's deadline items.
+   *
+   * Both the type AND the id are matched. Driver ids and vehicle ids come out of
+   * the same uuid generator, so an id-only comparison would happily feed a
+   * truck's inspection row into a driver's qualification check the first time
+   * the two ever collided — and the result would be a block, or a missed one,
+   * for reasons nobody could read off the screen.
+   */
+  const itemsFor = (type: string | string[], subjectId: string | null): DeadlineItem[] => {
+    if (!subjectId) return []
+    const types = Array.isArray(type) ? type : [type]
+    return (deadlines as DeadlineItem[]).filter(
+      (i) => types.includes(i.subjectType) && i.subjectId === subjectId,
+    )
+  }
+
+  // The label the OTHER load is known by, so "already on load 4488" means
+  // something to somebody holding a rate confirmation.
+  const otherLoadIds = [...new Set(open.map((o) => o.load_id))].filter((x) => x !== id)
+  const { data: labelData } =
+    otherLoadIds.length > 0
+      ? await supabase
+          .from('loads')
+          .select('id, load_number, broker_reference')
+          .in('id', otherLoadIds)
+      : { data: [] as { id: string; load_number: string | null; broker_reference: string | null }[] }
+  const labelById = new Map(
+    (
+      (labelData ?? []) as { id: string; load_number: string | null; broker_reference: string | null }[]
+    ).map((l) => [l.id, l.load_number || l.broker_reference || `Load ${l.id.slice(0, 8)}`]),
+  )
+  const openLoad = (loadId: string) => ({
+    loadId,
+    loadLabel: labelById.get(loadId) ?? `Load ${loadId.slice(0, 8)}`,
+  })
+
+  // A person is double-booked whether they are the driver or the co-driver on
+  // the other load. Only checking driver_id would clear a man who is already
+  // teamed on somebody else's run tonight.
+  const personOpenOn = (personId: string) =>
+    open
+      .filter((o) => o.driver_id === personId || o.co_driver_id === personId)
+      .map((o) => openLoad(o.load_id))
+
+  const slots: SlotAssessment[] = []
+
+  const addPerson = (slot: Slot, role: string, personId: string | null) => {
+    if (!personId) return
+    const row = drivers.find((d) => d.id === personId)
+    const items = itemsFor('driver', personId)
+    const label = driverName(row)
+    slots.push({
+      slot,
+      role,
+      name: label,
+      href: `/app/drivers/${personId}`,
+      issues: [
+        ...eligibility({ items, label }),
+        // thisLoadId is what stops the screen telling her the driver is
+        // double-booked with the load she is looking at.
+        ...conflicts({
+          openDriverLoads: personOpenOn(personId),
+          openTractorLoads: [],
+          openTrailerLoads: [],
+          thisLoadId: id,
+        }),
+      ],
+      // `loadDeadlines()` only evaluates ACTIVE drivers and unsold vehicles, so
+      // an empty item list is ambiguous: it is either a subject with no
+      // applicable rules or a subject the engine never saw. Saying "no issues"
+      // about the second one is the exact shape of the lie this product exists
+      // to stop, so it is surfaced instead.
+      unknownSubject: items.length === 0,
+    })
+  }
+
+  const addUnit = (slot: Slot, role: string, unitId: string | null) => {
+    if (!unitId) return
+    const row = vehicles.find((v) => v.id === unitId)
+    // A power unit and a trailer are different `Subject`s to the engine because
+    // § 396.17(a) inspects each unit of a combination separately. Both are
+    // matched so a mis-kinded record still finds its own rows rather than none.
+    const items = itemsFor(['power_unit', 'trailer'], unitId)
+    const label = unitName(row)
+    const openHere = open.filter((o) =>
+      slot === 'tractor' ? o.tractor_id === unitId : o.trailer_id === unitId,
+    )
+    slots.push({
+      slot,
+      role,
+      name: label,
+      href: `/app/vehicles/${unitId}`,
+      issues: [
+        ...eligibility({ items, label }),
+        ...conflicts({
+          openDriverLoads: [],
+          openTractorLoads: slot === 'tractor' ? openHere.map((o) => openLoad(o.load_id)) : [],
+          openTrailerLoads: slot === 'trailer' ? openHere.map((o) => openLoad(o.load_id)) : [],
+          thisLoadId: id,
+        }),
+      ],
+      unknownSubject: items.length === 0,
+    })
+  }
+
+  addPerson('driver', 'Driver', c.driver)
+  addPerson('co_driver', 'Co-driver', c.co_driver)
+  addUnit('tractor', 'Tractor', c.tractor)
+  addUnit('trailer', 'Trailer', c.trailer)
+
+  const all = slots.flatMap((s) => s.issues)
+  return {
+    slots,
+    blocks: all.filter((i) => i.severity === 'block'),
+    warns: all.filter((i) => i.severity === 'warn'),
+    // Asked of the engine, never derived from a count here. `isBlocked` is the
+    // one sentence in the codebase that decides whether a truck moves.
+    blocked: isBlocked(all),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST
+// ---------------------------------------------------------------------------
+
+/** Statuses this page is still allowed to write an assignment against. */
+const ASSIGNABLE = new Set([
+  'quoted',
+  'booked',
+  'assigned',
+  'dispatched',
+  'at_shipper',
+  'loaded',
+  'in_transit',
+  'at_consignee',
+])
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+  const posted = choiceFrom((k) => form.get(k))
+
+  const load = await fetchLoad()
+  // maybeSingle() returns null both for "no such id" and for "belongs to another
+  // carrier", because RLS makes the second look exactly like the first. That is
+  // the point: this page cannot be used to find out whether a load exists
+  // somewhere else on the platform.
+  if (!load) return toBoard(NOT_YOURS)
+
+  if (intent === 'release') {
+    // Taking the truck off the load. Without this there is no way to act on the
+    // double-booking warning the screen prints, and a warning nobody can act on
+    // is a warning everybody learns to scroll past.
+    //
+    // UPDATE, never DELETE — and the grant in 0009_loads.sql does not include
+    // delete on this table, deliberately. Who was under a load last Tuesday is
+    // the answer to a claim, a DataQ and an audit; it is not scratch data.
+    const { error } = await supabase
+      .from('load_assignments')
+      .update({ unassigned_at: new Date().toISOString() })
+      .eq('load_id', id)
+      .is('unassigned_at', null)
+    if (error) return fail(EMPTY, error.message)
+
+    // A load with nobody under it is not 'assigned' any more. Only stepped back
+    // from 'assigned' though: if the truck is already `in_transit` the operational
+    // truth is where it is, and rewinding the status to hide a driver change
+    // would lose that.
+    if (load.status === 'assigned') {
+      await supabase.from('loads').update({ status: 'booked' }).eq('id', id)
+    }
+    return Astro.redirect(
+      `/app/dispatch?released=${encodeURIComponent(loadLabel(load))}`,
+      303,
+    )
+  }
+
+  if (intent !== 'assign') return back(posted)
+
+  if (!ASSIGNABLE.has(load.status) || load.exception === 'cancelled') {
+    return fail(posted, `Load ${loadLabel(load)} is ${load.status.replace(/_/g, ' ')} and cannot be assigned.`)
+  }
+
+  if (!posted.driver) return fail(posted, 'Pick a driver before assigning this load.')
+  // Same person in both seats. Postgres will happily store it — two nullable FKs
+  // to the same table with no constraint between them — and the result is a
+  // team run with one man on it, and hours-of-service maths built on a fiction.
+  if (posted.co_driver && posted.co_driver === posted.driver) {
+    return fail(posted, 'The driver and the co-driver cannot be the same person.')
+  }
+
+  const { drivers, vehicles } = await fetchRoster()
+
+  const driverRow = drivers.find((d) => d.id === posted.driver)
+  if (!driverRow) return fail(posted, 'That driver is not on your roster.')
+  /**
+   * AN INACTIVE DRIVER IS A HOLE IN THE GATE, NOT A COSMETIC DETAIL.
+   *
+   * `loadDeadlines()` selects `.eq('status', 'active')`, so a terminated driver
+   * produces ZERO deadline items, `eligibility()` returns an empty array, and
+   * `isBlocked([])` is false. A man who was fired last month would sail through
+   * the compliance check by virtue of not being evaluated at all — the check
+   * passing loudest for exactly the person it should stop. Refused here, before
+   * the engine is ever asked.
+   */
+  if (driverRow.status !== 'active') {
+    return fail(
+      posted,
+      `${driverName(driverRow)} is ${driverRow.status} and cannot be dispatched. Put the driver back on the active roster first.`,
+    )
+  }
+
+  const coDriverRow = posted.co_driver ? drivers.find((d) => d.id === posted.co_driver) : undefined
+  if (posted.co_driver && !coDriverRow) return fail(posted, 'That co-driver is not on your roster.')
+  if (coDriverRow && coDriverRow.status !== 'active') {
+    return fail(posted, `${driverName(coDriverRow)} is ${coDriverRow.status} and cannot be dispatched.`)
+  }
+
+  /** The same three checks for a unit: ours, the right kind, and not sold. */
+  const checkUnit = (unitId: string | null, kind: string, role: string): string | null => {
+    if (!unitId) return null
+    const v = vehicles.find((x) => x.id === unitId)
+    if (!v) return `That ${role} is not in your fleet.`
+    // Kind is not a label on a truck: it decides which federal obligations the
+    // record ever gets. A trailer id posted into tractor_id would be evaluated
+    // against trailer rules while the screen and the paperwork both call it the
+    // tractor — a record that disagrees with itself about what is under the load.
+    if (v.kind !== kind) return `${unitName(v)} is not a ${role}.`
+    if (v.status === 'sold') return `${unitName(v)} has been sold and cannot be dispatched.`
+    return null
+  }
+  const tractorProblem = checkUnit(posted.tractor, 'power_unit', 'tractor')
+  if (tractorProblem) return fail(posted, tractorProblem)
+  const trailerProblem = checkUnit(posted.trailer, 'trailer', 'trailer')
+  if (trailerProblem) return fail(posted, trailerProblem)
+
+  /**
+   * THE GATE.
+   *
+   * Re-derived from the posted ids and the live database. The page's own render
+   * is not consulted, nothing the form said about severity is read, and there is
+   * no hidden field carrying "this was clear" — because every one of those is a
+   * value the client controls, and a control the client owns is not a check.
+   *
+   * A stale tab is the ordinary way this fires: the screen was drawn at 6am when
+   * the card was still good, the assignment is submitted at 9am after somebody
+   * corrected the expiry date. The button was enabled. The answer is still no.
+   */
+  const assessment = await assess(posted, drivers, vehicles)
+
+  if (assessment.blocked) {
+    return fail(
+      posted,
+      `${assessment.blocks[0].message} This load cannot be assigned until that is put right.`,
+    )
+  }
+
+  let overrideReason: string | null = null
+  if (assessment.warns.length > 0) {
+    // A warning is not a block, and the dispatcher is not being argued with —
+    // teams, relays and drop-and-hook all legitimately look like a conflict, and
+    // "we have no date yet" is a gap in OUR records, not in his qualification.
+    // What is required is that a person put their name to it.
+    const acknowledged = String(form.get('acknowledge') ?? '') === 'yes'
+    const typed = formText(form, 'override_reason')
+    if (!acknowledged || !typed) {
+      return fail(
+        posted,
+        'This assignment has warnings. Tick the box and say why you are going ahead — an override nobody can trace is an override that gets denied later.',
+      )
+    }
+    /**
+     * WHAT was overridden, appended to WHY.
+     *
+     * `override_reason` is one free-text column and there is nowhere else to put
+     * the codes. Six months later "driver said card is in the truck" on its own
+     * does not tell an auditor, or us, which of four warnings it was answering —
+     * and the warnings that stood at 9am on the day are not reconstructable from
+     * today's data, because the whole point is that they get fixed.
+     */
+    overrideReason = `${typed}\n\nOverrode: ${assessment.warns.map((w) => w.code).join(', ')}`
+  }
+
+  /**
+   * Close the previous assignment before opening a new one.
+   *
+   * `unassigned_at is null` IS the definition of "who is on this load" — it is
+   * what the partial indexes in 0009_loads.sql are built on and what the board
+   * reads. Inserting without closing leaves two open rows for one load, and from
+   * then on the board shows whichever the database felt like returning first,
+   * while the conflict check reports the driver as double-booked against himself.
+   */
+  const { error: closeError } = await supabase
+    .from('load_assignments')
+    .update({ unassigned_at: new Date().toISOString() })
+    .eq('load_id', id)
+    .is('unassigned_at', null)
+  if (closeError) return fail(posted, closeError.message)
+
+  const { error: insertError } = await supabase.from('load_assignments').insert({
+    // carrier_id is SUPPLIED on insert and never filtered on in a select. RLS
+    // checks this value against the user's carriers but does not fill it in, so
+    // leaving it out is a not-null violation, and taking it from the form would
+    // be letting the client choose a tenancy.
+    carrier_id: carrierId,
+    load_id: id,
+    driver_id: posted.driver,
+    co_driver_id: posted.co_driver,
+    tractor_id: posted.tractor,
+    trailer_id: posted.trailer,
+    assigned_by: userId,
+    override_reason: overrideReason,
+    // Only set when something was actually overridden. A user id stamped here on
+    // every clean assignment would make the column useless for finding the ones
+    // where a judgement call was made.
+    override_by: overrideReason ? userId : null,
+  })
+  if (insertError) return fail(posted, insertError.message)
+
+  /**
+   * The load is now 'assigned' — but only if it had not already gone further.
+   *
+   * 0009_loads.sql is explicit that the operational status is where the truck
+   * actually is, and that losing that is the documented failure in this whole
+   * category of product. A driver swap on a load that is already `in_transit` is
+   * an ordinary Tuesday — breakdown, hours, a relay — and writing 'assigned'
+   * over `in_transit` would take a truck that is on the road and report it as
+   * sitting in the yard.
+   */
+  if (load.status === 'quoted' || load.status === 'booked') {
+    const { error: statusError } = await supabase
+      .from('loads')
+      .update({ status: 'assigned' })
+      .eq('id', id)
+      .select('id')
+    if (statusError) return fail(posted, statusError.message)
+  }
+
+  // ALWAYS a 303. A refresh on this page without one replays the POST, and a
+  // replayed assignment is a second load_assignments row for a decision that was
+  // only made once.
+  return Astro.redirect(`/app/dispatch?assigned=${encodeURIComponent(loadLabel(load))}`, 303)
+}
+
+// ---------------------------------------------------------------------------
+// GET
+// ---------------------------------------------------------------------------
+
+const load = await fetchLoad()
+if (!load) return toBoard(NOT_YOURS)
+
+const { drivers, vehicles } = await fetchRoster()
+const openAssignments = await fetchOpenAssignments()
+const current = openAssignments.find((o) => o.load_id === id)
+
+const params = Astro.url.searchParams
+const hasSelection = ['driver', 'co_driver', 'tractor', 'trailer'].some((k) => params.has(k))
+
+/**
+ * What the screen is currently asking about.
+ *
+ * With no query string at all, it defaults to whoever is already under the load,
+ * so opening the screen for a running load shows that driver's issues rather than
+ * an empty form. Once she has touched the selects the query string is the truth,
+ * including when she has cleared a slot back to "nobody" — which is why this
+ * tests whether ANY of the four keys is present rather than whether the values
+ * are non-empty.
+ */
+const selection: Choice = hasSelection
+  ? choiceFrom((k) => params.get(k))
+  : {
+      driver: current?.driver_id ?? null,
+      co_driver: current?.co_driver_id ?? null,
+      tractor: current?.tractor_id ?? null,
+      trailer: current?.trailer_id ?? null,
+    }
+
+const assessment = await assess(selection, drivers, vehicles)
+
+const activeDrivers = drivers.filter((d) => d.status === 'active')
+const tractors = vehicles.filter((v) => v.kind === 'power_unit' && v.status !== 'sold')
+const trailers = vehicles.filter((v) => v.kind === 'trailer' && v.status !== 'sold')
+
+const currentDriver = current?.driver_id
+  ? driverName(drivers.find((d) => d.id === current.driver_id))
+  : null
+
+const error = params.get('error')
+const customerName = load.customer_id
+  ? ((await supabase.from('customers').select('name').eq('id', load.customer_id).maybeSingle())
+      .data?.name ?? null)
+  : null
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+
+const SEVERITY_PILL = {
+  block: 'bg-red-100 text-red-700',
+  warn: 'bg-amber-100 text-amber-800',
+} as const
+---
+
+<App
+  title={`Assign load ${loadLabel(load)}`}
+  subtitle={[customerName, load.broker_reference ? `Broker ref ${load.broker_reference}` : null]
+    .filter(Boolean)
+    .join(' · ')}
+>
+  {error && <p class="mb-5 rounded-lg bg-red-100 px-4 py-3 text-sm text-red-800">{error}</p>}
+
+  {
+    /* The block, first and loudest, before the form she is trying to use.
+       It names the person, says what is wrong in her words rather than the
+       regulation's, and links to the one page where the date can be fixed —
+       because she is trying to move freight, not to be told off. */
+  }
+  {
+    assessment.blocked && (
+      <div class="mb-5 rounded-xl border border-red-200 bg-red-50/40 p-5">
+        <p class="font-medium text-red-800">This load cannot go out as selected.</p>
+        <ul class="mt-3 space-y-3 text-sm">
+          {assessment.slots
+            .filter((s) => s.issues.some((i) => i.severity === 'block'))
+            .map((s) => (
+              <li>
+                {s.issues
+                  .filter((i) => i.severity === 'block')
+                  .map((i) => (
+                    <p class="text-red-800">{i.message}</p>
+                  ))}
+                <a href={s.href} class="mt-1 inline-block font-medium text-brand-600 hover:underline">
+                  Open {s.name}'s record and put the date right →
+                </a>
+              </li>
+            ))}
+        </ul>
+        <p class="mt-4 text-sm text-red-700">
+          Nothing else about this load is wrong. Pick somebody else and it goes out now, or fix the
+          date above and come straight back — this is not a decision anyone here can wave through,
+          because the driver is not qualified to operate until it is put right.
+        </p>
+      </div>
+    )
+  }
+
+  <div class="grid gap-6 lg:grid-cols-[1fr_minmax(0,22rem)]">
+    <div class="space-y-6">
+      {
+        /* Choosing is a GET. The form replaces the query string and the server
+           draws the answer, so there is no client-side framework on this page at
+           all — and the resulting URL is a thing she can bookmark or send. */
+      }
+      <form method="GET" class="space-y-4 rounded-xl border border-ink-100 bg-white p-5">
+        <div>
+          <h2 class="text-lg font-semibold tracking-tight">Who is taking it</h2>
+          <p class="mt-1 text-sm text-ink-500">
+            Pick, then check. Nothing is written until you press Assign at the bottom.
+          </p>
+        </div>
+
+        {
+          activeDrivers.length === 0 ? (
+            <p class="rounded-xl border border-dashed border-ink-100 p-6 text-center text-sm text-ink-500">
+              There are no active drivers to assign.{' '}
+              <a href="/app/drivers/new" class="font-medium text-brand-600 hover:underline">
+                Add a driver
+              </a>{' '}
+              first.
+            </p>
+          ) : (
+            <div class="grid gap-4 sm:grid-cols-2">
+              <label class="block">
+                <span class="text-sm font-medium">
+                  Driver <span class="text-red-600">*</span>
+                </span>
+                <select name="driver" class={field}>
+                  <option value="">— nobody —</option>
+                  {activeDrivers.map((d) => (
+                    <option value={d.id} selected={selection.driver === d.id}>
+                      {d.last_name}, {d.first_name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label class="block">
+                <span class="text-sm font-medium">
+                  Co-driver <span class="font-normal text-ink-300">(team runs only)</span>
+                </span>
+                <select name="co_driver" class={field}>
+                  <option value="">— nobody —</option>
+                  {activeDrivers.map((d) => (
+                    <option value={d.id} selected={selection.co_driver === d.id}>
+                      {d.last_name}, {d.first_name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label class="block">
+                <span class="text-sm font-medium">Tractor</span>
+                <select name="tractor" class={field}>
+                  <option value="">— none —</option>
+                  {tractors.map((v) => (
+                    <option value={v.id} selected={selection.tractor === v.id}>
+                      {unitName(v)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label class="block">
+                <span class="text-sm font-medium">
+                  Trailer <span class="font-normal text-ink-300">(blank for power-only)</span>
+                </span>
+                <select name="trailer" class={field}>
+                  <option value="">— none —</option>
+                  {trailers.map((v) => (
+                    <option value={v.id} selected={selection.trailer === v.id}>
+                      {unitName(v)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )
+        }
+
+        <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+          <button
+            type="submit"
+            class="rounded-lg border border-ink-100 px-4 py-2.5 font-medium transition hover:bg-ink-50"
+          >
+            Check these
+          </button>
+          <span class="text-sm text-ink-500">
+            Checking reloads the page with their compliance on it. No data is changed.
+          </span>
+        </div>
+      </form>
+
+      {
+        /* One card per filled slot, so a message that says "That driver is
+           already on load 4488" is read under a heading that says which of the
+           two drivers it is about. */
+      }
+      {
+        assessment.slots.length > 0 && (
+          <div class="space-y-3">
+            {assessment.slots.map((s) => {
+              const blocks = s.issues.filter((i) => i.severity === 'block')
+              const warns = s.issues.filter((i) => i.severity === 'warn')
+              return (
+                <div
+                  class:list={[
+                    'rounded-xl border p-5',
+                    blocks.length > 0
+                      ? 'border-red-200 bg-red-50/40'
+                      : warns.length > 0
+                        ? 'border-amber-300 bg-amber-50'
+                        : 'border-ink-100 bg-white',
+                  ]}
+                >
+                  <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <span class="text-xs tracking-wide text-ink-500 uppercase">{s.role}</span>
+                    <a href={s.href} class="font-medium hover:text-brand-600 hover:underline">
+                      {s.name}
+                    </a>
+                    <span
+                      class:list={[
+                        'ml-auto rounded-md px-2 py-0.5 text-xs font-medium',
+                        blocks.length > 0
+                          ? SEVERITY_PILL.block
+                          : warns.length > 0
+                            ? SEVERITY_PILL.warn
+                            : 'bg-emerald-100 text-emerald-800',
+                      ]}
+                    >
+                      {blocks.length > 0
+                        ? 'Cannot be dispatched'
+                        : warns.length > 0
+                          ? `${warns.length} to acknowledge`
+                          : 'Nothing outstanding'}
+                    </span>
+                  </div>
+
+                  {s.issues.length > 0 && (
+                    <ul class="mt-3 space-y-2 text-sm">
+                      {s.issues.map((i) => (
+                        <li class="flex gap-2">
+                          <span
+                            class:list={[
+                              'mt-0.5 shrink-0 rounded-md px-1.5 py-0.5 text-xs font-medium',
+                              SEVERITY_PILL[i.severity],
+                            ]}
+                          >
+                            {i.severity === 'block' ? 'Stop' : 'Check'}
+                          </span>
+                          <span class={i.severity === 'block' ? 'text-red-800' : 'text-amber-900'}>
+                            {i.message}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {
+                    /* An empty issue list from the engine is not the same fact as
+                       a clean record. `loadDeadlines()` never evaluates a subject
+                       it does not load, so "we found nothing" has to be told
+                       apart from "we looked at nothing". */
+                  }
+                  {s.unknownSubject && (
+                    <p class="mt-3 text-sm text-ink-500">
+                      The rule engine has no rows for {s.name}. That is not the same as a clean
+                      record — it usually means the record is not on the active roster.{' '}
+                      <a href={s.href} class="font-medium text-brand-600 hover:underline">
+                        Check the record
+                      </a>
+                      .
+                    </p>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )
+      }
+
+      <form method="POST" class="space-y-4 rounded-xl border border-ink-100 bg-white p-5">
+        {
+          /* The ids that were ASSESSED, not whatever the selects happen to show.
+             The server re-checks them anyway, but posting the checked combination
+             is what makes the confirmation on screen and the row in the database
+             describe the same decision. */
+        }
+        <input type="hidden" name="driver" value={selection.driver ?? ''} />
+        <input type="hidden" name="co_driver" value={selection.co_driver ?? ''} />
+        <input type="hidden" name="tractor" value={selection.tractor ?? ''} />
+        <input type="hidden" name="trailer" value={selection.trailer ?? ''} />
+
+        <h2 class="text-lg font-semibold tracking-tight">Assign</h2>
+
+        {
+          assessment.warns.length > 0 && !assessment.blocked && (
+            <div class="space-y-3 rounded-xl border border-amber-300 bg-amber-50 p-4">
+              <p class="text-sm text-amber-900">
+                <span class="font-medium tabular-nums">{assessment.warns.length}</span>
+                {assessment.warns.length === 1 ? ' warning' : ' warnings'} on this assignment. None
+                of them stops the truck, and none of them goes unrecorded either.
+              </p>
+              <label class="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  name="acknowledge"
+                  value="yes"
+                  class="mt-0.5 size-4 rounded border-ink-300"
+                />
+                <span class="text-amber-900">
+                  I have read the warnings above and I am dispatching this load anyway.
+                </span>
+              </label>
+              <label class="block">
+                <span class="text-sm font-medium text-amber-900">Why</span>
+                <textarea
+                  name="override_reason"
+                  rows="3"
+                  placeholder="e.g. Card renewed Friday, copy is in the truck, office has the paperwork Monday."
+                  class={field}
+                />
+                <span class="mt-1 block text-xs text-amber-800">
+                  Stored against this assignment with your name on it. Six months from now, in front
+                  of an auditor or a claims adjuster, this sentence is the difference between a
+                  judgement call and a shrug.
+                </span>
+              </label>
+            </div>
+          )
+        }
+
+        <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+          <button
+            type="submit"
+            name="intent"
+            value="assign"
+            disabled={assessment.blocked || !selection.driver}
+            class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-300 disabled:hover:bg-ink-100"
+          >
+            {current ? 'Change the assignment' : 'Assign this load'}
+          </button>
+          <a href="/app/dispatch" class="text-sm font-medium text-brand-600 hover:underline">
+            Back to dispatch
+          </a>
+          {
+            assessment.blocked && (
+              <span class="text-sm text-red-700">
+                Disabled — and the server refuses it as well, so a re-enabled button gets the same
+                answer.
+              </span>
+            )
+          }
+        </div>
+      </form>
+    </div>
+
+    <div class="space-y-4">
+      <div class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">On this load now</div>
+        {
+          current ? (
+            <>
+              <div class="mt-1 font-medium">{currentDriver ?? 'Nobody'}</div>
+              <dl class="mt-2 divide-y divide-ink-100 text-sm">
+                <div class="flex justify-between gap-4 py-2">
+                  <dt class="text-ink-500">Tractor</dt>
+                  <dd class="text-right">
+                    {current.tractor_id
+                      ? unitName(vehicles.find((v) => v.id === current.tractor_id))
+                      : '—'}
+                  </dd>
+                </div>
+                <div class="flex justify-between gap-4 py-2">
+                  <dt class="text-ink-500">Trailer</dt>
+                  <dd class="text-right">
+                    {current.trailer_id
+                      ? unitName(vehicles.find((v) => v.id === current.trailer_id))
+                      : '—'}
+                  </dd>
+                </div>
+              </dl>
+              <form method="POST" class="mt-3">
+                <button
+                  type="submit"
+                  name="intent"
+                  value="release"
+                  class="rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
+                >
+                  Take them off this load
+                </button>
+              </form>
+            </>
+          ) : (
+            <p class="mt-2 text-sm text-ink-500">
+              Nobody yet. This load is sitting at the top of the dispatch board until it has a
+              driver.
+            </p>
+          )
+        }
+      </div>
+
+      <div class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">Load</div>
+        <dl class="mt-2 divide-y divide-ink-100 text-sm">
+          <div class="flex justify-between gap-4 py-2">
+            <dt class="text-ink-500">Status</dt>
+            <dd class="text-right">{load.status.replace(/_/g, ' ')}</dd>
+          </div>
+          {
+            load.equipment_type && (
+              <div class="flex justify-between gap-4 py-2">
+                <dt class="text-ink-500">Equipment</dt>
+                <dd class="text-right">{load.equipment_type}</dd>
+              </div>
+            )
+          }
+          {
+            load.commodity && (
+              <div class="flex justify-between gap-4 py-2">
+                <dt class="text-ink-500">Commodity</dt>
+                <dd class="text-right">{load.commodity}</dd>
+              </div>
+            )
+          }
+          {
+            load.weight_lbs && (
+              <div class="flex justify-between gap-4 py-2">
+                <dt class="text-ink-500">Weight</dt>
+                <dd class="text-right tabular-nums">{load.weight_lbs.toLocaleString('en-US')} lb</dd>
+              </div>
+            )
+          }
+        </dl>
+        <a
+          href={`/app/loads/${id}`}
+          class="mt-3 inline-block text-sm font-medium text-brand-600 hover:underline"
+        >
+          Open the load →
+        </a>
+      </div>
+
+      <div class="rounded-xl border border-brand-500/30 bg-brand-500/[0.04] p-4">
+        <p class="text-sm text-brand-700">
+          A driver who was qualified on Monday can be unqualified by Thursday, so this check runs
+          against today's dates every time the page is opened — not against whatever was true when
+          the load was booked.
+        </p>
+      </div>
+    </div>
+  </div>
+</App>

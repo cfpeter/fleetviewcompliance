@@ -1,0 +1,605 @@
+---
+/**
+ * Settlements, by period and by driver.
+ *
+ * NOT PAYROLL. This screen produces the statement that goes with the cheque and
+ * exports it; nothing here withholds tax or files anything. The banner says so
+ * because a carrier who believes otherwise is a carrier who stops withholding,
+ * and that is a mistake this product must not help anyone make.
+ *
+ * The totals column mixes two different kinds of number on purpose, and the
+ * difference is the whole design:
+ *
+ *   A DRAFT'S total is re-derived from its lines on every page load. Nothing is
+ *   stored, so it cannot drift from the lines underneath it.
+ *
+ *   A LOCKED settlement's total is the frozen `net_cents` written the moment it
+ *   was paid. Its lines are immutable by then (0016_settlements.sql), so the two
+ *   can never disagree — and the number that was actually on the cheque is a
+ *   fact on the row rather than an arithmetic result that depends on today's code.
+ *
+ * The filters are plain GET parameters, so a filtered list is a URL that can be
+ * bookmarked or texted to the owner. Nothing on this page runs JavaScript.
+ */
+import Bars from '../../../components/charts/Bars.astro'
+import Columns from '../../../components/charts/Columns.astro'
+import Figure from '../../../components/charts/Figure.astro'
+import App from '../../../layouts/App.astro'
+import {
+  driverYearToDate,
+  monthsEnding,
+  netForDisplay,
+  paidCoverage,
+  paidSettlements,
+  payByMonth,
+} from '../../../lib/charts/pay.ts'
+import { ceilingFor, compactMoney } from '../../../lib/charts/scale.ts'
+import { formatDate, fullName, todayInCalifornia } from '../../../lib/drivers.ts'
+import { formatCents } from '../../../lib/loads.ts'
+import {
+  SETTLEMENT_STATUSES,
+  type SettlementCategory,
+  isLocked,
+  isSettlementStatus,
+  settlementStatusLabel,
+  settlementStatusPillClass,
+} from '../../../lib/settlements/compute.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+const userId = Astro.locals.userId!
+
+const back = (params: string) => Astro.redirect(`/app/settlements${params ? `?${params}` : ''}`, 303)
+const fail = (message: string) => back(`error=${encodeURIComponent(message)}`)
+
+/** ISO date arithmetic in UTC. Never `new Date('2026-03-01')` in local time —
+ *  on a Los Angeles carrier that parses as the previous afternoon, which has
+ *  silently moved a settlement period a day early before. */
+function shiftDays(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  if (intent === 'create') {
+    const driverId = String(form.get('driver_id') ?? '')
+    if (!driverId) return fail('Pick the driver this settlement is for.')
+
+    const start = String(form.get('period_start') ?? '')
+    const end = String(form.get('period_end') ?? '')
+    // Checked as strings before Postgres sees them. An empty date column is
+    // `invalid input syntax for type date: ""` — a 500 on a form somebody
+    // tabbed through, rather than a sentence about the box they missed.
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+      return fail('A settlement covers a period — give it a first and a last day.')
+    }
+    if (end < start) return fail('The period ends before it starts.')
+
+    const { data, error } = await supabase
+      .from('settlements')
+      .insert({
+        // Supplied on INSERT, never filtered on SELECT: RLS checks carrier_id
+        // but does not fill it in, and a trigger separately refuses a driver_id
+        // belonging to somebody else's carrier.
+        carrier_id: carrierId,
+        driver_id: driverId,
+        period_start: start,
+        period_end: end,
+        created_by: userId,
+      })
+      .select('id')
+      .single()
+
+    if (error) {
+      // The unique index on (carrier, driver, period, revision) is the one a
+      // person actually hits, by opening the same week twice. Postgres says
+      // "duplicate key value violates unique constraint", which tells them
+      // nothing they can act on.
+      if (error.code === '23505') {
+        return fail('That driver already has a settlement for those exact dates. Open it instead.')
+      }
+      return fail(error.message)
+    }
+    // Redirect rather than render: a refresh would otherwise open a second
+    // settlement for the same week, and two statements for one week is the
+    // thing a driver notices and nobody else does.
+    return Astro.redirect(`/app/settlements/${data.id}?created=1`, 303)
+  }
+
+  return back('')
+}
+
+interface DriverRow {
+  id: string
+  first_name: string
+  last_name: string
+  status: string
+}
+
+interface LineRow {
+  category: SettlementCategory
+  amount_cents: number
+}
+
+interface SettlementRow {
+  id: string
+  driver_id: string
+  period_start: string
+  period_end: string
+  status: string
+  revision: number
+  superseded_at: string | null
+  net_cents: number | null
+  paid_on: string | null
+  /** Embedded so a draft's total is the truth rather than a stored guess. */
+  settlement_lines: LineRow[] | null
+  /**
+   * PostgREST returns a to-one embed as an object and a to-many embed as an
+   * array depending on how it reads the foreign key, and it has been both
+   * across versions. Accepted either way rather than betting the name column.
+   */
+  drivers: { first_name: string; last_name: string } | { first_name: string; last_name: string }[] | null
+}
+
+const params = Astro.url.searchParams
+const requestedStatus = params.get('status') ?? 'all'
+/**
+ * THE DEFAULT VIEW IS EVERYTHING.
+ *
+ * A paid settlement is not finished business the way a terminated driver is:
+ * it is the row a driver rings about, and hiding it behind a filter is how the
+ * office ends up saying "I can't see it" about a statement they produced. An
+ * unrecognised value also lands here rather than being handed to Postgres —
+ * `.eq('status', '')` is an enum cast error, which is a 500 on the page reached
+ * by clearing a filter.
+ */
+const status = isSettlementStatus(requestedStatus) ? requestedStatus : 'all'
+const driverFilter = params.get('driver') ?? ''
+
+let query = supabase
+  .from('settlements')
+  .select(
+    'id, driver_id, period_start, period_end, status, revision, superseded_at, net_cents, paid_on, drivers ( first_name, last_name ), settlement_lines ( category, amount_cents )',
+  )
+  // Most recent period first. A settlement list is worked from the top: the
+  // week that just closed is the one being built.
+  .order('period_start', { ascending: false })
+  .order('revision', { ascending: false })
+
+// No .eq('carrier_id', …) anywhere on this page. RLS already limits every row
+// to the signed-in user's carrier, and repeating it in the query would read as
+// though the policy might not hold.
+if (status !== 'all') query = query.eq('status', status)
+if (/^[0-9a-f-]{36}$/i.test(driverFilter)) query = query.eq('driver_id', driverFilter)
+
+const [{ data, error: listError }, { data: driverData }] = await Promise.all([
+  query,
+  supabase
+    .from('drivers')
+    .select('id, first_name, last_name, status')
+    .order('last_name', { ascending: true }),
+])
+
+const rows = (data ?? []) as unknown as SettlementRow[]
+const drivers = (driverData ?? []) as DriverRow[]
+const activeDrivers = drivers.filter((d) => d.status === 'active')
+
+function driverName(row: SettlementRow): string {
+  const embedded = Array.isArray(row.drivers) ? row.drivers[0] : row.drivers
+  if (embedded) return fullName(embedded)
+  // Reachable when the embed is filtered out by a future select. Falling back
+  // to the roster we already loaded beats printing a bare uuid.
+  const hit = drivers.find((d) => d.id === row.driver_id)
+  return hit ? fullName(hit) : 'Unknown driver'
+}
+
+/**
+ * The number to show, and whether it is frozen.
+ *
+ * A locked settlement shows what was paid. A draft shows what its lines add up
+ * to right now. The rule lives in `netForDisplay` rather than here because the
+ * driver page prints the same figure, and two pages that decide separately which
+ * of the two numbers a settlement gets are two pages that will eventually
+ * disagree about what a driver was paid.
+ */
+function netOf(row: SettlementRow) {
+  return netForDisplay(
+    row.status,
+    row.net_cents,
+    (row.settlement_lines ?? []).map((l) => ({
+      category: l.category,
+      amountCents: l.amount_cents,
+    })),
+  )
+}
+
+/** A link that keeps the other filter intact. */
+function withParam(key: string, value: string): string {
+  const next = new URLSearchParams(params)
+  if (value) next.set(key, value)
+  else next.delete(key)
+  // Notices from a previous action must not survive a filter click, or the
+  // green "Created." banner follows her around the screen.
+  next.delete('error')
+  const s = next.toString()
+  return `/app/settlements${s ? `?${s}` : ''}`
+}
+
+const today = todayInCalifornia()
+// A week, ending today. The commonest settlement period in the segment by a
+// distance, and it is only a prefill — both boxes are editable.
+const defaultStart = shiftDays(today, -6)
+
+const error = params.get('error') ?? listError?.message ?? null
+const tabs = [{ value: 'all', label: 'All' }, ...SETTLEMENT_STATUSES]
+const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+
+// Draft totals across the whole list, for the tile. Locked settlements are
+// excluded: money already paid is not money still owed.
+const owing = rows
+  .filter((r) => !isLocked(r.status) && !r.superseded_at)
+  .reduce((n, r) => n + (netOf(r).cents ?? 0), 0)
+
+/**
+ * THE CHARTS BELONG TO THE RESTING VIEW, AND ONLY TO IT.
+ *
+ * Two reasons, and the second is the one that matters. A chart above a filtered
+ * list pushes the rows somebody just filtered for further down the page, which
+ * undoes the reason the filter exists. And the figures would be wrong: filtered
+ * to Paid, a revision chain arrives with its drafts missing and nothing can say
+ * a correction is in flight; filtered to one driver, "paid by driver" is one
+ * bar. So `pay` is derived only when the list is everything — not computed and
+ * then hidden, because a value that exists is a value a later edit will render.
+ */
+const resting = status === 'all' && !driverFilter
+
+const pay = resting
+  ? paidSettlements(
+      // Mapped rather than passed through: the derivation takes a settlement's
+      // seven relevant columns and knows nothing about PostgREST, which is what
+      // lets the double-count rule be tested against hand-built revisions
+      // instead of against a fleet.
+      rows.map((r) => ({
+        id: r.id,
+        driverId: r.driver_id,
+        periodStart: r.period_start,
+        periodEnd: r.period_end,
+        status: r.status,
+        revision: r.revision,
+        supersededAt: r.superseded_at,
+        netCents: r.net_cents,
+        paidOn: r.paid_on,
+      })),
+    )
+  : null
+
+// Twelve months: a year of shape, and still under the ~14 columns beyond which
+// they are stripes on a phone.
+const monthWindow = monthsEnding(today, 12)
+const monthly = pay ? payByMonth(pay.rows, monthWindow.from, monthWindow.to) : null
+// The ceiling is taken once and passed in, so the axis label and the columns
+// cannot be scaled to two different numbers.
+const monthlyCeiling = monthly ? ceilingFor(monthly.values) : 0
+const monthlyEnd = monthly ? monthly.buckets[monthly.buckets.length - 1].end : null
+const chartedRows =
+  pay && monthlyEnd
+    ? pay.rows.filter((p) => p.on >= monthWindow.from && p.on < monthlyEnd)
+    : []
+const chartedCents = chartedRows.reduce((n, p) => n + p.cents, 0)
+
+const payYear = Number(today.slice(0, 4))
+// Active drivers seed the ranking so the ones with NOTHING paid this year are on
+// it, as absences rather than as zero bars. A driver nobody has settled with is
+// invisible on a chart built from settlements alone, and invisible reads as
+// fine — the same failure the dashboard runway exists to prevent.
+const ytd = pay ? driverYearToDate(pay.rows, activeDrivers.map((d) => d.id), today) : []
+const nameById = new Map(drivers.map((d) => [d.id, fullName(d)]))
+const ytdItems = ytd.map((d) => ({
+  label: nameById.get(d.driverId) ?? 'Unknown driver',
+  value: d.cents,
+  // Exact cents, never `compactMoney`. This is the figure a driver rings about,
+  // and '$12.4k' is not a number anybody can check against a cheque.
+  display: formatCents(d.cents),
+  note:
+    d.cents === null
+      ? 'Nothing marked paid this year'
+      : `${d.settlements} ${d.settlements === 1 ? 'settlement' : 'settlements'}`,
+  href: `/app/settlements?driver=${d.driverId}`,
+}))
+const ytdCents = ytd.reduce((n, d) => n + (d.cents ?? 0), 0)
+const ytdPaidDrivers = ytd.filter((d) => d.cents !== null).length
+
+const payCoverage = pay ? paidCoverage(pay) : undefined
+// The trailing month is short by however much of it is left, every load, all
+// month — and a chart that always ends on a runt column reads as pay falling
+// off a cliff. That is now carried by the column itself (`inProgress`: faded,
+// open top edge, announced as "so far"), where it is read at the same moment
+// the shape is, rather than by a sentence underneath that is read second.
+const monthCoverage = payCoverage
+// Nothing paid, no pay chart. Two empty frames on a carrier's first week are
+// furniture, and the tiles above already say how much is open.
+const showPayCharts = (pay?.rows.length ?? 0) > 0
+---
+
+<App title="Settlements" subtitle="What each driver is owed for a period, and the paper that says why.">
+  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+
+  <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+    This is not payroll. FleetView works out what each driver is owed and prints the statement —
+    it does not withhold tax, calculate FICA, or file anything. Hand the net figure to whoever
+    runs your payroll.
+  </p>
+
+  <div class="grid gap-4 sm:grid-cols-3">
+    <div class={card}>
+      <div class="text-xs tracking-wide text-ink-500 uppercase">Open settlements</div>
+      <div class="mt-1 text-3xl font-semibold tabular-nums">
+        {rows.filter((r) => !isLocked(r.status)).length}
+      </div>
+      <div class="mt-1 text-xs text-ink-500">Draft and approved. Still editable.</div>
+    </div>
+    <div class={card}>
+      <div class="text-xs tracking-wide text-ink-500 uppercase">Net on open settlements</div>
+      <div class="mt-1 text-3xl font-semibold tabular-nums">{formatCents(owing)}</div>
+      <div class="mt-1 text-xs text-ink-500">Adds up the lines, right now. Nothing is stored.</div>
+    </div>
+    <div class={card}>
+      <div class="text-xs tracking-wide text-ink-500 uppercase">Paid</div>
+      <div class="mt-1 text-3xl font-semibold tabular-nums">
+        {rows.filter((r) => r.status === 'paid').length}
+      </div>
+      <div class="mt-1 text-xs text-ink-500">Locked. Corrections go on a revision.</div>
+    </div>
+  </div>
+
+
+  <form method="POST" class={`mt-6 ${card}`}>
+    <h2 class="text-lg font-semibold tracking-tight">Start a settlement</h2>
+    <div class="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-end">
+      <label class="block">
+        <span class="text-sm font-medium">Driver <span class="text-red-600">*</span></span>
+        <select name="driver_id" required class={field}>
+          <option value="">— choose —</option>
+          {
+            activeDrivers.map((d) => (
+              <option value={d.id} selected={driverFilter === d.id}>
+                {fullName(d)}
+              </option>
+            ))
+          }
+        </select>
+      </label>
+      <label class="block">
+        <span class="text-sm font-medium">From</span>
+        <input
+          type="date"
+          name="period_start"
+          value={defaultStart}
+          required
+          class={`${field} tabular-nums`}
+        />
+      </label>
+      <label class="block">
+        <span class="text-sm font-medium">To</span>
+        <input type="date" name="period_end" value={today} required class={`${field} tabular-nums`} />
+      </label>
+      <button
+        type="submit"
+        name="intent"
+        value="create"
+        class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+      >
+        Start
+      </button>
+    </div>
+    {
+      activeDrivers.length === 0 && (
+        <p class="mt-3 text-sm text-ink-500">
+          No active drivers yet. <a href="/app/drivers/new" class="font-medium text-brand-600 hover:underline">Add one →</a>
+        </p>
+      )
+    }
+  </form>
+
+  <div class="mt-6 flex flex-wrap items-end justify-between gap-4">
+    <nav class="flex flex-wrap gap-1">
+      {
+        tabs.map((t) => (
+          <a
+            href={withParam('status', t.value === 'all' ? '' : t.value)}
+            class:list={[
+              tab,
+              status === t.value || (t.value === 'all' && status === 'all')
+                ? 'bg-brand-500/10 text-brand-700'
+                : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
+            ]}
+          >
+            {t.label}
+          </a>
+        ))
+      }
+    </nav>
+
+    {/* A GET form, so the chosen driver lands in the URL and the view stays
+        shareable. `onchange` would need script; the button does not. */}
+    <form method="GET" class="flex items-end gap-2">
+      {status !== 'all' && <input type="hidden" name="status" value={status} />}
+      <label class="block">
+        <span class="text-sm font-medium">Driver</span>
+        <select name="driver" class={field}>
+          <option value="">Everyone</option>
+          {
+            drivers.map((d) => (
+              <option value={d.id} selected={driverFilter === d.id}>
+                {fullName(d)}
+              </option>
+            ))
+          }
+        </select>
+      </label>
+      <button
+        type="submit"
+        class="rounded-lg border border-ink-100 px-4 py-2.5 font-medium transition hover:bg-ink-50"
+      >
+        Filter
+      </button>
+    </form>
+  </div>
+
+  {
+    rows.length === 0 ? (
+      <div class="mt-4 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+        <p class="font-medium">Nothing here</p>
+        <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+          {status === 'all' && !driverFilter
+            ? 'Start a settlement above. Its lines come from the driver’s pay agreements, plus anything you add by hand.'
+            : 'No settlement matches that filter. Clear it to see the rest.'}
+        </p>
+      </div>
+    ) : (
+      <div class="mt-4 overflow-x-auto rounded-xl border border-ink-100 bg-white">
+        <table class="w-full min-w-[46rem] text-sm">
+          <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+            <tr>
+              <th class="px-4 py-3 font-medium">Period</th>
+              <th class="px-4 py-3 font-medium">Driver</th>
+              <th class="px-4 py-3 font-medium">Status</th>
+              <th class="px-4 py-3 text-right font-medium">Lines</th>
+              <th class="px-4 py-3 text-right font-medium">Net</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-ink-100">
+            {rows.map((r) => {
+              const net = netOf(r)
+              return (
+                <tr class:list={['hover:bg-ink-50/60', r.superseded_at && 'opacity-60']}>
+                  <td class="px-4 py-3 whitespace-nowrap">
+                    <a
+                      href={`/app/settlements/${r.id}`}
+                      class="font-medium tabular-nums hover:text-brand-600 hover:underline"
+                    >
+                      {formatDate(r.period_start)} – {formatDate(r.period_end)}
+                    </a>
+                    {r.revision > 1 && (
+                      <span class="ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs text-ink-500 tabular-nums">
+                        rev {r.revision}
+                      </span>
+                    )}
+                    {r.superseded_at && (
+                      <span class="block text-xs text-ink-300">Replaced by a later revision</span>
+                    )}
+                  </td>
+                  <td class="px-4 py-3">{driverName(r)}</td>
+                  <td class="px-4 py-3">
+                    <span
+                      class:list={[
+                        'rounded-md px-2 py-0.5 text-xs font-medium',
+                        settlementStatusPillClass(r.status),
+                      ]}
+                    >
+                      {settlementStatusLabel(r.status)}
+                    </span>
+                    {r.paid_on && (
+                      <span class="ml-2 text-xs text-ink-500 tabular-nums">
+                        {formatDate(r.paid_on)}
+                      </span>
+                    )}
+                  </td>
+                  <td class="px-4 py-3 text-right text-ink-500 tabular-nums">
+                    {(r.settlement_lines ?? []).length}
+                  </td>
+                  <td class="px-4 py-3 text-right whitespace-nowrap">
+                    <span class="font-medium tabular-nums">{formatCents(net.cents)}</span>
+                    <span class="block text-xs text-ink-300">
+                      {net.frozen ? 'as paid' : 'from the lines'}
+                    </span>
+                    {net.drift && (
+                      <span class="mt-1 block rounded-md bg-red-100 px-1.5 py-0.5 text-xs text-red-700">
+                        does not match its lines
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
+  {/*
+    BELOW the table and the start-a-settlement form, not above them.
+
+    Measured on a phone with these above: the first settlement row sat at
+    1,932px — two and a half screens down — and the charts were 632px of it.
+    The dashboard leads with its chart because it is a summary; this is a work
+    surface, and on a work surface the rows come first.
+
+    Two questions the table cannot answer, because both are sums across rows
+    sorted by period: what we have actually paid out lately, and what each
+    driver has had this year. Neither figure exists anywhere else in the product.
+
+    Both are drawn from PAID settlements only, one row per revision chain. A
+    draft's total is still moving — it is re-derived from its lines on every load
+    — and a column that adds a moving total to a frozen one is a number nobody
+    can reconcile against a cheque afterwards. The open ones are named in the
+    coverage line instead.
+  */}
+  {
+    showPayCharts && monthly && (
+      <div class="mt-8 grid gap-4 lg:grid-cols-2">
+        <Figure
+          title="Paid out, by month"
+          subtitle="Settlements marked paid, in the month the money moved"
+          coverage={monthCoverage}
+        >
+          <Columns
+            columns={monthly.buckets.map((b, i) => {
+              const v = monthly.values[i]
+              return {
+                label: b.label,
+                value: v,
+                // Compact here and only here: this is a column label on a
+                // twelve-wide axis, not a figure anybody reconciles. The exact
+                // cents of every settlement in it are in the table below.
+                display: v === null ? '—' : compactMoney(v),
+                // The trailing month is the one we are standing in, so it is
+                // short by however much of it is left — every load, all month.
+                inProgress: i === monthly.buckets.length - 1,
+              }
+            })}
+            max={monthlyCeiling}
+            axisLabel={compactMoney(monthlyCeiling)}
+            emptyMessage="Nothing marked paid in the last twelve months."
+          />
+          <p class="mt-3 text-xs text-ink-500">
+            {chartedRows.length > 0
+              ? `${formatCents(chartedCents)} across ${chartedRows.length} ${chartedRows.length === 1 ? 'settlement' : 'settlements'} in the last twelve months.`
+              : 'Nothing has been marked paid in the last twelve months.'}
+          </p>
+        </Figure>
+
+        <Figure
+          title={`Paid to each driver in ${payYear}`}
+          subtitle="Year to date, counted once per period however many revisions it took"
+          coverage={payCoverage}
+        >
+          <Bars items={ytdItems} limit={10} emptyMessage="Nobody has been marked paid yet." />
+          <p class="mt-3 text-xs text-ink-500">
+            {ytdPaidDrivers > 0
+              ? `${formatCents(ytdCents)} paid to ${ytdPaidDrivers} ${ytdPaidDrivers === 1 ? 'driver' : 'drivers'} so far this year. Every settlement behind these totals is in the list below.`
+              : `Nothing has been marked paid in ${payYear} yet.`}
+          </p>
+        </Figure>
+      </div>
+    )
+  }
+
+</App>

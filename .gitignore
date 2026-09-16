@@ -1,0 +1,11 @@
+# Never add src/ here. Tailwind v4 skips gitignored paths and will ship an
+# unstyled site that still builds successfully.
+node_modules/
+dist/
+.astro/
+.wrangler/
+.env
+.env.*
+!.env.example
+*.credentials.local
+.DS_Store

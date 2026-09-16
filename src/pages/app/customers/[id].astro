@@ -1,0 +1,794 @@
+---
+/**
+ * One customer: the record we keep, what the federal file says about them, and
+ * the loads we have hauled for them.
+ *
+ * The federal block is the reason this page is worth opening before a load
+ * rather than after. A broker whose operating authority is inactive is a broker
+ * whose freight a small carrier should not be moving — and the public record
+ * that says so is free, so the only excuse for not checking is that nobody
+ * checked. Every branch of it is written to keep one sentence off the screen:
+ * "we could not check" must never be rendered as "they look fine".
+ */
+import Columns from '../../../components/charts/Columns.astro'
+import Figure from '../../../components/charts/Figure.astro'
+import Proportion from '../../../components/charts/Proportion.astro'
+import App from '../../../layouts/App.astro'
+import { type RevenueLoad, billingMix, revenueByMonth, sliceOf } from '../../../lib/charts/revenue.ts'
+import { ceilingFor, compactMoney } from '../../../lib/charts/scale.ts'
+import {
+  type CustomerLoadRow,
+  type CustomerRow,
+  authorityPillClass,
+  docketOrNull,
+  federalCheck,
+  formatStamp,
+  hasActiveAuthority,
+  parseDaysToPay,
+  parseDotNumber,
+  textOrNull,
+} from '../../../lib/customers.ts'
+import {
+  billingPillClass,
+  billingStatusLabel,
+  exceptionLabel,
+  exceptionPillClass,
+  formatCents,
+  loadLabel,
+  loadStatusLabel,
+  statusPillClass,
+  totalRateCents,
+} from '../../../lib/loads.ts'
+
+const supabase = Astro.locals.supabase!
+const id = Astro.params.id ?? ''
+
+function back(params: string): Response {
+  return Astro.redirect(`/app/customers/${id}${params ? `?${params}` : ''}`, 303)
+}
+
+function fail(message: string): Response {
+  return back(`error=${encodeURIComponent(message)}`)
+}
+
+/** Back to the book, for every case where this customer is not ours to show. */
+function toList(message: string): Response {
+  return Astro.redirect(`/app/customers?error=${encodeURIComponent(message)}`, 303)
+}
+
+const NOT_YOURS = 'That customer is not in your book.'
+
+// A hand-edited URL like /app/customers/abc is not a missing row, it is a failed
+// uuid cast — Postgres raises, and without this check she gets "invalid input
+// syntax for type uuid" across the top of her screen. Checked here rather than
+// swallowing the error later, so a REAL database failure still reaches her as a
+// real database failure instead of as "no such customer".
+if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+  return toList(NOT_YOURS)
+}
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  if (intent === 'save_customer') {
+    const name = textOrNull(form.get('name'))
+    if (!name) return fail('A customer needs a name.')
+
+    const dot = parseDotNumber(form.get('dot_number'))
+    if (!dot.ok) return fail(dot.message)
+
+    const days = parseDaysToPay(form.get('days_to_pay'))
+    if (!days.ok) return fail(days.message)
+
+    const { data, error } = await supabase
+      .from('customers')
+      .update({
+        name,
+        mc_number: docketOrNull(form.get('mc_number')),
+        dot_number: dot.value,
+        contact_name: textOrNull(form.get('contact_name')),
+        phone: textOrNull(form.get('phone')),
+        email: textOrNull(form.get('email')),
+        billing_email: textOrNull(form.get('billing_email')),
+        billing_address: textOrNull(form.get('billing_address')),
+        days_to_pay: days.value,
+        notes: textOrNull(form.get('notes')),
+      })
+      // No carrier_id in the filter and none in the patch. RLS makes another
+      // carrier's customer invisible to this statement, so the worst an edited
+      // URL achieves is matching zero rows — and leaving carrier_id out of the
+      // patch is what stops anyone moving a customer into a different tenancy.
+      .eq('id', id)
+      .select('id')
+
+    if (error) return fail(error.message)
+    // An UPDATE that matches nothing is not an error in Postgres, so without
+    // this the page would report a cheerful "Saved." for a customer that does
+    // not exist or belongs to somebody else.
+    if (!data || data.length === 0) return toList(NOT_YOURS)
+    return back('saved=1')
+  }
+
+  // POST always ends in a redirect, including the unrecognised-intent case. A
+  // fall-through here would render this page as the response to a POST, and the
+  // refresh that follows would re-submit it.
+  return back('')
+}
+
+const { data: row, error: loadError } = await supabase
+  .from('customers')
+  .select(
+    'id, name, mc_number, dot_number, contact_name, phone, email, billing_email, billing_address, days_to_pay, notes, created_at',
+  )
+  .eq('id', id)
+  .maybeSingle()
+
+if (loadError) return toList(loadError.message)
+// maybeSingle() returns null both for "no such id" and for "belongs to another
+// carrier", because RLS makes the second one look exactly like the first. That
+// is the point: this page cannot be used to find out which brokers another
+// carrier on the platform works with.
+if (!row) return toList(NOT_YOURS)
+
+const customer = row as CustomerRow & { created_at: string }
+
+/**
+ * Recent loads, and the federal lookup, started together.
+ *
+ * `federalCheck` never rejects — it turns a dead endpoint, a slow one and an
+ * empty answer into three different values — so nothing in this Promise.all can
+ * take the page down with it. That matters more than it sounds: the thing she
+ * actually came here for is a phone number, and a government data service
+ * having a bad morning must not cost her that.
+ */
+const loadsQuery = supabase
+  .from('loads')
+  .select(
+    'id, load_number, broker_reference, status, exception, billing, linehaul_cents, fuel_surcharge_cents, accessorials_cents, created_at',
+  )
+  // customer_id, not carrier_id. RLS has already limited this table to our own
+  // loads; this filter is about WHICH of our loads, which is a different
+  // question and the only one this page gets to ask.
+  .eq('customer_id', id)
+  .order('created_at', { ascending: false })
+  .limit(10)
+
+/**
+ * The charts get their OWN query, over every load, and that is the whole point.
+ *
+ * The table above is the last ten. Drawing a twelve-month revenue chart from
+ * ten rows would draw empty months for periods this broker was actually busy in
+ * — the chart would say "nothing in March" when what happened is that March
+ * fell off the end of a LIMIT. That is the precise failure the charts doctrine
+ * calls an axis built from the data instead of from the calendar, and on a
+ * customer page it would be an accusation against a broker who did nothing
+ * wrong.
+ *
+ * Only the columns the derivations read. No id, no reference numbers: this
+ * query can be forty times the size of the one above it and none of that is
+ * rendered anywhere.
+ */
+const historyQuery = supabase
+  .from('loads')
+  .select(
+    'status, exception, billing, linehaul_cents, fuel_surcharge_cents, accessorials_cents, created_at',
+    // The exact count, so the charts can tell whether PostgREST's row cap ate
+    // anything. Without it a capped response draws a quietly short year and
+    // there is nothing on screen — or in the data — that says so.
+    { count: 'exact' },
+  )
+  .eq('customer_id', id)
+
+const [loadsResult, historyResult, federal] = await Promise.all([
+  loadsQuery,
+  historyQuery,
+  // Asked only when there is something to ask about. A customer with neither
+  // number gets no federal block at all rather than an empty one, because an
+  // empty panel reads as an answer.
+  customer.dot_number || customer.mc_number
+    ? federalCheck(customer.dot_number, customer.mc_number)
+    : null,
+])
+
+const loads = (loadsResult.data ?? []) as unknown as CustomerLoadRow[]
+const loadsFailed = Boolean(loadsResult.error)
+
+/**
+ * What we have hauled for them, drawn.
+ *
+ * The table underneath answers "what happened lately". Neither it nor the Days
+ * to pay card answers the question the owner is really asking on this page —
+ * "is this broker worth the terms they are asking for" — because that answer is
+ * a shape: a customer who was half the year and has gone quiet looks identical
+ * to a steady one in a list of ten rows.
+ */
+const history = (historyResult.data ?? []) as unknown as RevenueLoad[]
+const historyFailed = Boolean(historyResult.error)
+const months = historyFailed || history.length === 0 ? null : revenueByMonth(history, new Date())
+const mix = historyFailed || history.length === 0 ? null : billingMix(history)
+
+const loadWord = (n: number) => (n === 1 ? 'load' : 'loads')
+
+// What the response could not carry. See the note on the count above: a capped
+// result drops rows silently, and a chart has no visible end to give the loss
+// away the way a table does.
+const missing = Math.max(0, (historyResult.count ?? history.length) - history.length)
+
+// Passed to Columns as `max` so the axis label and the bars are scaled by the
+// same number rather than by two separate calls that could drift.
+const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) : 0
+
+/**
+ * What the revenue columns do not cover.
+ *
+ * The clause about the table is not housekeeping. The chart is drawn from every
+ * load and the table under it is the last ten, so the two will disagree the
+ * moment this broker passes a dozen loads — and a reader who adds up the visible
+ * rows and gets a different number than the chart concludes that one of them is
+ * broken, which is the reputation this whole product is trying not to earn.
+ */
+const revenueCoverage = months
+  ? [
+      'Booked rates, by the month the load was entered — not money received. Nothing on a load records when it delivered or when it paid.',
+      history.length > loads.length &&
+        `Drawn from ${missing > 0 ? '' : 'all '}${history.length} loads on file for them; the table below is the last ${loads.length}.`,
+      months.window.unpricedLoads > 0 &&
+        `${months.window.unpricedLoads} ${loadWord(months.window.unpricedLoads)} here carry no rate yet and are in no column.`,
+      months.window.quotedLoads + months.window.cancelledLoads > 0 &&
+        `${months.window.quotedLoads + months.window.cancelledLoads} quoted or cancelled ${loadWord(months.window.quotedLoads + months.window.cancelledLoads)} are left out.`,
+      months.window.writtenOffCents > 0 &&
+        `${formatCents(months.window.writtenOffCents)} of what is drawn has been written off.`,
+      months.outside.countedLoads + months.outside.unpricedLoads > 0 &&
+        `${months.outside.countedLoads + months.outside.unpricedLoads} older ${loadWord(months.outside.countedLoads + months.outside.unpricedLoads)} are before this axis starts.`,
+      months.undated > 0 && `${months.undated} could not be placed on it at all.`,
+      missing > 0 &&
+        `${missing} older ${loadWord(missing)} did not fit in one request and are on no chart here.`,
+    ]
+      .filter(Boolean)
+      .join(' ')
+  : undefined
+
+/**
+ * What the billing bar does not cover — and the one thing this app cannot yet
+ * tell him at all.
+ *
+ * `days_to_pay` is the AGREED term. Nothing in 0009_loads.sql records the day a
+ * payment actually landed, so we can show what is outstanding and we cannot
+ * show how long this broker really takes. Saying so is the point: a page that
+ * quietly showed only the agreed number would be read as the real one, and the
+ * whole reason a small carrier cares about this field is that the two differ.
+ */
+const mixCoverage = mix
+  ? [
+      'Bands are counts of loads, not dollars.',
+      mix.unpricedLoads > 0 &&
+        `${mix.unpricedLoads} of them carry no rate, so the amounts below are lower than the real figures.`,
+      mix.quotedLoads + mix.cancelledLoads > 0 &&
+        `${mix.quotedLoads + mix.cancelledLoads} quoted or cancelled ${loadWord(mix.quotedLoads + mix.cancelledLoads)} are not on this bar.`,
+      missing > 0 && `${missing} older ${loadWord(missing)} did not fit in one request.`,
+      'Nothing here records the day a payment landed, so this cannot tell you how long they actually take — only what is still out.',
+    ]
+      .filter(Boolean)
+      .join(' ')
+  : undefined
+
+const readySlice = mix ? sliceOf(mix, 'ready') : undefined
+const awaitingSlice = mix ? sliceOf(mix, 'awaiting') : undefined
+const problemSlice = mix ? sliceOf(mix, 'problem') : undefined
+
+// 0 is "pays on delivery", the best terms in the industry, and NULL is "nobody
+// has asked them". Rendered through one template they would both come out as a
+// number of days, and the broker who never answered would read as the best
+// payer on the book — the same trap parseDaysToPay exists to keep out of the
+// database.
+const termsLine =
+  customer.days_to_pay === null
+    ? 'They have never given you payment terms, so there is nothing here to measure the wait against.'
+    : customer.days_to_pay === 0
+      ? 'Their agreed terms are payment on delivery.'
+      : `Their agreed terms are ${customer.days_to_pay} days from a clean invoice.`
+
+// The banner only fires on a definite finding: we reached the federal file, it
+// returned dockets for this DOT number, and not one of them is Active. Anything
+// less certain than that stays in the card below, where it can be explained.
+const authorityRows =
+  federal?.state === 'checked' && federal.authority.state === 'rows' ? federal.authority.rows : []
+const noActiveAuthority = authorityRows.length > 0 && !hasActiveAuthority(authorityRows)
+
+const params = Astro.url.searchParams
+const error = params.get('error')
+const added = params.get('added') === '1'
+const saved = params.get('saved') === '1'
+
+/**
+ * The docket goes in the subtitle exactly as it is stored, prefix and all.
+ *
+ * An earlier version stripped a leading "MC" and re-added it, which rendered a
+ * cross-border broker's MX123456 as "MC MX123456" — a docket number that does
+ * not exist, on the one line she reads when she is checking a docket number.
+ */
+const subtitle = customer.mc_number
+  ? `Docket ${customer.mc_number}`
+  : 'No MC number on file'
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+---
+
+<App title={customer.name} subtitle={subtitle}>
+  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {
+    added && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Customer added. Add their USDOT number when you have it and we will check their operating
+        authority every time you open this page.
+      </p>
+    )
+  }
+  {saved && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Saved.</p>}
+
+  {
+    /* The loud one. This is a statement of fact from the federal record, not an
+       inference from silence — see `noActiveAuthority` above, which requires
+       that we actually reached the file and that it actually returned dockets. */
+  }
+  {
+    noActiveAuthority && (
+      <div class="mb-5 rounded-xl border border-red-200 bg-red-50/60 p-4">
+        <p class="font-medium text-red-800">No active operating authority on the federal record</p>
+        <p class="mt-1 text-sm text-ink-700">
+          Every docket on file for USDOT <span class="tabular-nums">{federal?.state === 'checked' ? federal.dot : ''}</span>{' '}
+          reads {authorityRows.map((a) => a.op_auth_status).filter(Boolean).join(', ')}. A broker
+          without active authority cannot lawfully arrange your freight, and both your insurer and
+          your factor will look at this before anyone pays the invoice. Worth a phone call before
+          the next load.
+        </p>
+      </div>
+    )
+  }
+
+  <div class="grid gap-6 lg:grid-cols-[1fr_minmax(0,22rem)]">
+    <form method="POST" class="space-y-4 rounded-xl border border-ink-100 bg-white p-5">
+      <h2 class="text-lg font-semibold tracking-tight">Customer record</h2>
+
+      <label class="block">
+        <span class="text-sm font-medium">Company name <span class="text-red-600">*</span></span>
+        <input type="text" name="name" value={customer.name} required class={field} />
+      </label>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">MC number</span>
+          <input
+            type="text"
+            name="mc_number"
+            value={customer.mc_number ?? ''}
+            placeholder="MC123456"
+            class={`${field} tabular-nums`}
+          />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">USDOT number</span>
+          <input
+            type="text"
+            name="dot_number"
+            inputmode="numeric"
+            value={customer.dot_number ?? ''}
+            placeholder="1234567"
+            class={`${field} tabular-nums`}
+          />
+          <span class="mt-1 block text-xs text-ink-500">
+            This is the number the federal authority check runs on.
+          </span>
+        </label>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">Contact name</span>
+          <input type="text" name="contact_name" value={customer.contact_name ?? ''} class={field} />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Phone</span>
+          <input
+            type="tel"
+            name="phone"
+            value={customer.phone ?? ''}
+            class={`${field} tabular-nums`}
+          />
+        </label>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">Email</span>
+          <input type="email" name="email" value={customer.email ?? ''} class={field} />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Billing email</span>
+          <input
+            type="email"
+            name="billing_email"
+            value={customer.billing_email ?? ''}
+            class={field}
+          />
+          <span class="mt-1 block text-xs text-ink-500">
+            Invoices sent to the dispatch address are invoices nobody pays.
+          </span>
+        </label>
+      </div>
+
+      <label class="block">
+        <span class="text-sm font-medium">Billing address</span>
+        <textarea name="billing_address" rows="3" class={field}>{customer.billing_address ?? ''}</textarea>
+      </label>
+
+      <label class="block">
+        <span class="text-sm font-medium">Days to pay</span>
+        <input
+          type="text"
+          name="days_to_pay"
+          inputmode="numeric"
+          value={customer.days_to_pay === null ? '' : String(customer.days_to_pay)}
+          placeholder="30"
+          class={`${field} tabular-nums`}
+        />
+        <span class="mt-1 block text-xs text-ink-500">
+          Left blank it stays blank. A guessed 30 on this screen is a payment term we invented.
+        </span>
+      </label>
+
+      <label class="block">
+        <span class="text-sm font-medium">Notes</span>
+        <textarea name="notes" rows="4" class={field}>{customer.notes ?? ''}</textarea>
+      </label>
+
+      <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+        <button
+          type="submit"
+          name="intent"
+          value="save_customer"
+          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+        >
+          Save customer
+        </button>
+        <a href="/app/customers" class="text-sm font-medium text-brand-600 hover:underline">
+          Back to customers
+        </a>
+      </div>
+    </form>
+
+    <div class="space-y-4">
+      <div class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">Days to pay</div>
+        {
+          customer.days_to_pay === null ? (
+            <>
+              <div class="mt-1 text-3xl font-semibold text-ink-300 tabular-nums">—</div>
+              <p class="mt-2 text-sm text-ink-500">
+                Not recorded. That is not "they pay quickly" — it is a question nobody has asked
+                them yet, and it is the first thing to settle before the second load.
+              </p>
+            </>
+          ) : (
+            <>
+              <div class="mt-1 text-3xl font-semibold tabular-nums">{customer.days_to_pay}</div>
+              <p class="mt-2 text-sm text-ink-500">
+                Agreed terms, in days from a clean invoice. What actually happens is what the loads
+                below will eventually tell you.
+              </p>
+            </>
+          )
+        }
+        <p class="mt-3 border-t border-ink-100 pt-3 text-xs text-ink-500">
+          Added <span class="tabular-nums">{formatStamp(customer.created_at)}</span>
+        </p>
+      </div>
+
+      {
+        /* ------------------------------------------------------------------
+           The federal block.
+
+           Four outcomes, four different sentences, and the distinctions are the
+           feature. `rows` is a finding. `empty` means the file answered and had
+           nothing, which is NOT the same as the broker having no authority —
+           the authority datasets do not cover every entity. `error` means we
+           did not get an answer at all, and in that case the page says nothing
+           whatsoever about their authority, because the alternative is an
+           absence of red that reads as a green light. `mc_only` means we hold a
+           docket number and no USDOT number, and the public lookup is keyed by
+           USDOT — so we could not ask, and we say so rather than implying we
+           did.
+           ------------------------------------------------------------------ */
+      }
+      {
+        federal && (
+          <div class={card}>
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 class="font-medium tracking-tight">Operating authority</h3>
+              <span class="text-xs text-ink-300">Public FMCSA record</span>
+            </div>
+
+            {federal.state === 'mc_only' && (
+              <p class="mt-2 text-sm text-ink-500">
+                We have a docket number for them and no USDOT number. The public authority file is
+                looked up by USDOT number, so we have not checked — this says nothing either way
+                about their authority. Add their USDOT number above and this fills in.
+              </p>
+            )}
+
+            {federal.state === 'checked' && federal.authority.state === 'rows' && (
+              <>
+                <ul class="mt-3 space-y-1.5 text-sm">
+                  {federal.authority.rows.map((a) => (
+                    <li class="flex flex-wrap items-center gap-2">
+                      <span class="font-medium tabular-nums">{a.docket_number ?? '—'}</span>
+                      {a.op_auth_type && <span class="text-ink-500">{a.op_auth_type}</span>}
+                      <span
+                        class:list={[
+                          'rounded-md px-2 py-0.5 text-xs font-medium',
+                          authorityPillClass(a.op_auth_status),
+                        ]}
+                      >
+                        {a.op_auth_status ?? 'Unknown'}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <p class="mt-3 text-xs text-ink-500">
+                  Read live from the federal authority file for USDOT{' '}
+                  <span class="tabular-nums">{federal.dot}</span>. It is the record your insurer and
+                  your factor read too.
+                </p>
+              </>
+            )}
+
+            {federal.state === 'checked' && federal.authority.state === 'empty' && (
+              <p class="mt-2 text-sm text-ink-500">
+                No authority record came back for USDOT{' '}
+                <span class="tabular-nums">{federal.dot}</span>.{' '}
+                <strong class="font-medium text-ink-700">
+                  That is not the same as having none.
+                </strong>{' '}
+                The federal authority file does not cover every entity — an intrastate-only operator
+                never needed authority, and some entities simply are not in it. Treat this as "we
+                did not find one", not as "there is none", and confirm it with them.
+              </p>
+            )}
+
+            {federal.state === 'checked' && federal.authority.state === 'error' && (
+              <p class="mt-2 text-sm text-ink-500">
+                We could not reach the federal authority file just now, so we are not going to tell
+                you anything about their authority — including that it looks fine. Nothing here has
+                been checked. Reload in a moment.
+              </p>
+            )}
+
+            {
+              /* The census line is strictly supporting detail, and it gets its
+                 own three outcomes for the same reason: silence where a name
+                 usually sits would be read as a finding. Note that a broker
+                 having NO carrier-census entry is completely normal — brokers
+                 are not carriers — so that case is worded to mean nothing. */
+            }
+            {federal.state === 'checked' && (
+              <p class="mt-3 border-t border-ink-100 pt-3 text-xs text-ink-500">
+                {federal.census.state === 'row' && (
+                  <>
+                    Federal carrier census:{' '}
+                    <span class="text-ink-700">{federal.census.row.legal_name ?? 'name withheld'}</span>
+                    {federal.census.row.phy_city && (
+                      <> · {federal.census.row.phy_city}, {federal.census.row.phy_state}</>
+                    )}
+                  </>
+                )}
+                {federal.census.state === 'none' && (
+                  <>
+                    No entry in the federal carrier census for this USDOT number. Brokers routinely
+                    have none — that file lists carriers — so this is not a finding about them.
+                  </>
+                )}
+                {federal.census.state === 'error' && (
+                  <>The carrier census did not answer either, so there is nothing to show from it.</>
+                )}
+              </p>
+            )}
+          </div>
+        )
+      }
+
+      <p class="px-1 text-xs text-ink-300">
+        Federal data is retrieved live from the FMCSA public files. FleetView Compliance is not
+        affiliated with FMCSA, the DOT, or any government agency.
+      </p>
+    </div>
+  </div>
+
+  {
+    historyFailed && (
+      <p class="mt-8 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        Their load history could not be read just now, so there are no charts on this page. That is
+        not "you have hauled nothing for them" — it is no answer.
+      </p>
+    )
+  }
+
+  {
+    months && mix && (
+      <div class="mt-8 space-y-4">
+        <Figure
+          title="What they have been worth"
+          subtitle={`Booked rates over the last ${months.months} months`}
+          coverage={revenueCoverage}
+        >
+          <Columns
+            columns={months.columns.map((c) => ({
+              label: c.label,
+              value: c.value,
+              display: c.display,
+              // The part month is toned down and named in the sentence below.
+              // A broker who is having a perfectly normal September must not
+              // appear to have stopped calling on the 15th of it.
+              inProgress: c.isCurrent,
+            }))}
+            max={revenueCeiling}
+            axisLabel={revenueCeiling > 0 ? `Full height ${compactMoney(revenueCeiling)}` : undefined}
+            emptyMessage="No rates have been typed on any of their loads, so there is nothing to draw."
+          />
+          {months.window.countedLoads > 0 && (
+            <p class="mt-3 text-sm text-ink-500">
+              <span class="font-medium text-ink-900 tabular-nums">
+                {formatCents(months.window.totalCents)}
+              </span>{' '}
+              booked with them across {months.window.countedLoads} priced{' '}
+              {loadWord(months.window.countedLoads)}. The last column is the month still running.
+            </p>
+          )}
+        </Figure>
+
+        <Figure
+          title="Where their money is"
+          subtitle="Their loads by billing state — which is a different question from where the trucks are"
+          coverage={mixCoverage}
+        >
+          <Proportion
+            segments={mix.slices}
+            total={mix.total}
+            emptyMessage="Nothing booked with them has passed the quote stage yet."
+          />
+          <div class="mt-3 space-y-1 text-sm text-ink-500">
+            {readySlice && readySlice.count > 0 && (
+              <p>
+                <span class="font-medium text-ink-900 tabular-nums">
+                  {formatCents(readySlice.cents)}
+                </span>{' '}
+                across {readySlice.count} {loadWord(readySlice.count)} is ready to invoice and has
+                not been sent to them.
+              </p>
+            )}
+            {awaitingSlice && awaitingSlice.count > 0 && (
+              <p>
+                <span class="tabular-nums">{formatCents(awaitingSlice.cents)}</span> across{' '}
+                {awaitingSlice.count} {loadWord(awaitingSlice.count)} is invoiced and still out.{' '}
+                {termsLine}
+              </p>
+            )}
+            {problemSlice && problemSlice.count > 0 && (
+              <p class="text-red-700">
+                {problemSlice.count} {loadWord(problemSlice.count)} short paid, in dispute or
+                written off — <span class="tabular-nums">{formatCents(problemSlice.cents)}</span>.
+              </p>
+            )}
+            {awaitingSlice?.count === 0 && <p>{termsLine}</p>}
+          </div>
+        </Figure>
+      </div>
+    )
+  }
+
+  <div class="mt-8">
+    <h2 class="text-lg font-semibold tracking-tight">Recent loads</h2>
+    <p class="mt-1 max-w-3xl text-sm text-ink-500">
+      The last ten we booked with them. Where the truck is and where the money is are two separate
+      columns on purpose — a load can be delivered and still unpaid, and that is the pair worth
+      reading on a customer page.
+    </p>
+
+    {
+      loadsFailed ? (
+        <p class="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          The load history could not be read just now. This is not "no loads" — it is no answer.
+        </p>
+      ) : loads.length === 0 ? (
+        <div class="mt-4 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+          <p class="font-medium">No loads for this customer yet</p>
+          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+            Loads booked against this customer will appear here, newest first, with what each one
+            pays and whether the money has landed.
+          </p>
+        </div>
+      ) : (
+        <div class="mt-4 overflow-x-auto rounded-xl border border-ink-100 bg-white">
+          <table class="w-full min-w-[48rem] text-sm">
+            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+              <tr>
+                <th class="px-4 py-3 font-medium">Load</th>
+                <th class="px-4 py-3 font-medium">Booked</th>
+                <th class="px-4 py-3 font-medium">Status</th>
+                <th class="px-4 py-3 font-medium">Billing</th>
+                <th class="px-4 py-3 text-right font-medium">Total</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink-100">
+              {loads.map((l) => (
+                <tr class="hover:bg-ink-50/60">
+                  <td class="px-4 py-3">
+                    <a
+                      href={`/app/loads/${l.id}`}
+                      class="font-medium hover:text-brand-600 hover:underline"
+                    >
+                      {loadLabel(l)}
+                    </a>
+                    {l.broker_reference && l.load_number && (
+                      <div class="text-xs text-ink-300 tabular-nums">
+                        Their ref {l.broker_reference}
+                      </div>
+                    )}
+                  </td>
+                  <td class="px-4 py-3 whitespace-nowrap tabular-nums">
+                    {formatStamp(l.created_at)}
+                  </td>
+                  <td class="px-4 py-3">
+                    <span
+                      class:list={[
+                        'rounded-md px-2 py-0.5 text-xs font-medium',
+                        statusPillClass(l.status),
+                      ]}
+                    >
+                      {loadStatusLabel(l.status)}
+                    </span>
+                    {
+                      /* The exception sits NEXT TO the status, never instead of
+                         it. A detained load is still at the shipper, and losing
+                         that loses where the truck actually is. */
+                    }
+                    {l.exception && (
+                      <span
+                        class:list={[
+                          'ml-1.5 rounded-md px-2 py-0.5 text-xs font-medium',
+                          exceptionPillClass(l.exception),
+                        ]}
+                      >
+                        {exceptionLabel(l.exception)}
+                      </span>
+                    )}
+                  </td>
+                  <td class="px-4 py-3">
+                    <span
+                      class:list={[
+                        'rounded-md px-2 py-0.5 text-xs font-medium',
+                        billingPillClass(l.billing),
+                      ]}
+                    >
+                      {billingStatusLabel(l.billing)}
+                    </span>
+                  </td>
+                  {
+                    /* formatCents renders NULL as '—' and never as '$0.00'. An
+                       unpriced load and a load that pays nothing go to two
+                       different people. */
+                  }
+                  <td class="px-4 py-3 text-right whitespace-nowrap tabular-nums">
+                    {formatCents(totalRateCents(l))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+  </div>
+</App>

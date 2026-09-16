@@ -1,0 +1,416 @@
+---
+/**
+ * Pricing, published.
+ *
+ * Only 6 of 21 surveyed competitors publish a price at all. That opacity is the
+ * biggest opening in this market and it costs us nothing to exploit — so the
+ * numbers go on the page, not behind a demo request.
+ */
+import Public from '../layouts/Public.astro'
+import { estimatePrice, monthlyPrice, pricingHref, site } from '../lib/site.ts'
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const examples = [2, 5, 10, 20, 40]
+
+/**
+ * The estimator's whole state, read out of the URL on the server.
+ *
+ * No client JavaScript here, which rules out a live slider — and that turns out
+ * to be the better answer anyway. `/pricing?trucks=12` renders the same thing
+ * for whoever opens it, so the number survives being texted to the partner who
+ * signs the checks; the back button walks the sizes he tried; and it works on
+ * one bar at a truck stop. Same doctrine as `?show=` on the dashboard and
+ * `?kind=` on the fleet list.
+ */
+const estimate = estimatePrice(Astro.url.searchParams.get('trucks'))
+const maxQuoted = site.pricing.maxQuotedTrucks
+
+// What goes back into the number box. A clamped or refused value must NOT come
+// back as the thing we would not price: the box is the receipt for what the
+// page actually did with the URL, so `?trucks=0` has to show the 1 we used.
+const typed =
+  estimate.state === 'priced' || estimate.state === 'oversize' ? String(estimate.trucks) : ''
+
+// The stepper, with no JavaScript to step with: one truck up and one truck down
+// are just two more URLs. Only the bottom end is dead — a link to `?trucks=0`
+// would bounce off the clamp and look broken. The top end deliberately is NOT
+// capped: stepping up from the last quoted size lands on the "talk to us"
+// panel, which is the answer to "what happens above this", and a greyed-out +
+// would leave that question hanging with nowhere to tap.
+const fewer = estimate.state === 'priced' && estimate.trucks > 1 ? estimate.trucks - 1 : null
+
+const stepOn =
+  'flex size-10 shrink-0 items-center justify-center rounded-lg border border-ink-100 bg-white text-xl font-medium transition hover:bg-ink-50'
+const stepOff =
+  'flex size-10 shrink-0 items-center justify-center rounded-lg border border-ink-100 text-xl text-ink-300'
+const pill = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
+
+const included = [
+  'Every federal and California deadline we track',
+  'Unlimited drivers, trucks and trailers',
+  'Unlimited users — the whole office, at no extra cost',
+  'Email and text alerts, on your schedule',
+  'Your own custom reminders',
+  'Document storage with expiry tracking',
+  'Loads, trips and dispatch',
+  'The printable proof packet',
+  'Your carrier record pulled from FMCSA, and re-checked weekly',
+]
+
+const faqs = [
+  {
+    q: 'Why per truck and not per user?',
+    a: 'Because the two people who must both be in this system are the owner and whoever runs the office — and charging per user taxes exactly that. Every plan includes unlimited users. If you hire a second dispatcher, your bill does not change.',
+  },
+  {
+    q: 'What happens when I add or sell a truck?',
+    // Said out loud because the estimator now shows it: a three-truck fleet
+    // adding a fourth sees no change at all, and copy promising "six dollars"
+    // would read as the page contradicting its own calculator.
+    a: `The bill moves by six dollars — unless you are on the $${site.pricing.floor} minimum, where it does not move at all until your fifth truck. There are no tiers to cross and no jump at a boundary, and that is deliberate. A pricing cliff would give you a reason to not tell your compliance software about a truck, which is the last thing either of us wants.`,
+  },
+  {
+    q: `What if I run more than ${maxQuoted} trucks?`,
+    a: `The rate is the same — $${site.pricing.perTruck} a truck, and there is no tier above you. The estimator stops at ${maxQuoted} because that is the top of the size we have actually built and tested for, and a number we have never sold at is not a quote. Start the trial and talk to us; nothing is billed for ${site.pricing.trialDays} days either way.`,
+  },
+  {
+    q: 'What counts as a truck?',
+    a: 'A power unit — a tractor or a straight truck. Trailers are free, and so are drivers. Count the things with engines.',
+  },
+  {
+    q: 'Is there a contract?',
+    a: 'No. Monthly, cancel whenever. If you leave, you can export your records first — they are yours.',
+  },
+  {
+    q: 'What is not included?',
+    a: 'We do not file anything for you, we cannot run your Drug and Alcohol Clearinghouse queries (the rules forbid us using your login, and you should be wary of anyone who offers), and we are not an ELD. We track, remind, and keep your proof.',
+  },
+  {
+    q: 'Do you charge to get set up?',
+    a: 'No setup fee. We pull what the federal record already knows from your DOT number, and the rest is the dates that live in your office — which is an evening of work, once.',
+  },
+]
+---
+
+<Public
+  title="Pricing"
+  description="$6 per truck per month, $29 minimum, unlimited users. No contract, 30-day free trial, no card required."
+>
+  <section class="border-b border-ink-100 bg-ink-50">
+    <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-20">
+      <h1 class="text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
+        Six dollars a truck. That is the whole price.
+      </h1>
+      <p class="mt-4 max-w-2xl text-lg text-ink-500">
+        Minimum ${site.pricing.floor} a month, so the smallest fleets are not priced out.
+        Unlimited users. No contract. {site.pricing.trialDays} days free, and we do not ask for a
+        card to start.
+      </p>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-6xl px-4 py-14 sm:px-6">
+    {/* scroll-mt-24 clears the sticky header, which otherwise sits on top of the
+    answer every link in this card jumps to. */}
+    <div id="estimate" class="scroll-mt-24 rounded-2xl border border-ink-100 bg-white p-6 sm:p-8">
+      <div class="flex flex-wrap items-start justify-between gap-5">
+        <div class="max-w-md">
+          <h2 class="text-2xl font-semibold tracking-tight">What would it cost you?</h2>
+          <p class="mt-2 text-sm text-ink-500">
+            Count power units — tractors and straight trucks. Trailers, drivers and office staff
+            are free, so leave them out of the number.
+          </p>
+        </div>
+
+        <form method="GET" action="/pricing" class="flex items-end gap-2">
+          <label class="block w-32 text-sm font-medium">
+            How many trucks?
+            {/* No max= on purpose. The browser would silently refuse to submit a
+            bigger fleet, and a 60-truck carrier deserves the honest "talk to
+            us" answer rather than a form that appears broken. */}
+            <input
+              type="number"
+              name="trucks"
+              value={typed}
+              min="1"
+              step="1"
+              required
+              inputmode="numeric"
+              placeholder="10"
+              class="mt-1 block w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+            />
+          </label>
+          <button
+            type="submit"
+            class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+          >
+            Show me
+          </button>
+        </form>
+      </div>
+
+      {/* One tap answers it for most visitors, so the common sizes are links and
+      nobody has to type anything at all. */}
+      <div class="mt-5 flex flex-wrap items-center gap-1.5">
+        <span class="mr-1 text-sm text-ink-500">Common fleets</span>
+        {
+          examples.map((n) => (
+            <a
+              href={pricingHref(n)}
+              class:list={[
+                pill,
+                estimate.state === 'priced' && estimate.trucks === n
+                  ? 'bg-brand-500/10 text-brand-700'
+                  : 'text-ink-500 hover:bg-ink-50 hover:text-ink-900',
+              ]}
+            >
+              {n} trucks
+            </a>
+          ))
+        }
+        {
+          estimate.state !== 'none' && (
+            <a href="/pricing" class:list={[pill, 'text-ink-500 hover:bg-ink-50']}>
+              Clear
+            </a>
+          )
+        }
+      </div>
+
+      {
+        estimate.state === 'priced' && (
+          <div class="mt-5 rounded-xl border border-brand-500/30 bg-brand-500/[0.04] p-5 sm:p-6">
+            <div class="flex flex-wrap items-center justify-between gap-5">
+              <div class="flex items-center gap-2">
+                {fewer ? (
+                  <a href={pricingHref(fewer)} aria-label={`Price ${fewer} trucks`} class={stepOn}>
+                    −
+                  </a>
+                ) : (
+                  <span aria-hidden="true" class={stepOff}>
+                    −
+                  </span>
+                )}
+                <span class="w-24 text-center text-lg font-medium tabular-nums">
+                  {estimate.trucks} {estimate.trucks === 1 ? 'truck' : 'trucks'}
+                </span>
+                <a
+                  href={pricingHref(estimate.trucks + 1)}
+                  aria-label={`Price ${estimate.trucks + 1} trucks`}
+                  class={stepOn}
+                >
+                  +
+                </a>
+              </div>
+              <p>
+                <span class="text-5xl font-semibold tabular-nums">${estimate.monthly}</span>
+                <span class="text-ink-500"> a month</span>
+              </p>
+            </div>
+
+            <p class="mt-4 text-sm text-ink-500">
+              <span class="tabular-nums">${estimate.effectivePerTruck.toFixed(2)}</span> per truck.
+              {estimate.onFloor
+                ? ` The $${site.pricing.floor} minimum is what you pay until the fifth truck — which
+                  is the one that costs you a dollar.`
+                : ` Every truck after this adds $${site.pricing.perTruck}, with no boundary to cross
+                  on the way up.`}
+            </p>
+            <p class="mt-2 text-xs text-ink-500">
+              That is the whole bill at that size: unlimited users, unlimited drivers and trailers,
+              no setup fee, no contract.
+            </p>
+            {/* The one thing this page does NOT know, said next to the number
+            rather than under the fold: we priced a number he typed, and the
+            bill follows the units actually on the account. */}
+            <p class="mt-1 text-xs text-ink-500">
+              We are pricing the number you typed. The real bill counts the power units on your
+              account — ${site.pricing.perTruck} each, either direction, the month it changes — and
+              nothing is charged for the first {site.pricing.trialDays} days.
+            </p>
+            <a
+              href="/check"
+              class="mt-4 inline-block text-sm font-medium text-brand-600 hover:underline"
+            >
+              Start your {site.pricing.trialDays} free days →
+            </a>
+          </div>
+        )
+      }
+
+      {
+        estimate.state === 'oversize' && (
+          <div class="mt-5 rounded-xl border border-blue-100 bg-blue-50 p-5 sm:p-6">
+            {/* Blue, not amber: this is a standing fact about us, not a clock. */}
+            <p class="font-medium text-blue-900">
+              <span class="tabular-nums">{estimate.trucks}</span> trucks is past what we quote on a
+              web page.
+            </p>
+            <p class="mt-2 text-sm text-blue-900/80">
+              The rate does not change and there is no tier above you — it is still $
+              {site.pricing.perTruck} a truck. What changes is that {maxQuoted} is the top of the
+              size we have built and tested for, and multiplying past it would hand you a number
+              nobody here has ever sold at. We would rather say that than walk a quote back on the
+              first call.
+            </p>
+            <p class="mt-3 text-sm text-blue-900/80">
+              Start with your DOT number and we will talk before anything is billed, or{' '}
+              <a href={pricingHref(maxQuoted)} class="font-medium text-blue-900 underline">
+                see the price at {maxQuoted} trucks
+              </a>
+              .
+            </p>
+          </div>
+        )
+      }
+
+      {/* Same treatment /check gives a bad USDOT number: say we could not read
+      it, keep the rest of the page standing. An unreadable size must never
+      render a price — a made-up number here is worse than no number. */}
+      {
+        estimate.state === 'unreadable' && (
+          <p class="mt-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            We could not read that as a number of trucks. Give us a whole number — 12, not “a
+            dozen” — and we will price it.
+          </p>
+        )
+      }
+
+      {
+        estimate.state === 'none' && (
+          <div class="mt-5 rounded-xl border border-dashed border-ink-100 p-8 text-center">
+            <p class="mx-auto max-w-md text-sm text-ink-500">
+              Pick a size, or type yours in. Whatever you land on stays in the address bar, so the
+              link is safe to send to whoever signs the checks.
+            </p>
+          </div>
+        )
+      }
+    </div>
+
+    <div class="mt-10 grid gap-6 lg:grid-cols-[1fr_1.2fr]">
+      <div class="rounded-2xl border border-brand-500/30 bg-brand-500/[0.04] p-6 sm:p-8">
+        <p class="text-sm font-medium tracking-widest text-brand-600 uppercase">One plan</p>
+        <p class="mt-3">
+          <span class="text-5xl font-semibold tabular-nums">${site.pricing.perTruck}</span>
+          <span class="text-ink-500"> per truck, per month</span>
+        </p>
+        <p class="mt-2 text-sm text-ink-500">
+          Billed monthly. Minimum ${site.pricing.floor}/month.
+        </p>
+        <a
+          href="/check"
+          class="mt-6 inline-block rounded-xl bg-brand-600 px-7 py-3.5 font-semibold text-white transition hover:bg-brand-700"
+        >
+          Start with your DOT number →
+        </a>
+        <p class="mt-3 text-xs text-ink-500">No card. Nothing to cancel if you walk away.</p>
+      </div>
+
+      <div class={card}>
+        <p class="font-medium">What that works out to</p>
+        <div class="mt-4 overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+              <tr>
+                <th class="py-2 font-medium">Trucks</th>
+                <th class="py-2 text-right font-medium">Per month</th>
+                <th class="py-2 text-right font-medium">Per truck</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink-100">
+              {
+                examples.map((n) => {
+                  const m = monthlyPrice(n)
+                  // Each row is also a way into the estimator, so the ladder and
+                  // the calculator can never drift apart — same numbers, one
+                  // function, and clicking a row just asks it the question.
+                  const here = estimate.state === 'priced' && estimate.trucks === n
+                  return (
+                    <tr class:list={[here && 'bg-brand-500/[0.06]']}>
+                      <td class="py-2.5 tabular-nums">
+                        <a href={pricingHref(n, { fromBelow: true })} class="font-medium text-brand-600 hover:underline">
+                          {n}
+                        </a>
+                      </td>
+                      <td class="py-2.5 text-right font-medium tabular-nums">${m}</td>
+                      <td class="py-2.5 text-right tabular-nums text-ink-500">
+                        ${(m / n).toFixed(2)}
+                      </td>
+                    </tr>
+                  )
+                })
+              }
+            </tbody>
+          </table>
+        </div>
+        <p class="mt-4 text-xs text-ink-500">
+          Small fleets sit on the ${site.pricing.floor} floor, so the per-truck figure starts high
+          and settles at ${site.pricing.perTruck}.
+        </p>
+      </div>
+    </div>
+
+    <div class="mt-10 grid gap-4 sm:grid-cols-2">
+      <div class={card}>
+        <p class="font-medium">Everything is included</p>
+        <ul class="mt-3 space-y-2 text-sm text-ink-500">
+          {
+            included.map((i) => (
+              <li class="flex gap-2">
+                <svg
+                  class="mt-0.5 size-4 shrink-0 text-emerald-600"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  aria-hidden="true"
+                >
+                  <path d="m5 13 4 4L19 7" />
+                </svg>
+                <span>{i}</span>
+              </li>
+            ))
+          }
+        </ul>
+        <p class="mt-4 text-xs text-ink-500">
+          Same product at every size. Nothing is locked behind a bigger plan.
+        </p>
+      </div>
+
+      <div class={card}>
+        <p class="font-medium">How that compares</p>
+        <p class="mt-3 text-sm text-ink-500">
+          A ten-truck fleet pays <strong class="tabular-nums text-ink-900">$60</strong> a month
+          here. The dispatch software built for fleets your size generally starts around
+          <strong>$290 a month and is charged per user</strong>, on an annual contract, and most
+          of it will not quote you a price without a sales call.
+        </p>
+        <p class="mt-3 text-sm text-ink-500">
+          You are probably already paying $25–$40 per truck each month for ELDs. This is under a
+          fifth of that.
+        </p>
+        <p class="mt-4 text-xs text-ink-300">
+          Competitor pricing is from published rate cards and public reviews as of September 2026.
+          We will correct anything a vendor shows us is out of date.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="border-t border-ink-100 bg-ink-50">
+    <div class="mx-auto max-w-3xl px-4 py-14 sm:px-6">
+      <h2 class="text-3xl font-semibold tracking-tight">Questions about the price</h2>
+      <dl class="mt-8 space-y-4">
+        {
+          faqs.map((f) => (
+            <div class="rounded-xl border border-ink-100 bg-white p-5">
+              <dt class="font-medium">{f.q}</dt>
+              <dd class="mt-2 text-sm text-ink-500">{f.a}</dd>
+            </div>
+          ))
+        }
+      </dl>
+    </div>
+  </section>
+</Public>

@@ -1,0 +1,158 @@
+# The daily digest.
+#
+# `/api/cron/digest` decides what each person should be told about deadlines and
+# sends it. Nothing inside the app runs it — Cloudflare cron triggers deliver a
+# `scheduled` event and the Astro adapter generates a worker exporting only
+# `fetch`, so a trigger declared there would fire every morning, find no handler,
+# and fail SILENTLY. See the note in wrangler.jsonc.
+#
+# THE ONE RULE FOR THIS FILE, from docs/OPERATIONS.md: whatever runs the digest
+# must be loud when it fails. A silent digest job is indistinguishable from a
+# quiet week, and this product's entire promise is that we tell you before it
+# bites. So every step below either succeeds visibly or exits non-zero — none of
+# them are allowed to shrug.
+name: Daily digest
+
+on:
+  schedule:
+    # THREE RUNS, and the repetition is deliberate on two counts.
+    #
+    # 1. Quiet hours. A message caught by a recipient's quiet window is HELD:
+    #    nothing is sent and — importantly — nothing is written to the log,
+    #    because the dedup key a log row would take is the same key that would
+    #    then suppress the message forever. Held messages are re-derived from
+    #    scratch on the next run. One run a day that happens to land inside
+    #    somebody's quiet window means that person is never told anything.
+    #
+    # 2. GitHub's scheduler is best-effort and skips runs under load. Three
+    #    chances beats one.
+    #
+    # Safe to repeat: the job is idempotent. Every message carries a dedup key
+    # and notification_log has a unique index on it, so a second run the same
+    # morning sends nothing twice.
+    #
+    # Times are UTC and GitHub does not do daylight saving. California is UTC-7
+    # in summer and UTC-8 in winter, so these drift by an hour across the year —
+    # which is exactly why there are three of them rather than one precise one.
+    - cron: '0 13 * * *' # ~6am PT summer, ~5am PT winter
+    - cron: '0 16 * * *' # ~9am PT summer, ~8am PT winter
+    - cron: '0 23 * * *' # ~4pm PT summer, ~3pm PT winter — outside most quiet windows
+
+  # So it can be run by hand after an incident, or to prove the secret still
+  # works, without waiting for a schedule or pushing a commit.
+  workflow_dispatch:
+
+# One digest at a time. Two overlapping runs would both be correct — the job is
+# idempotent — but they would race on the same dedup keys and one would log
+# errors that mean nothing.
+concurrency:
+  group: daily-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Call the digest endpoint
+        env:
+          # Set as a repository SECRET, never a variable: a variable is readable
+          # by anyone who can see the repo, and this one is the only thing
+          # standing between the open internet and the send path.
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          # A repository VARIABLE, so staging can point somewhere else without
+          # editing this file. Falls back to production.
+          DIGEST_URL: ${{ vars.DIGEST_URL || 'https://fleetviewcompliance.com/api/cron/digest' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CRON_SECRET}" ]; then
+            echo "::error::CRON_SECRET is not set on this repository. The digest cannot run."
+            exit 1
+          fi
+
+          # Three attempts. A cold Worker or a blip must not read as a failed
+          # digest — but a real failure must still end red, so the loop exits
+          # non-zero rather than falling through.
+          attempt=1
+          max=3
+          while [ $attempt -le $max ]; do
+            echo "Attempt $attempt of $max against ${DIGEST_URL}"
+
+            # Content-Type is load-bearing, not decoration. Astro's checkOrigin
+            # stays ON to protect every form in the product, and it does not
+            # apply to application/json — which is the only reason this endpoint
+            # is reachable without weakening that check app-wide. A comment
+            # cannot live inside the backslash-continued command below: it would
+            # swallow the rest of the invocation.
+            status=$(curl --silent --show-error \
+              --max-time 120 \
+              --output response.json \
+              --write-out '%{http_code}' \
+              -X POST "${DIGEST_URL}" \
+              -H "x-cron-secret: ${CRON_SECRET}" \
+              -H 'Content-Type: application/json' \
+              -d '{}') || status=000
+
+            if [ "$status" = "200" ]; then
+              break
+            fi
+
+            echo "::warning::Digest returned HTTP ${status}"
+            cat response.json 2>/dev/null || true
+
+            # 401 and 503 are configuration, not weather. Retrying a wrong secret
+            # three times just delays the alarm by two minutes.
+            if [ "$status" = "401" ] || [ "$status" = "403" ] || [ "$status" = "503" ]; then
+              echo "::error::HTTP ${status} is a configuration failure, not a transient one. Not retrying."
+              exit 1
+            fi
+
+            attempt=$((attempt + 1))
+            # `[ ... ] && sleep` looks tidier and is a trap: on the final pass
+            # the test is false, the whole statement returns non-zero, and
+            # `set -e` kills the script right there — so the run would end red
+            # with no error message rather than reaching the check below.
+            if [ $attempt -le $max ]; then sleep 20; fi
+          done
+
+          if [ "$status" != "200" ]; then
+            echo "::error::Digest failed after ${max} attempts (last status ${status})."
+            exit 1
+          fi
+
+          cat response.json
+
+          # The summary is the point of the run, so it goes where a person will
+          # actually see it rather than only into the log.
+          sent=$(jq -r '.sent // 0' response.json)
+          held=$(jq -r '.held // 0' response.json)
+          failed=$(jq -r '.failed // 0' response.json)
+          skipped=$(jq -r '.skipped // 0' response.json)
+          carriers=$(jq -r '.carriers // 0' response.json)
+          considered=$(jq -r '.considered // 0' response.json)
+
+          {
+            echo "### Digest run"
+            echo ""
+            echo "| carriers | considered | sent | held | skipped | failed |"
+            echo "|---:|---:|---:|---:|---:|---:|"
+            echo "| $carriers | $considered | $sent | $held | $skipped | $failed |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # `held` is NOT a failure — it means a quiet window caught the message
+          # and it will go out on a later run. A held count that never falls to
+          # zero across a whole day means every run is landing inside somebody's
+          # quiet hours; that is what the 23:00 run is for. Surfaced, not failed.
+          if [ "$held" != "0" ]; then
+            echo "::notice::${held} message(s) held by quiet hours. They are re-derived next run, not lost."
+          fi
+
+          # `failed` means we reached a provider and it refused. That is a real
+          # fault and the run must go red for it, even though the HTTP call
+          # itself was a perfectly good 200 — which is precisely the kind of
+          # failure a status-code-only check would sail straight past.
+          if [ "$failed" != "0" ]; then
+            echo "::error::${failed} message(s) failed to send. Check the provider and notification_log."
+            exit 1
+          fi

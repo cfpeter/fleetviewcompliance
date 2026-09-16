@@ -1,0 +1,165 @@
+---
+/**
+ * A quantity over consecutive periods — revenue by month, loads by week.
+ *
+ * The axis is built from CONSECUTIVE buckets by the caller (see `monthBuckets`),
+ * never from the periods that happen to appear in the data. A chart drawn from
+ * the data alone silently deletes the quiet months, packs the busy ones
+ * shoulder to shoulder, and shows a carrier who ran three good months and two
+ * dead ones a picture of five good months.
+ *
+ * Periods with nothing recorded draw as an empty dashed slot, not a zero-height
+ * column. The two are different claims — one about our records, one about his
+ * business — and only the first is ever something we can evidence.
+ */
+import type { Value } from '../../lib/charts/scale.ts'
+import { ceilingFor, widthPercent } from '../../lib/charts/scale.ts'
+import { type Tone, TONES, UNKNOWN_SLOT } from '../../lib/charts/tones.ts'
+
+export interface Column {
+  label: string
+  value: Value
+  /** The exact formatted figure. Printed above the column where there is room. */
+  display: string
+  tone?: Tone
+  /**
+   * This period is not over yet.
+   *
+   * A monthly axis that ends on the current month draws a short final column on
+   * every single page load, for the whole month, and the shape that makes — a
+   * run of full bars falling off a cliff at the right-hand edge — is the most
+   * alarming thing a revenue or payroll chart can show. It is also wrong every
+   * time: the month is a third done, not a third as good.
+   *
+   * Marked rather than dropped. Dropping it would be the other lie, hiding the
+   * month he is actually standing in.
+   */
+  inProgress?: boolean
+}
+
+interface Props {
+  columns: readonly Column[]
+  max?: number
+  /** Printed at the top of the plot: what the ceiling of the axis means. */
+  axisLabel?: string
+  emptyMessage?: string
+}
+
+const { columns, max, axisLabel, emptyMessage = 'Nothing recorded yet.' } = Astro.props
+
+const ceiling = max ?? ceilingFor(columns.map((c) => c.value))
+const known = columns.filter((c) => c.value !== null)
+
+/**
+ * One data point is not a chart.
+ *
+ * A carrier in his first month gets eleven dashed slots and one bar, which
+ * reads as a broken widget rather than as a new account — and the one shape it
+ * does suggest, a lone column at full height, is the most alarming thing this
+ * component can draw. A sentence is both more honest and more useful: it says
+ * what we have and why there is nothing to compare it against.
+ */
+const lonely = known.length === 1 ? known[0] : null
+---
+
+{
+  known.length === 0 ? (
+    <p class="py-6 text-center text-sm text-ink-500">{emptyMessage}</p>
+  ) : lonely ? (
+    <p class="py-6 text-center text-sm text-ink-500">
+      Only <span class="font-medium text-ink-900">{lonely.label}</span> has a figure so far —{' '}
+      <span class="font-medium text-ink-900 tabular-nums">{lonely.display}</span>. Nothing to
+      compare it against yet.
+    </p>
+  ) : (
+    <div>
+      {axisLabel && (
+        /* The only axis this chart gets. With no hover there is no other way to
+           know what full height is worth, and a ruled scale down the left edge
+           costs 40px that a 320px screen does not have to give. */
+        <div class="flex items-center gap-2 text-[10px] text-ink-300">
+          <span class="tabular-nums">{axisLabel}</span>
+          <span class="h-px flex-1 bg-ink-100" />
+        </div>
+      )}
+
+      {/*
+        A list, with each period's label and figure on the SAME node.
+        Laid out for the eye, the values are one row and the month names are
+        another, so a screen reader reads twelve amounts and then twelve months
+        and nothing connects them. The two visible rows are hidden from the
+        accessibility tree and the pairing is carried here instead.
+      */}
+      <div class="mt-1 flex h-28 items-end gap-1 sm:h-36 sm:gap-1.5" role="list">
+        {columns.map((c) => {
+          const tone = TONES[c.tone ?? 'brand']
+          const h = widthPercent(c.value, ceiling)
+          return (
+            <div
+              class="flex h-full min-w-0 flex-1 flex-col justify-end"
+              role="listitem"
+              aria-label={`${c.label}: ${c.display}${c.inProgress ? ' (so far — this period is not over)' : ''}`}
+            >
+              {/* Hidden under 640px on purpose: twelve numbers across a phone
+                  overlap into a grey smear, and the table below carries them
+                  exactly. The shape is what this chart is for at that width. */}
+              <div
+                aria-hidden="true"
+                class:list={[
+                  'mb-1 text-center text-[10px] tabular-nums',
+                  // An UNKNOWN keeps its label at every width. Revenue is the
+                  // case that forced this: a month with four loads nobody
+                  // priced and a month with no loads at all are both `null`, so
+                  // both draw the same dashed slot, and the only thing
+                  // separating "we are missing your rates" from "you were
+                  // quiet" was a label hidden below 640px — on the device this
+                  // is most often read on. A KNOWN figure still hides there,
+                  // because twelve amounts across a phone is a grey smear and
+                  // the table below carries them exactly.
+                  h === null
+                    ? 'leading-none text-ink-300 italic'
+                    : 'hidden truncate sm:block',
+                  h !== null && (c.inProgress ? 'text-ink-300 italic' : 'text-ink-500'),
+                ]}
+              >
+                {c.display}
+              </div>
+              {h === null ? (
+                <div class:list={['h-full rounded-t-sm', UNKNOWN_SLOT]} />
+              ) : (
+                <div
+                  class:list={[
+                    'rounded-t-sm',
+                    tone.bar,
+                    // Faded, with an open top edge. A solid bar of the same
+                    // colour as the eleven finished months claims to be one.
+                    c.inProgress && 'border-t-2 border-dashed border-ink-500/50 opacity-50',
+                  ]}
+                  style={`height:${h}%;min-height:2px`}
+                />
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Wrapping, not truncating. Twelve columns on a 375px phone give each
+          label ~26px, and `monthBuckets` puts the year on January so a long
+          axis cannot show two identical months — which truncated to 'Ja…' and
+          took the one label on the row that carries extra information with it.
+          Wrapping costs a second line on that one column and keeps it. */}
+      <div class="mt-1.5 flex gap-1 border-t border-ink-100 pt-1.5 sm:gap-1.5" aria-hidden="true">
+        {columns.map((c) => (
+          <div
+            class:list={[
+              'min-w-0 flex-1 text-center text-[10px] leading-tight',
+              c.inProgress ? 'text-ink-300 italic' : 'text-ink-500',
+            ]}
+          >
+            {c.label}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}

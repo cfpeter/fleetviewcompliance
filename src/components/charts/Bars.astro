@@ -1,0 +1,134 @@
+---
+/**
+ * Ranked horizontal bars: miles by state, revenue by customer, pay by driver.
+ *
+ * Horizontal, and built from HTML rather than SVG, for one reason each.
+ *
+ * Horizontal because the labels are words — 'Golden State Foods', 'CA', 'Mike
+ * Ruiz' — and words laid under vertical columns either truncate to nothing or
+ * tilt forty-five degrees, which is unreadable on a phone held one-handed.
+ *
+ * HTML because this app ships no client JavaScript, so there are no tooltips.
+ * Every number a chart implies has to be printed. Real text reflows at 320px,
+ * survives a pinch-zoom, and can be selected and pasted into an email to an
+ * accountant; text in an SVG viewBox does none of those.
+ */
+import type { Value } from '../../lib/charts/scale.ts'
+import { ceilingFor, widthPercent } from '../../lib/charts/scale.ts'
+import { type Tone, TONES, UNKNOWN_SLOT } from '../../lib/charts/tones.ts'
+
+export interface BarItem {
+  label: string
+  /** `null` when we have no figure. Drawn as an absence, never as zero. */
+  value: Value
+  /** The exact, fully formatted number. This is what the owner reads. */
+  display: string
+  /** A second line under the bar: units, context, a caveat for this row. */
+  note?: string
+  href?: string
+  tone?: Tone
+  /**
+   * This row is the one the page is about — the truck being edited, the driver
+   * whose page this is. Carried as a flag rather than left to the caller to
+   * bold, because the emphasis has to survive on a chart where colour is
+   * already spoken for by the tone vocabulary.
+   */
+  current?: boolean
+}
+
+interface Props {
+  items: readonly BarItem[]
+  /**
+   * Force the axis ceiling. Pass it when two charts sit side by side and must
+   * be comparable — otherwise each scales to its own maximum and the smaller
+   * fleet's bars look identical to the larger one's.
+   */
+  max?: number
+  /** Rows to draw before collapsing the tail. */
+  limit?: number
+  moreHref?: string
+  emptyMessage?: string
+}
+
+const { items, max, limit, moreHref, emptyMessage = 'Nothing recorded yet.' } = Astro.props
+
+const shown = limit ? items.slice(0, limit) : items
+const hidden = items.length - shown.length
+
+// The ceiling comes off the WHOLE set, not the visible slice. Rescaling to the
+// top five would redraw every bar to full width the moment the list is
+// truncated, and the truncation is invisible to the eye reading the shape.
+const ceiling = max ?? ceilingFor(items.map((i) => i.value))
+---
+
+{
+  items.length === 0 ? (
+    <p class="py-6 text-center text-sm text-ink-500">{emptyMessage}</p>
+  ) : (
+    <ul class="space-y-3">
+      {shown.map((item) => {
+        const tone = TONES[item.tone ?? 'brand']
+        const w = widthPercent(item.value, ceiling)
+        return (
+          <li
+            class:list={[item.current && '-mx-2 rounded-lg bg-ink-50 px-2 py-1.5']}
+            aria-current={item.current ? 'true' : undefined}
+          >
+            <div class="flex items-baseline justify-between gap-3 text-sm">
+              {item.href ? (
+                <a
+                  href={item.href}
+                  class:list={[
+                    'truncate hover:text-brand-600 hover:underline',
+                    item.current ? 'font-semibold' : 'font-medium',
+                  ]}
+                >
+                  {item.label}
+                </a>
+              ) : (
+                <span class:list={['truncate', item.current ? 'font-semibold' : 'font-medium']}>
+                  {item.label}
+                </span>
+              )}
+              <span
+                class:list={[
+                  'shrink-0 tabular-nums',
+                  w === null ? 'text-ink-300 italic' : 'font-medium',
+                ]}
+              >
+                {item.display}
+              </span>
+            </div>
+
+            {w === null ? (
+              /*
+                No bar at all, and no grey bar either. A filled grey bar still
+                reads as a measured quantity somewhere near the bottom of the
+                range; this reads as the empty slot it is.
+              */
+              <div class:list={['mt-1.5 h-2 rounded-full', UNKNOWN_SLOT]} />
+            ) : (
+              <div class:list={['mt-1.5 h-2 overflow-hidden rounded-full', tone.track]}>
+                <div class:list={['h-full rounded-full', tone.bar]} style={`width:${w}%`} />
+              </div>
+            )}
+
+            {item.note && <div class="mt-1 text-xs text-ink-500">{item.note}</div>}
+          </li>
+        )
+      })}
+
+      {hidden > 0 && (
+        <li class="pt-1 text-xs text-ink-500 tabular-nums">
+          {moreHref ? (
+            <a href={moreHref} class="font-medium text-brand-600 hover:underline">
+              {hidden} more →
+            </a>
+          ) : (
+            <span>{hidden} more not shown</span>
+          )}
+        </li>
+      )}
+    </ul>
+  )
+}

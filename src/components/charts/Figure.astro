@@ -1,0 +1,85 @@
+---
+/**
+ * The frame every chart sits in.
+ *
+ * It exists for `coverage`. A chart is read as a complete picture of its
+ * subject unless it says otherwise, and in this product it usually is not one:
+ * the quarter's mileage chart is drawn from the trucks whose odometers somebody
+ * actually entered, and the one truck nobody entered is invisible rather than
+ * short. A footnote elsewhere on the page does not fix that, because the shape
+ * is taken in before any prose is read. So the caveat is attached to the
+ * figure, above the fold of the chart itself, and every caller must decide what
+ * goes there.
+ *
+ * `role="group"` with the heading as its name, not `role="img"`: the bars below
+ * are real elements with real text, so a screen reader walking them gets the
+ * numbers. Flattening that to one alt string would be a downgrade.
+ */
+interface Props {
+  title: string
+  /** One line under the heading: what the chart measures and over what span. */
+  subtitle?: string
+  /**
+   * What this chart does NOT cover. Rendered as a warning when set.
+   * Pass `undefined` only when the data genuinely is the whole subject.
+   */
+  coverage?: string | readonly string[]
+  /** Right-hand slot in the header, for a link out to the full table. */
+  action?: { href: string; label: string }
+  class?: string
+}
+const { title, subtitle, coverage, action, class: klass } = Astro.props
+
+// An array when there is more than one caveat. Joined into a paragraph they run
+// to five lines on a phone and read as boilerplate, which is the one thing this
+// line must never read as — it is what decides whether the chart can be acted on.
+const caveats = (Array.isArray(coverage) ? coverage : coverage ? [coverage] : []).filter(Boolean)
+---
+
+<figure
+  class:list={['rounded-xl border border-ink-100 bg-white p-4 sm:p-5', klass]}
+  role="group"
+  aria-label={title}
+>
+  <figcaption class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+    <div>
+      <h3 class="text-sm font-semibold tracking-tight">{title}</h3>
+      {subtitle && <p class="mt-0.5 text-xs text-ink-500">{subtitle}</p>}
+    </div>
+    {
+      action && (
+        <a href={action.href} class="text-xs font-medium text-brand-600 hover:underline">
+          {action.label}
+        </a>
+      )
+    }
+  </figcaption>
+
+  <div class="mt-4">
+    <slot />
+  </div>
+
+  {
+    caveats.length > 0 && (
+      /*
+        Amber, not grey. Grey reads as a footnote and gets skipped; this is the
+        sentence that decides whether the chart above it can be acted on.
+      */
+      <div class="mt-3 border-t border-ink-100 pt-3 text-xs text-amber-800">
+        <span class="font-medium">Not the whole picture:</span>
+        {caveats.length === 1 ? (
+          <span> {caveats[0]}</span>
+        ) : (
+          <ul class="mt-1 space-y-0.5">
+            {caveats.map((c) => (
+              <li class="flex gap-1.5">
+                <span aria-hidden="true">·</span>
+                <span>{c}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    )
+  }
+</figure>

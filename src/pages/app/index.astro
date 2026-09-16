@@ -1,0 +1,978 @@
+---
+/**
+ * The dashboard. One list, soonest first — with one filter laid over it.
+ *
+ * The ordering is the product: overdue and unknown sit together at the top,
+ * because a medical card whose date we have never been given carries the same
+ * exposure as one that expired. Anything else buries the rows that matter.
+ *
+ * The filter does not touch that. It only hides sections. A carrier with 46
+ * tracked items has an Overdue section, then a 37-row "we need a date from you"
+ * section, and only then "coming up in the next 45 days" — which on a phone is
+ * a section that does not exist, because nobody scrolls that far while standing
+ * next to a truck. So the four stat tiles became the control: they already name
+ * the exact subsets, they are already at the top, and they are already the
+ * reason he opens the page.
+ *
+ * Tiles are plain links carrying `?show=`, not buttons wired to a script. The
+ * filtered view is then shareable ("look at the overdue one"), the back button
+ * walks back through the filters he tried, and the page keeps working on one
+ * bar of signal — same reasoning as the segmented control on /app/vehicles.
+ */
+import Figure from '../../components/charts/Figure.astro'
+import Runway from '../../components/charts/Runway.astro'
+import App from '../../layouts/App.astro'
+import { buildRunway } from '../../lib/charts/runway.ts'
+import {
+  dashboardHref,
+  emptyFilterState,
+  parseDashboardView,
+  showsSection,
+  viewNoun,
+} from '../../lib/dashboard.ts'
+import { anchorSlot, planAnchorWrites } from '../../lib/anchors/plan.ts'
+import {
+  buildDateEditor,
+  findSubject,
+  isBatchStamp,
+  longDate,
+  maxFor,
+  readTypedDates,
+  rowsSettledBy,
+  savedHeadline,
+  subjectHrefFor,
+} from '../../lib/dashboard-dates.ts'
+import { loadDeadlines } from '../../lib/deadlines.ts'
+import { resolveAnchor } from '../../lib/rules/anchors.ts'
+import { SOON_DAYS, standingPill } from '../../lib/rules/index.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+
+// An unrecognised ?show= reads as "everything" rather than as an empty page.
+// See src/lib/dashboard.ts — an owner who opens his compliance dashboard and
+// finds nothing on it does not think "bad URL", he thinks his data is gone.
+const view = parseDashboardView(Astro.url.searchParams.get('show'))
+
+// No .eq('carrier_id', ...) below. RLS already scopes both of these to the
+// signed-in user's carrier; repeating the filter here would say in code that we
+// do not quite trust the policy.
+const [{ data: carrier }, items] = await Promise.all([
+  supabase.from('carriers').select('legal_name, dot_number').eq('id', carrierId).single(),
+  loadDeadlines(supabase, carrierId),
+])
+
+/**
+ * The same `unknown` rows, reshaped into questions a person can answer.
+ *
+ * Built from `items` — the array the tiles, the list and the runway are all
+ * built from — because a second query here would be a second answer to "what is
+ * missing", and the two would disagree the first time a rule changed.
+ */
+const editor = buildDateEditor(items.filter((i) => i.status.standing === 'unknown'))
+const focus = findSubject(editor, Astro.url.searchParams.get('s'))
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const todayIso = new Date().toISOString().slice(0, 10)
+
+/**
+ * The dashboard now takes writes, and every branch ends in a 303.
+ *
+ * Posting to the page itself rather than to an API route keeps the whole thing
+ * working with no JavaScript, and the redirect means a refresh after saving
+ * cannot write the same dates twice.
+ */
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+  const to = (query: string) => Astro.redirect(`/app?${query}`, 303)
+  const here = (extra: string) =>
+    `show=unknown${focus ? `&s=${encodeURIComponent(focus.id)}` : ''}${extra}`
+  const fail = (message: string) => to(here(`&error=${encodeURIComponent(message)}`))
+
+  if (intent === 'withdraw_date') {
+    const recordId = String(form.get('record_id') ?? '')
+    // A malformed id would reach Postgres as a failed uuid cast and put
+    // "invalid input syntax for type uuid" across the top of his dashboard.
+    if (!UUID.test(recordId)) return to(here(''))
+
+    // Superseded, never deleted — the row stays as a record of what was believed
+    // and when, and the next most recent date takes over. RLS scopes this to his
+    // own carrier, and `is('superseded_at', null)` makes a double-tap a no-op
+    // rather than a second, later withdrawal stamp.
+    const { error } = await supabase
+      .from('compliance_records')
+      .update({ superseded_at: new Date().toISOString() })
+      .eq('id', recordId)
+      .is('superseded_at', null)
+    if (error) return fail(error.message)
+    return to(here('&withdrawn=1'))
+  }
+
+  if (intent === 'save_unknown_dates') {
+    // No subject in the URL means a stale form or a hand-edited one. Back to the
+    // list rather than an error: there is nothing for him to fix.
+    if (!focus) return to('show=unknown')
+
+    // Reads ONLY the questions this subject actually has. A `date_hire_date`
+    // posted by hand is not rejected, it is never looked at — the only version
+    // of that defence with no list to keep up to date.
+    const typed = readTypedDates(focus, (field) => form.get(field) as string | null, todayIso)
+    if (!typed.ok) return fail(typed.message)
+
+    if (typed.typed.length === 0) return to(here('&dates=0'))
+
+    const { data: currentRows } = await supabase
+      .from('current_compliance_anchors')
+      .select('id, anchor_key, occurred_on')
+      .eq('subject_type', focus.recordSubject)
+      .eq('subject_id', focus.id)
+
+    const current = new Map(
+      (currentRows ?? []).map((r) => [
+        anchorSlot(focus.recordSubject, focus.id, String(r.anchor_key)),
+        { id: String(r.id), occurred_on: String(r.occurred_on).slice(0, 10) },
+      ]),
+    )
+
+    // One stamp for the whole batch, and it is load-bearing rather than tidy:
+    // the receipt below finds exactly the rows this submit wrote by querying it
+    // back. The view's ordering does not use `recorded_at` at all any more — it
+    // orders on `seq` since migration 0007 — so sharing it costs nothing.
+    const recordedAt = new Date().toISOString()
+
+    const { supersede, inserts, conflicts } = planAnchorWrites({
+      entries: typed.typed.map((t) => ({
+        subject: focus.recordSubject,
+        subjectId: focus.id,
+        anchorKey: t.question.answerKey,
+        on: t.on,
+      })),
+      current,
+      carrierId,
+      userId: Astro.locals.userId ?? null,
+      recordedAt,
+    })
+
+    // One input per question, so this is unreachable from the form — but a
+    // planner that can refuse must never be allowed to refuse silently.
+    if (conflicts.length > 0) {
+      return fail('Two different dates were typed for the same question.')
+    }
+
+    if (supersede.length > 0) {
+      const { error } = await supabase
+        .from('compliance_records')
+        .update({ superseded_at: recordedAt })
+        .in('id', supersede)
+      if (error) return fail(error.message)
+    }
+
+    if (inserts.length > 0) {
+      const { error } = await supabase.from('compliance_records').insert(inserts)
+      if (error) return fail(error.message)
+    }
+
+    const cleared = rowsSettledBy(
+      focus,
+      typed.typed.map((t) => t.question.answerKey),
+    )
+    // The overdue count BEFORE this save travels with the redirect.
+    //
+    // Answering honestly can move a row to Overdue instead of off the list — he
+    // tells us he last filed in July and the return that came due in August is
+    // now visibly late. That is the date doing its job, but unexplained it reads
+    // as punishment for answering, which is the one lesson this screen must
+    // never teach.
+    const overdueBefore = items.filter((i) => i.status.standing === 'overdue').length
+    return to(
+      here(
+        `&dates=${inserts.length}&cleared=${cleared}&od=${overdueBefore}` +
+          `&at=${encodeURIComponent(recordedAt)}`,
+      ),
+    )
+  }
+
+  return to(here(''))
+}
+
+const overdue = items.filter((i) => i.status.standing === 'overdue')
+const unknown = items.filter((i) => i.status.standing === 'unknown')
+const soon = items.filter(
+  (i) => i.status.standing === 'current' && (i.daysUntil ?? 999) <= SOON_DAYS,
+)
+const later = items.filter(
+  (i) => i.status.standing === 'current' && (i.daysUntil ?? 999) > SOON_DAYS,
+)
+const manual = items.filter((i) => i.status.standing === 'unsupported')
+
+const fmt = (d?: Date) =>
+  d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : '—'
+
+const when = (days?: number) => {
+  if (days === undefined) return 'no date'
+  if (days < 0) return `${Math.abs(days)} days ago`
+  if (days === 0) return 'today'
+  if (days === 1) return 'tomorrow'
+  return `in ${days} days`
+}
+
+const subjectHref = (t: string, id: string | null) =>
+  t === 'driver' ? `/app/drivers/${id}` :
+  t === 'power_unit' || t === 'trailer' ? `/app/vehicles/${id}` : '/app/settings'
+
+const sections = [
+  { key: 'overdue', title: 'Overdue', items: overdue, tone: 'border-red-200 bg-red-50/40' },
+  { key: 'unknown', title: 'We need a date from you', items: unknown, tone: 'border-ink-100 bg-white' },
+  { key: 'soon', title: `Coming up in the next ${SOON_DAYS} days`, items: soon, tone: 'border-amber-200 bg-amber-50/40' },
+] as const
+
+// Filtering is a `.filter` over the SAME array, in the same order, every time.
+// Not a per-view list of sections: the moment the order is written out by hand
+// per view, "unknown ranks with overdue" becomes a thing a future edit can undo
+// on the page while the engine still reports it correctly, and nothing throws.
+const visible = sections.filter((s) => showsSection(view, s.key))
+const shownCount = visible.reduce((n, s) => n + s.items.length, 0)
+
+// Tile counts come off the WHOLE set, never off the filtered one. The counts are
+// the reason he opens the page at all — a tile that reads "0 overdue" merely
+// because he is standing inside the "Missing a date" filter would be a lie told
+// by the one number he checks first, and he would stop believing the other three.
+const tiles = [
+  {
+    view: 'overdue',
+    label: 'Overdue',
+    count: overdue.length,
+    noun: 'these',
+    bg: 'bg-red-50/40',
+    idleBorder: 'border-red-200',
+    labelClass: 'text-red-700',
+    countClass: 'text-red-700',
+  },
+  {
+    view: 'unknown',
+    label: 'Missing a date',
+    count: unknown.length,
+    noun: 'these',
+    bg: 'bg-white',
+    idleBorder: 'border-ink-100',
+    labelClass: 'text-ink-500',
+    countClass: '',
+  },
+  {
+    view: 'soon',
+    label: `Due in ${SOON_DAYS} days`,
+    count: soon.length,
+    noun: 'these',
+    bg: 'bg-white',
+    idleBorder: 'border-ink-100',
+    labelClass: 'text-ink-500',
+    countClass: '',
+  },
+  // The fourth tile is the way back out. It is the only one whose count is the
+  // whole list, so it doubles as "show everything" without adding a fifth
+  // control that would push the other four further apart under his thumb.
+  {
+    view: 'all',
+    label: 'Tracking',
+    count: items.length,
+    noun: 'everything',
+    bg: 'bg-white',
+    idleBorder: 'border-ink-100',
+    labelClass: 'text-ink-500',
+    countClass: '',
+  },
+] as const
+
+// grid-cols-2 on a phone, not one column. Four stacked full-width tiles are
+// ~400px of nothing, which would push the list he came for below the fold on
+// the exact device this filter exists to fix; two-up keeps all four reachable
+// in the first screen and each one still a comfortable thumb target.
+const tileBase = 'block rounded-xl border p-4 transition sm:p-5'
+const tileOn = 'border-ink-900 shadow-sm ring-2 ring-ink-900'
+
+/**
+ * The next quarter drawn as a shape.
+ *
+ * The list below answers "what is wrong". It cannot answer the question the
+ * owner asks in the same breath — "and when does the next pile land" — because
+ * that answer is a shape, and a list sorted by date is a shape you can only see
+ * by reading forty rows and holding them in your head. Four renewals landing in
+ * the same week in November is a bad week whether or not any one of them is
+ * alarming alone, and it is invisible until it is drawn.
+ *
+ * Built from `items`, the same array the list and the tiles are built from, so
+ * the chart and the rows under it cannot drift apart.
+ */
+const runway = buildRunway(
+  // Mapped, not passed straight through: `buildRunway` takes a standing and a
+  // date, and knows nothing about DeadlineItem. Keeping it that way is what
+  // lets the runway be tested against hand-built fixtures instead of a fleet.
+  items.map((i) => ({ standing: i.status.standing, nextDue: i.status.nextDue })),
+  new Date(),
+)
+
+// What the timeline cannot show. `Figure` renders this in amber above the fold
+// of the chart rather than as a footnote, because the shape is taken in whole,
+// in about a second, before any prose on the page is read.
+const runwayCoverage =
+  [
+    // Terse on purpose. Written out in full this ran to five lines on a phone
+    // and pushed the list — the thing he came for — most of a screen further
+    // down, which is the regression the dashboard filter was added to fix. The
+    // left block already carries the count; this only has to say why it is not
+    // on the timeline.
+    runway.undated > 0 &&
+      `${runway.undated} with no date yet, counted on the left rather than on the timeline.`,
+    runway.unschedulable > 0 &&
+      `${runway.unschedulable} more have no schedule we can compute; they are listed below.`,
+  ]
+    .filter(Boolean)
+    .join(' ') || undefined
+
+const params = Astro.url.searchParams
+const errorMessage = params.get('error')
+const savedCount = params.has('dates') ? Number(params.get('dates')) : null
+const clearedCount = params.has('cleared') ? Number(params.get('cleared')) : null
+const withdrawn = params.get('withdrawn') === '1'
+const batchStamp = params.get('at')
+
+/**
+ * The receipt: the rows this submit just wrote, read back in words.
+ *
+ * Found by the batch's shared `recorded_at`, which is why the handler stamps one
+ * for the whole insert. Nothing about a record id travels through the URL.
+ *
+ * This is the typo net. `October 3, 2027` in long form is how he catches the
+ * 2027 he meant as 2026, at the one moment he still remembers what he intended —
+ * and the Withdraw button beside it supersedes the row rather than deleting it,
+ * so the correction is itself part of the record.
+ */
+// A rise in the red tile across the save, which only this page can explain.
+const overdueBeforeSave = params.has('od') ? Number(params.get('od')) : null
+const overdueRose =
+  overdueBeforeSave !== null && Number.isFinite(overdueBeforeSave) && overdue.length > overdueBeforeSave
+
+const receipt: { id: string; label: string; on: string }[] = []
+if (view === 'unknown' && focus && savedCount && savedCount > 0 && isBatchStamp(batchStamp)) {
+  const { data } = await supabase
+    .from('compliance_records')
+    .select('id, anchor_key, occurred_on')
+    .eq('recorded_at', batchStamp)
+    .is('superseded_at', null)
+
+  for (const row of data ?? []) {
+    const key = String(row.anchor_key)
+    // Resolved from the REGISTRY, not from the questions on screen. The question
+    // is gone by the time the receipt renders — answering it is what took it off
+    // the list — so a lookup through `focus.questions` falls through to the raw
+    // key and prints `ca_ifta_quarterly_return` at the exact moment he is meant
+    // to be checking he typed the right year against the right thing.
+    receipt.push({
+      id: String(row.id),
+      label: resolveAnchor(key)?.label ?? key,
+      on: longDate(String(row.occurred_on)),
+    })
+  }
+}
+
+const dateField =
+  'mt-1 w-full max-w-xs rounded-lg border border-ink-100 bg-white px-3 py-2 text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+
+const emptyFiltered = shownCount === 0 && view !== 'all' ? emptyFilterState(view) : null
+const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50'
+---
+
+<App
+  title={carrier?.legal_name ?? 'Dashboard'}
+  subtitle={carrier?.dot_number ? `USDOT ${carrier.dot_number}` : undefined}
+>
+  <nav aria-label="Filter the list" class="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
+    {
+      tiles.map((t) => {
+        const on = view === t.view
+        // The aria-label is spelled out because the visible tile is three
+        // stacked <div>s: read straight off the DOM the link announces as
+        // "Overdue 2 Show these", and in some readers as a link with no name at
+        // all — a filter whose state a screen-reader user cannot hear.
+        return (
+          <a
+            href={dashboardHref(t.view)}
+            aria-current={on ? 'page' : undefined}
+            aria-label={`${t.label}: ${t.count}. ${on ? 'Showing' : 'Show'} ${t.noun}.`}
+            class:list={[tileBase, t.bg, on ? tileOn : `${t.idleBorder} hover:shadow-sm`]}
+          >
+            <div class:list={['text-xs tracking-wide uppercase', t.labelClass]}>{t.label}</div>
+            <div
+              class:list={[
+                'mt-1 text-2xl font-semibold tabular-nums sm:text-3xl',
+                t.countClass,
+              ]}
+            >
+              {t.count}
+            </div>
+            {/*
+              A second, non-colour signal for which tile is on. The ring does the
+              work for most people, but "selected" carried by outline alone is
+              the kind of state that disappears in sunlight on a cracked phone
+              screen in a yard — which is precisely where this gets read.
+            */}
+            <div class:list={['mt-1 text-xs', on ? 'font-medium text-ink-900' : 'text-ink-300']}>
+              {on ? 'Showing' : 'Show'} {t.noun}
+            </div>
+          </a>
+        )
+      })
+    }
+  </nav>
+
+  {
+    view !== 'all' && (
+      <p class="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm tabular-nums text-ink-500">
+        {/* One sentence, one tap out. The count is repeated here rather than left
+            on the tile alone because this line is what he reads after the page
+            moves under him — the tiles are above his thumb, this is under it. */}
+        <span>Showing <span class="font-medium text-ink-900">{viewNoun(view)}</span> only — {shownCount} of {items.length} tracked.</span>
+        <a href="/app" class="font-medium text-brand-600 hover:underline">Show everything</a>
+      </p>
+    )
+  }
+
+  {/*
+    Unfiltered only.
+    
+    The filter exists because a 46-row list was unreachable on a phone; putting
+    a 200px chart above a filtered result would push the rows he just asked for
+    back down and undo the fix. On the resting view it is the first thing he
+    sees, which is where it belongs — it is the only element on this page that
+    answers a question about NEXT month.
+  */}
+  {
+    items.length > 0 && view === 'all' && (
+      <Figure
+        class="mt-6"
+        title="The next 13 weeks"
+        subtitle="How many deadlines land in each week ahead"
+        coverage={runwayCoverage}
+      >
+        <Runway runway={runway} overdueHref="/app?show=overdue" undatedHref="/app?show=unknown" />
+      </Figure>
+    )
+  }
+
+  {
+    items.length === 0 && view === 'all' && (
+      <div class="mt-6 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+        <p class="font-medium">Nothing to show yet</p>
+        <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+          Add a driver or a truck and the deadlines that attach to them appear here.
+        </p>
+        <a
+          href="/app/drivers/new"
+          class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+        >
+          Add a driver →
+        </a>
+      </div>
+    )
+  }
+
+  {/*
+    An empty filtered list gets its own sentence per filter. "Nothing to show"
+    would be the wrong reading twice over: filtered to Overdue and finding
+    nothing is the best news this app can give him, and filtered to Missing a
+    date and finding nothing means every row on the page is a real answer. One
+    generic empty state makes the good outcome look identical to a broken query.
+  */}
+  {
+    emptyFiltered && (
+      <div class="mt-4 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+        <p class="font-medium">{emptyFiltered.title}</p>
+        <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">{emptyFiltered.body}</p>
+        <a href="/app" class:list={['mt-4 inline-block', backOut]}>
+          Show everything
+        </a>
+      </div>
+    )
+  }
+
+  {/* ===================================================== the date editor ===
+
+      `?show=unknown` stops being a table and becomes a work surface.
+
+      An input on each table row was the obvious answer and is unusable here: the
+      list table is `min-w-[48rem]` inside a horizontal scroller, so on a 375px
+      phone a fifth column sits about 500px off the right edge. The owner in the
+      yard would never find it, and the `help` sentence — the only thing standing
+      between him and a date typed in the wrong direction — has nowhere to go.
+
+      So: one card per driver, truck and the carrier record, and `&s=` opens one.
+      Same doctrine as the tiles, one level down — shareable, back-button walks
+      the subjects he tried, and it bounds the page to a single subject instead of
+      shipping 600 date inputs over one bar of signal.
+  */}
+
+  {
+    view === 'unknown' && errorMessage && (
+      <p class="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</p>
+    )
+  }
+
+  {
+    view === 'unknown' && withdrawn && (
+      <p class="mt-4 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+        Entry withdrawn. It stays in the history as a record of what was believed and when; the
+        next most recent date takes over.
+      </p>
+    )
+  }
+
+  {/* The receipt is a SIBLING of the editor form below, never nested — a form
+      inside a form is invalid HTML and the inner one is silently dropped. */}
+  {
+    view === 'unknown' && savedCount !== null && (
+      <div class="mt-4 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+        <p class="text-sm font-medium text-emerald-800">
+          {savedHeadline(savedCount, clearedCount ?? savedCount)}
+        </p>
+        {overdueRose && (
+          <p class="mt-1 text-xs text-emerald-900">
+            One of those is already past due, so it moved to <strong class="font-medium">Overdue</strong>{' '}
+            rather than off this list. That is the date doing its job — the obligation was always
+            late, we just could not see it until you told us.
+          </p>
+        )}
+        {receipt.length > 0 && (
+          <>
+            <p class="mt-1 text-xs text-emerald-900">
+              Read them back before you go. A wrong year is easiest to catch now.
+            </p>
+            <ul class="mt-3 divide-y divide-emerald-200/70 border-t border-emerald-200/70">
+              {receipt.map((r) => (
+                <li class="flex items-center gap-3 py-2">
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate text-sm">{r.label}</span>
+                    <span class="block text-xs tabular-nums text-emerald-900">{r.on}</span>
+                  </span>
+                  <form method="POST" class="shrink-0">
+                    <input type="hidden" name="record_id" value={r.id} />
+                    <button
+                      type="submit"
+                      name="intent"
+                      value="withdraw_date"
+                      class="rounded-lg border border-ink-100 bg-white px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50"
+                    >
+                      Withdraw
+                    </button>
+                  </form>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+    )
+  }
+
+  {/* ---------------------------------------------------------- list state */}
+  {
+    view === 'unknown' && !focus && editor.subjectCount > 0 && (
+      <section class="mt-8">
+        <h2 class="text-lg font-semibold tracking-tight">
+          We need a date from you
+          <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">{unknown.length}</span>
+        </h2>
+        <p class="mt-1 max-w-2xl text-sm text-ink-500">
+          These are not "fine" — until we have the date your exposure is the same as if it had
+          already expired, which is why they sit with the overdue ones. Open one record, type what
+          you know, leave the rest for later.
+        </p>
+
+        {editor.groups.map((g) => (
+          <>
+            <h3 class="mt-5 text-xs tracking-wide text-ink-500 uppercase">{g.title}</h3>
+            <div class="mt-2 space-y-2">
+              {g.subjects.map((subject) => (
+                <a
+                  href={subjectHrefFor(subject.id)}
+                  class="flex items-center gap-3 rounded-xl border border-ink-100 bg-white p-4 transition hover:bg-ink-50"
+                >
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate font-medium">{subject.label}</span>
+                    <span class="mt-0.5 block text-xs text-ink-500 tabular-nums">
+                      {subject.noun} · {subject.questionCount}{' '}
+                      {subject.questionCount === 1 ? 'date' : 'dates'} missing
+                    </span>
+                  </span>
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    class="size-5 shrink-0 text-ink-300"
+                    aria-hidden="true"
+                  >
+                    <path d="M9 18l6-6-6-6" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </a>
+              ))}
+            </div>
+          </>
+        ))}
+
+        {editor.unrecordable > 0 && (
+          /* Said out loud rather than quietly dropped. A row he can see on the
+             dashboard and cannot find here is a list he stops believing. */
+          <p class="mt-5 text-xs text-ink-500 tabular-nums">
+            {editor.unrecordable} more are about people or places we cannot file a date against
+            yet, so they are not on this screen.
+          </p>
+        )}
+      </section>
+    )
+  }
+
+  {/* ------------------------------------------------------- focused state */}
+  {
+    view === 'unknown' && focus && (
+      <form method="POST" class="mt-8">
+        <h2 class="text-lg font-semibold tracking-tight">
+          {focus.label}
+          <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">
+            {focus.noun} · {focus.questionCount} missing
+          </span>
+        </h2>
+        <p class="mt-1 max-w-2xl text-sm text-ink-500">
+          Type what you have in front of you; the rest keeps. A blank box changes nothing.
+        </p>
+
+        <div class="mt-3 rounded-xl border border-ink-100 bg-white">
+          <div class="flex items-center gap-3 border-b border-ink-100 px-5 py-3">
+            <span class="min-w-0 flex-1 text-xs text-ink-500 tabular-nums">
+              {focus.rowCount} {focus.rowCount === 1 ? 'row' : 'rows'} on the dashboard, from{' '}
+              {focus.questionCount} {focus.questionCount === 1 ? 'date' : 'dates'}
+            </span>
+            <a
+              href="/app?show=unknown"
+              class="shrink-0 rounded-lg border border-ink-100 px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50"
+            >
+              All {editor.subjectCount}
+            </a>
+          </div>
+
+          <div class="space-y-5 p-5">
+            {focus.asked.map((q) => (
+              <div>
+              {q.writable ? (
+                <label class="block">
+                  <span class="block text-sm font-medium">{q.label}</span>
+                  <input
+                    type="date"
+                    name={q.field}
+                    min="1900-01-01"
+                    max={maxFor(q, todayIso)}
+                    class={dateField}
+                  />
+                </label>
+              ) : (
+                /* Never an input.
+                   `hire_date` and `cdl_expires` live on the driver's own row, and
+                   deadlines.ts projects them in with `if (a[anchorKey]) continue` —
+                   so a compliance record SILENTLY OUTRANKS the column. A typo typed
+                   here would override a correct hire date forever, move five federal
+                   rules onto wrong dates, and leave his own page still showing the
+                   right one. `dot_number` is not a date at all. */
+                <div class="rounded-lg border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3">
+                  <p class="text-sm font-medium">{q.label}</p>
+                  <p class="mt-0.5 text-xs text-ink-500">
+                    This one lives on {q.elsewhere?.where ?? 'another screen'}, not here — we keep
+                    one answer for it, never two.
+                  </p>
+                  {q.elsewhere?.href && (
+                    <a
+                      href={q.elsewhere.href}
+                      class="mt-2 inline-block rounded-lg border border-ink-100 bg-white px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50"
+                    >
+                      Open it →
+                    </a>
+                  )}
+                </div>
+              )}
+
+              {q.writable && (
+                <p class="mt-1.5 text-xs text-ink-500">
+                  <strong class="font-medium text-ink-700">
+                    {q.kind === 'last_done' ? 'Last done.' : 'Expires.'}
+                  </strong>{' '}
+                  {q.help}
+                </p>
+              )}
+
+              {/* Which rows this one date takes off the dashboard. Never hidden:
+                  a row he saw on the list and cannot find here is a list he
+                  stops believing. */}
+              <p class="mt-1 text-xs text-ink-300">
+                {q.settles.length > 1 && `Answers ${q.settles.length}: `}
+                {q.settles.map((r, n) => (
+                  <>
+                    {n > 0 && ' · '}
+                    <a
+                      href={r.sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="hover:text-brand-600 hover:underline"
+                    >
+                      {r.title === q.label ? r.citation : r.title}
+                    </a>
+                  </>
+                ))}
+              </p>
+              </div>
+            ))}
+
+            {focus.onlyIfItApplies.length > 0 && (
+              /* Behind a disclosure because these are blank for almost every
+                 carrier, and listing the Skill Performance Evaluation expiry as
+                 an outstanding item for every driver — when well under 1% hold
+                 one — teaches him to ignore the whole list.
+
+                 A closed <details> still submits what is inside it. That is the
+                 behaviour we want after a save, but it is not what anyone
+                 expects, so the summary says the count and never hides a filled
+                 box silently. */
+              <details class="border-t border-ink-100 pt-4">
+                <summary class="cursor-pointer text-sm font-medium text-ink-500 select-none">
+                  {focus.onlyIfItApplies.length} more that only apply to some records
+                </summary>
+                <div class="mt-4 space-y-5">
+                  {focus.onlyIfItApplies.map((q) => (
+                    <div>
+              {q.writable ? (
+                <label class="block">
+                  <span class="block text-sm font-medium">{q.label}</span>
+                  <input
+                    type="date"
+                    name={q.field}
+                    min="1900-01-01"
+                    max={maxFor(q, todayIso)}
+                    class={dateField}
+                  />
+                </label>
+              ) : (
+                /* Never an input.
+                   `hire_date` and `cdl_expires` live on the driver's own row, and
+                   deadlines.ts projects them in with `if (a[anchorKey]) continue` —
+                   so a compliance record SILENTLY OUTRANKS the column. A typo typed
+                   here would override a correct hire date forever, move five federal
+                   rules onto wrong dates, and leave his own page still showing the
+                   right one. `dot_number` is not a date at all. */
+                <div class="rounded-lg border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3">
+                  <p class="text-sm font-medium">{q.label}</p>
+                  <p class="mt-0.5 text-xs text-ink-500">
+                    This one lives on {q.elsewhere?.where ?? 'another screen'}, not here — we keep
+                    one answer for it, never two.
+                  </p>
+                  {q.elsewhere?.href && (
+                    <a
+                      href={q.elsewhere.href}
+                      class="mt-2 inline-block rounded-lg border border-ink-100 bg-white px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50"
+                    >
+                      Open it →
+                    </a>
+                  )}
+                </div>
+              )}
+
+              {q.writable && (
+                <p class="mt-1.5 text-xs text-ink-500">
+                  <strong class="font-medium text-ink-700">
+                    {q.kind === 'last_done' ? 'Last done.' : 'Expires.'}
+                  </strong>{' '}
+                  {q.help}
+                </p>
+              )}
+
+              {/* Which rows this one date takes off the dashboard. Never hidden:
+                  a row he saw on the list and cannot find here is a list he
+                  stops believing. */}
+              <p class="mt-1 text-xs text-ink-300">
+                {q.settles.length > 1 && `Answers ${q.settles.length}: `}
+                {q.settles.map((r, n) => (
+                  <>
+                    {n > 0 && ' · '}
+                    <a
+                      href={r.sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="hover:text-brand-600 hover:underline"
+                    >
+                      {r.title === q.label ? r.citation : r.title}
+                    </a>
+                  </>
+                ))}
+              </p>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
+        </div>
+
+        <div class="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white p-4">
+          <span class="flex-1 text-sm text-ink-500">
+            Blank boxes change nothing. Saving adds a new entry; nothing already recorded is
+            overwritten.
+          </span>
+          <button
+            type="submit"
+            name="intent"
+            value="save_unknown_dates"
+            class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+          >
+            Save these dates
+          </button>
+        </div>
+      </form>
+    )
+  }
+
+  {
+    view !== 'unknown' &&
+    visible.map(
+      (s) =>
+        s.items.length > 0 && (
+          <section class="mt-8">
+            <h2 class="text-lg font-semibold tracking-tight">
+              {s.title}
+              <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">
+                {s.items.length}
+              </span>
+            </h2>
+
+            {s.key === 'unknown' && (
+              <p class="mt-1 text-sm text-ink-500">
+                These are not "fine". Until we have the date, your exposure is the same as if it
+                had already expired — so they sit with the overdue ones, not at the bottom.{' '}
+                {/* The bridge. This table is for reading; the editor behind this
+                    link is for answering, and without a way across, the reading
+                    view is the only one he ever finds. */}
+                <a href="/app?show=unknown" class="font-medium text-brand-600 hover:underline">
+                  Fill these in →
+                </a>
+              </p>
+            )}
+
+            <div class={`mt-3 overflow-x-auto rounded-xl border ${s.tone}`}>
+              <table class="w-full min-w-[48rem] text-sm">
+                <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+                  <tr>
+                    <th class="px-4 py-3 font-medium">What</th>
+                    <th class="px-4 py-3 font-medium">Who / which</th>
+                    <th class="px-4 py-3 font-medium">Due</th>
+                    <th class="px-4 py-3 font-medium">Rule</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-ink-100">
+                  {s.items.map((i) => {
+                    const pill = standingPill(i.status.standing)
+                    return (
+                      <tr class="hover:bg-ink-50/60">
+                        <td class="px-4 py-3">
+                          <div class="font-medium">{i.rule.title}</div>
+                          {i.status.standing === 'unknown' && i.status.needs && (
+                            <div class="mt-0.5 text-xs text-ink-300">
+                              needs {i.status.needs.join(', ').replaceAll('_', ' ')}
+                            </div>
+                          )}
+                        </td>
+                        <td class="px-4 py-3">
+                          {i.subjectId ? (
+                            <a
+                              href={subjectHref(i.subjectType, i.subjectId)}
+                              class="font-medium hover:text-brand-600 hover:underline"
+                            >
+                              {i.subjectLabel}
+                            </a>
+                          ) : (
+                            <span>{i.subjectLabel}</span>
+                          )}
+                          <div class="text-xs text-ink-300">
+                            {i.subjectType.replaceAll('_', ' ')}
+                          </div>
+                        </td>
+                        <td class="px-4 py-3 whitespace-nowrap">
+                          <span class:list={['rounded-md px-2 py-0.5 text-xs font-medium', pill.className]}>
+                            {pill.label}
+                          </span>
+                          <div class="mt-1 tabular-nums">
+                            {i.status.standing === 'overdue'
+                              ? `was due ${fmt(i.status.lastDue ?? i.status.nextDue)}`
+                              : `${fmt(i.status.nextDue)} · ${when(i.daysUntil)}`}
+                          </div>
+                        </td>
+                        <td class="px-4 py-3 text-xs text-ink-500">
+                          <a
+                            href={i.rule.sourceUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="hover:text-brand-600 hover:underline"
+                          >
+                            {i.rule.citation}
+                          </a>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ),
+    )
+  }
+
+  {/*
+    The two trailing blocks belong to the unfiltered page only. A filter names an
+    exact subset; leaving "you have to check these yourself" sitting under a
+    heading that says Overdue would put rows on screen that are not overdue,
+    which is the one thing a filter must never do.
+  */}
+  {
+    view === 'all' && manual.length > 0 && (
+      <section class="mt-8">
+        <h2 class="text-lg font-semibold tracking-tight">You have to check these yourself</h2>
+        <p class="mt-1 max-w-2xl text-sm text-ink-500">
+          These are real obligations we cannot put a date on — either they are continuous duties
+          rather than deadlines, or the schedule depends on something no public record holds. We
+          would rather list them than invent a date.
+        </p>
+        {/*
+          Blue, where the section above it is amber, and the separation is the
+          point. These two sat adjacent in the same colour while meaning opposite
+          things: one is a clock running down on a specific document, the other is
+          a standing duty with no clock at all that will read exactly the same
+          next year. Sharing amber made the permanent thing look urgent and, far
+          worse, made the urgent thing look permanent.
+        */}
+        <ul class="mt-3 space-y-2">
+          {manual.map((i) => (
+            <li class="rounded-lg border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3 text-sm">
+              <span class="font-medium">{i.rule.title}</span>
+              <span class="text-ink-500"> · {i.subjectLabel}</span>
+              {i.status.reason && <div class="mt-0.5 text-xs text-ink-500">{i.status.reason}</div>}
+            </li>
+          ))}
+        </ul>
+      </section>
+    )
+  }
+
+  {
+    view === 'all' && later.length > 0 && (
+      <p class="mt-8 text-sm text-ink-500 tabular-nums">
+        {later.length} more are current and not due for a while.
+      </p>
+    )
+  }
+</App>

@@ -1,0 +1,50 @@
+// The dev deployment: dev.fleetviewcompliance.com, pointed at the dev database.
+//
+// A SEPARATE FILE rather than an "env" block in wrangler.jsonc, and that is not
+// a preference. @astrojs/cloudflare generates its deploy config from the TOP
+// LEVEL of whichever wrangler config it reads and flattens `env.*` away — an
+// environment's bindings simply do not reach the Worker. That failure is
+// silent at deploy time and only shows up when somebody uploads a document.
+//
+// Deploy with:  npm run deploy:dev     (wrangler deploy -c wrangler.dev.jsonc)
+// Check with:   npx wrangler deploy -c wrangler.dev.jsonc --dry-run
+//               and read the binding table. If DOCUMENTS is missing, stop.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fleetview-compliance-dev",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Supplied by hand here, injected automatically when wrangler reads the root
+  // config. Both point into the `astro build` output, so BUILD FIRST.
+  "main": "./dist/server/entry.mjs",
+  "assets": { "binding": "ASSETS", "directory": "./dist/client" },
+
+  // Astro's session store. The root config gets this binding from the adapter;
+  // a hand-written config has to declare it, and it needs a real namespace id —
+  // create one with:  npx wrangler kv namespace create SESSION
+  "kv_namespaces": [{ "binding": "SESSION", "id": "14d4638ba71e4a6990fe6da7d25cabf4" }],
+
+  "routes": [{ "pattern": "dev.fleetviewcompliance.com", "custom_domain": true }],
+
+  // DEPLOY_ENV IS THE SEND GUARD, AND IT LIVES IN GIT ON PURPOSE.
+  //
+  // src/lib/notify/guard.ts treats 'production' as the only value that permits
+  // sending to a real recipient. Everything else redirects to
+  // DEV_REDIRECT_EMAIL. A dashboard variable would be invisible — nobody diffs
+  // it, and flipping it to make something "work" leaves no trace. Here it shows
+  // up in a pull request.
+  "vars": {
+    "DEPLOY_ENV": "development"
+  },
+
+  // A SEPARATE BUCKET. Sharing production's would mean this deployment reading
+  // and overwriting real carriers' medical certificates.
+  "r2_buckets": [
+    {
+      "binding": "DOCUMENTS",
+      "bucket_name": "fleetview-documents-dev",
+      "remote": true
+    }
+  ]
+}

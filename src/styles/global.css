@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+/* FleetView Compliance design tokens.
+   Tailwind v4 is configured in CSS — there is no tailwind.config.js. */
+@theme {
+  --color-ink-50: #f6f7f8;
+  --color-ink-100: #eaecef;
+  /* ink-200 exists here deliberately: the sibling project uses border-ink-200
+     in five places without defining it, and Tailwind v4 drops an unknown
+     utility silently — those buttons render with no border at all. */
+  --color-ink-200: #d4d8de;
+  --color-ink-300: #b9bfc7;
+  --color-ink-500: #6b7480;
+  --color-ink-700: #39414c;
+  --color-ink-900: #171b21;
+
+  --color-brand-500: #1d63d1;
+  --color-brand-600: #1750ac;
+  --color-brand-700: #123f88;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}

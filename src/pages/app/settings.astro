@@ -1,0 +1,1079 @@
+---
+/**
+ * Settings: who gets told what, when we stay quiet, and proof of what we sent.
+ *
+ * Four forms, four intents, one page, and every branch ends in a 303. That is
+ * not boilerplate here: a replayed POST on this page would re-run an upsert
+ * (harmless) or a DELETE of a snooze (not harmless — a snooze is the record
+ * that somebody looked at an item and decided it could wait, and there is no
+ * undo for removing it by pressing F5).
+ *
+ * The honesty rule on this screen is load-bearing. Everything it offers either
+ * works today or says, in words, that it does not. A settings page that quietly
+ * accepts a preference nothing reads is worse than one that lacks the control,
+ * because the owner then believes he is covered — and this product's entire
+ * claim is that when it tells you something, it is true. Where a control is
+ * stored but not yet acted on, the copy says so next to the control, not in a
+ * footnote.
+ */
+import App from '../../layouts/App.astro'
+import { formText, formatDate, todayInCalifornia } from '../../lib/drivers.ts'
+import {
+  DEFAULT_LEAD_DAYS,
+  NOTIFY_CATEGORIES,
+  NOTIFY_CHANNELS,
+  describeLeadDays,
+  formatLeadDays,
+  isKnownTimezone,
+  parseLeadDays,
+  timeForInput,
+  timezoneOptions,
+} from '../../lib/notify/preferences.ts'
+import { ruleByCode } from '../../lib/rules/index.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+const userId = Astro.locals.userId!
+
+/**
+ * Every POST branch leaves through here. 303, never the 302 that
+ * `Astro.redirect` defaults to: a 302 permits the browser to repeat the POST at
+ * the new location, so a refresh after un-snoozing would try to delete the row
+ * again — and after a save it would re-send the whole matrix.
+ */
+const back = (query = '') => Astro.redirect(`/app/settings${query}`, 303)
+/**
+ * Failures travel as CODES, never as text.
+ *
+ * `?error=` was rendered into the page verbatim, so anyone could hand a
+ * customer a link to their own settings page reading "Your account is locked,
+ * call 555-0100" — in our styling, on our domain, over HTTPS, with our padlock.
+ * Astro escapes the value so it is not script injection; it is worse than that
+ * in practice, because the text is the attack and escaping does nothing to it.
+ *
+ * Raw database messages went the same way: a Postgres error string is written
+ * for an operator, can name columns and constraints, and is not ours to show.
+ */
+const fail = (code: string) => back(`?error=${code}`)
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  // -------------------------------------------------------- USDOT number
+
+  /**
+   * SUPPLYING a missing USDOT number, which is not the same as correcting one.
+   *
+   * This section says, correctly, that carrier details come from the federal
+   * record and cannot be edited here — a legal name typed over FMCSA's is a
+   * second answer nobody can adjudicate. None of that applies to a carrier who
+   * has NO number on file: `register_carrier` stores `nullif(trim(...), '')`, so
+   * signing up without one is reachable, and from then on there is nothing to
+   * sync FROM. The MCS-150 rule reports `missing_data` needing `dot_number`
+   * forever, the dashboard asks for it on every visit, and the only screen that
+   * has ever written the column is the signup form he cannot go back to.
+   *
+   * So: settable exactly once, never editable afterwards. The form does not
+   * render when a number is on file, and the update carries `.is('dot_number',
+   * null)` so a second submit — a stale tab, a double tap, a crafted body —
+   * cannot overwrite one that arrived in between.
+   */
+  if (intent === 'set_dot_number') {
+    const raw = String(form.get('dot_number') ?? '').trim()
+    // Digits only. FMCSA issues plain integers and every lookup in this codebase
+    // passes the string straight into a Socrata query; a 'DOT 123' typed here
+    // would fail that lookup with an error about the query, not about the value.
+    if (!/^\d{1,8}$/.test(raw)) {
+      return fail('dot_digits')
+    }
+
+    const { data: updated, error: e } = await supabase
+      .from('carriers')
+      .update({ dot_number: raw })
+      .eq('id', carrierId)
+      .is('dot_number', null)
+      .select('id')
+
+    if (e) {
+      return fail(e.message.includes('carriers_dot_number_key') ? 'dot_taken' : 'save_failed')
+    }
+    // Zero rows means the guard held: a number arrived between the page render
+    // and this submit. Saying so is better than a success message over a value
+    // he did not type.
+    if (!updated || updated.length === 0) {
+      return fail('dot_present')
+    }
+    return back('?saved=dot')
+  }
+
+  // ------------------------------------------------------------- timezone
+
+  if (intent === 'save_timezone') {
+    const requested = String(form.get('timezone') ?? '')
+
+    // Read the stored zone first, because a row can legitimately hold a zone
+    // this build's list has not got, and "not in my list" must not mean
+    // "refuse the value you are already living with".
+    const { data: me } = await supabase
+      .from('profiles')
+      .select('timezone')
+      .eq('id', userId)
+      .maybeSingle()
+
+    // An unresolvable zone does not raise anywhere — it quietly makes every
+    // "is this overdue yet" answer wrong by up to a day, on a product whose
+    // entire job is dates. So it is refused at the door.
+    if (!isKnownTimezone(requested, me?.timezone)) {
+      return fail('tz_unknown')
+    }
+
+    const { error } = await supabase
+      .from('profiles')
+      .update({ timezone: requested })
+      // Not a defensive filter: `profiles` holds a row per PERSON, and the
+      // policy scopes it to `id = auth.uid()`. Naming the id is how this
+      // statement says which row it means, not a second guess at the policy.
+      .eq('id', userId)
+
+    if (error) return fail('save_failed')
+    return back('?saved=timezone')
+  }
+
+  // ------------------------------------------------------------- the matrix
+
+  if (intent === 'save_alerts') {
+    const channelRows: Record<string, unknown>[] = []
+    const categoryRows: Record<string, unknown>[] = []
+
+    for (const category of NOTIFY_CATEGORIES) {
+      // One array per category, stored once. This used to be parsed once per
+      // category and then written to all three channel rows, because the schema
+      // hung `lead_days` off (category, CHANNEL) — three copies of one fact,
+      // free to disagree, with no screen able to show the disagreement.
+      // 0010_cleanup.sql gave it a table whose key is the fact's actual shape.
+      categoryRows.push({
+        carrier_id: carrierId,
+        user_id: userId,
+        category: category.value,
+        lead_days: parseLeadDays(form.get(`lead_${category.value}`)),
+        digest: form.has(`digest_${category.value}`),
+      })
+
+      for (const channel of NOTIFY_CHANNELS) {
+        // An unticked checkbox posts NOTHING — it is not sent as "off". Reading
+        // `has()` rather than a value is what makes unticking a box actually
+        // turn something off instead of leaving the old row alone.
+        //
+        // A channel we cannot deliver on is written as `false` regardless of
+        // what arrived. Its box is disabled in the markup, so nothing should
+        // arrive; forcing it here means a hand-crafted POST cannot leave the
+        // database claiming we will text somebody when we cannot.
+        const enabled = channel.live && form.has(`on_${category.value}_${channel.value}`)
+
+        channelRows.push({
+          // carrier_id is SET, never filtered on. RLS checks the value against
+          // the caller's memberships but does not fill it in, so leaving it out
+          // fails the policy rather than defaulting to anything sensible.
+          carrier_id: carrierId,
+          user_id: userId,
+          category: category.value,
+          channel: channel.value,
+          enabled,
+        })
+      }
+    }
+
+    // Upsert on each table's own key, not delete-then-insert.
+    //
+    // The delete-then-insert version has a failure mode with teeth: the delete
+    // succeeds, the insert fails (a bad lead_days cast, a dropped connection),
+    // and the owner is left with NO preference rows at all. The digest job then
+    // falls back to compliance-email-only, so the person who just tried to turn
+    // SMS on has silently lost every other setting and has no way to tell.
+    //
+    // TWO statements, because the two facts now live in two tables, and
+    // PostgREST gives us no transaction spanning them. The lead times go FIRST:
+    // if the second call fails the page says so and the person retries, and the
+    // half that landed is the half that decides whether a warning is early
+    // enough to act on. The reverse order would leave channels switched on with
+    // lead times that were not saved — alerts arriving on a schedule nobody
+    // chose, which is worse than a save that visibly did not finish.
+    const categorySave = await supabase
+      .from('notification_category_preferences')
+      .upsert(categoryRows, { onConflict: 'carrier_id,user_id,category' })
+    if (categorySave.error) return fail('save_failed')
+
+    const channelSave = await supabase
+      .from('notification_preferences')
+      .upsert(channelRows, { onConflict: 'carrier_id,user_id,category,channel' })
+    if (channelSave.error) {
+      return fail('channels_failed')
+    }
+
+    return back('?saved=alerts')
+  }
+
+  // ------------------------------------------------------------- quiet hours
+
+  if (intent === 'save_quiet') {
+    const from = formText(form, 'quiet_from')
+    const to = formText(form, 'quiet_to')
+
+    // `withinQuietHours` returns false the moment either end is null, so half a
+    // window is not "quiet from 10pm onwards" — it is no quiet hours at all,
+    // saved successfully, with a filled-in box on screen saying otherwise.
+    if ((from === null) !== (to === null)) {
+      return fail('quiet_pair')
+    }
+
+    // Identical ends are the same trap by another route: the window is zero
+    // minutes long and silences nothing, while the screen shows two times.
+    if (from !== null && from === to) {
+      return fail('quiet_same')
+    }
+
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        quiet_from: from,
+        quiet_to: to,
+        quiet_allow_critical: form.has('quiet_allow_critical'),
+      })
+      .eq('id', userId)
+
+    if (error) return fail('save_failed')
+    return back('?saved=quiet')
+  }
+
+  // ------------------------------------------------------------- un-snooze
+
+  if (intent === 'unsnooze') {
+    const snoozeId = String(form.get('snooze_id') ?? '')
+
+    // A hand-edited id is a failed uuid cast, not a missing row: Postgres
+    // raises, and without this check the owner gets "invalid input syntax for
+    // type uuid" across the top of his settings page.
+    if (!UUID.test(snoozeId)) return fail('snooze_unknown')
+
+    const { error } = await supabase
+      .from('notification_snoozes')
+      .delete()
+      // RLS makes another carrier's snooze invisible to this statement, so the
+      // worst a tampered id achieves is deleting zero rows.
+      .eq('id', snoozeId)
+
+    if (error) return fail('save_failed')
+    return back('?saved=unsnoozed')
+  }
+
+  // An intent we do not recognise is a bug or a probe. Either way it must not
+  // fall through into rendering a POST response.
+  return back()
+}
+
+// ---------------------------------------------------------------- loading
+
+const today = todayInCalifornia()
+
+interface PrefRow {
+  category: string
+  channel: string
+  enabled: boolean
+}
+
+/** One row per category since 0010, which is the shape the fact actually has. */
+interface CategoryPrefRow {
+  category: string
+  lead_days: number[] | null
+  digest: boolean
+}
+
+interface SnoozeRow {
+  id: string
+  rule_code: string
+  subject_type: string
+  subject_id: string | null
+  until: string
+  reason: string | null
+}
+
+interface LogRow {
+  sent_at: string
+  channel: string
+  destination: string
+  subject: string | null
+  status: string
+  error: string | null
+}
+
+const [carrierResult, profileResult, prefsResult, catPrefsResult, snoozeResult, logResult] =
+  await Promise.all([
+    // `.eq('id', carrierId)` names WHICH carrier row, which is not the same thing
+    // as a defensive `carrier_id` filter on a tenant table. RLS still decides
+    // whether that row is visible at all.
+    //
+    // `timezone` is selected because it is the fallback for a person who has not
+    // chosen one: since 0010 `profiles.timezone` is nullable, and NULL means
+    // "never chose" rather than "Pacific".
+    supabase
+      .from('carriers')
+      .select(
+        'legal_name, dba_name, dot_number, phy_street, phy_city, phy_state, phy_zip, timezone',
+      )
+      .eq('id', carrierId)
+      .maybeSingle(),
+
+    supabase
+      .from('profiles')
+      .select('email, phone, timezone, quiet_from, quiet_to, quiet_allow_critical')
+      .eq('id', userId)
+      .maybeSingle(),
+
+    // The user filter is required, not defensive. The policy on this table scopes
+    // to the CARRIER, so a colleague's preferences are legitimately visible here —
+    // and rendering them as this person's settings would be a stranger's inbox
+    // shown as your own.
+    supabase
+      .from('notification_preferences')
+      .select('category, channel, enabled')
+      .eq('user_id', userId),
+
+    // Same reasoning for the user filter, same reason it is not optional.
+    supabase
+      .from('notification_category_preferences')
+      .select('category, lead_days, digest')
+      .eq('user_id', userId),
+
+    // Active only. A lapsed snooze is already doing nothing, and listing it would
+    // make this section a growing pile of history with the live ones buried in it.
+    supabase
+      .from('notification_snoozes')
+      .select('id, rule_code, subject_type, subject_id, until, reason')
+      .gte('until', today)
+      .order('until', { ascending: true }),
+
+    supabase
+      .from('notification_log')
+      .select('sent_at, channel, destination, subject, status, error')
+      .order('sent_at', { ascending: false })
+      .limit(20),
+  ])
+
+const carrier = carrierResult.data
+const profile = profileResult.data
+const prefRows = (prefsResult.data ?? []) as PrefRow[]
+const catPrefRows = (catPrefsResult.data ?? []) as CategoryPrefRow[]
+const snoozes = (snoozeResult.data ?? []) as SnoozeRow[]
+const log = (logResult.data ?? []) as LogRow[]
+
+/**
+ * Theirs, then the carrier's, then Pacific — the same chain the digest job walks.
+ *
+ * `profiles.timezone` is nullable since 0010, and NULL means "never chose". It
+ * used to be NOT NULL DEFAULT 'America/Los_Angeles', which made every new account
+ * silently CLAIM Pacific, so `carriers.timezone` — written at signup, read by
+ * nothing — could never be reached. An office manager at a Phoenix carrier had
+ * her digest timed on a clock an hour off the one on her wall, and the only
+ * remedy was opening this page.
+ */
+const timezone = profile?.timezone || carrier?.timezone || 'America/Los_Angeles'
+
+// Labels for the snoozed items, fetched only when there is something to label.
+// RLS scopes both to this carrier, so neither carries a carrier_id filter.
+const subjectLabels = new Map<string, string>()
+if (snoozes.length > 0) {
+  const [drivers, vehicles] = await Promise.all([
+    supabase.from('drivers').select('id, first_name, last_name'),
+    supabase.from('vehicles').select('id, unit_number, vin'),
+  ])
+  for (const d of drivers.data ?? []) {
+    subjectLabels.set(d.id, `${d.first_name} ${d.last_name}`.trim())
+  }
+  for (const v of vehicles.data ?? []) {
+    subjectLabels.set(v.id, v.unit_number || v.vin || 'Unnumbered unit')
+  }
+}
+
+/**
+ * What a snooze is actually about, in words.
+ *
+ * `notification_snoozes.subject_type` speaks the rule engine's vocabulary since
+ * 0010 — carrier, driver, employee, power_unit, trailer, terminal — so the noun
+ * below is now the right noun. It used to be the `document_subject` enum, which
+ * said 'vehicle' where the engine says 'power_unit'; `isSnoozed` ignored the
+ * column entirely, which is the only reason the mismatch never bit.
+ *
+ * The LABEL still comes from the id rather than the type, because a name is what
+ * the reader recognises. The type is the fallback noun for a record that has
+ * since been deleted.
+ */
+function snoozeSubject(s: SnoozeRow): string {
+  if (s.subject_id && subjectLabels.has(s.subject_id)) {
+    return subjectLabels.get(s.subject_id) as string
+  }
+  if (s.subject_type === 'carrier') return carrier?.legal_name ?? 'This carrier'
+  if (!s.subject_id) return 'The whole fleet'
+  // A record that has since been deleted, or a subject type with no roster page.
+  return `A ${s.subject_type.replaceAll('_', ' ')} that is no longer on file`
+}
+
+// ---------------------------------------------------------------- the matrix
+
+/**
+ * Whether this person has ever saved anything.
+ *
+ * It matters because the digest job has a fallback: somebody with NO preference
+ * rows is treated as compliance-by-email-enabled, so that a person who has never
+ * opened this page still gets told. A screen that showed every box unticked for
+ * that person would say "you will hear nothing from us" while the job emails
+ * them every morning. So the empty case renders the fallback, not zeroes.
+ */
+const hasSavedPrefs = prefRows.length > 0
+const prefByKey = new Map(prefRows.map((r) => [`${r.category}:${r.channel}`, r]))
+const catPrefByCategory = new Map(catPrefRows.map((r) => [r.category, r]))
+
+function isEnabled(category: string, channel: string): boolean {
+  const row = prefByKey.get(`${category}:${channel}`)
+  if (row) return row.enabled
+  if (!hasSavedPrefs) return category === 'compliance' && channel === 'email'
+  // A row that is absent while others exist is genuinely off: the save writes
+  // all nine every time, so a gap means somebody's row predates a channel.
+  return false
+}
+
+/**
+ * The lead times for a category. One row, one answer.
+ *
+ * This used to walk the three channel rows and return the first `lead_days` it
+ * found, because the schema hung the column off (category, CHANNEL) and one
+ * category therefore stored three copies free to disagree. That loop was a
+ * workaround for a schema bug, not a design: a disagreement between the copies
+ * was invisible here and permanent in the data. 0010_cleanup.sql moved the
+ * column to a table keyed (carrier, user, category) and the loop went with it.
+ */
+function leadDaysFor(category: string): number[] {
+  const row = catPrefByCategory.get(category)
+  // An empty array is treated as absent. `[]` means "warn me never", which
+  // `parseLeadDays` refuses to save, so a stored one is a hand-edited row or an
+  // older build — and showing a blank box for it would hide that.
+  if (row?.lead_days && row.lead_days.length > 0) return row.lead_days
+  return [...DEFAULT_LEAD_DAYS]
+}
+
+function digestFor(category: string): boolean {
+  return catPrefByCategory.get(category)?.digest ?? true // the column default
+}
+
+// ---------------------------------------------------------------- formatting
+
+/**
+ * A timestamp in the reader's own day.
+ *
+ * `toLocaleString` throws RangeError on a zone it cannot resolve, and a settings
+ * page that 500s because somebody's profile holds a bad string would take the
+ * un-snooze button down with it. The fallback is UTC and labelled as such.
+ */
+function stamp(value: string): string {
+  const when = new Date(value)
+  if (Number.isNaN(when.getTime())) return '—'
+  try {
+    return when.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone: timezone,
+    })
+  } catch {
+    return `${when.toISOString().slice(0, 16).replace('T', ' ')} UTC`
+  }
+}
+
+function statusPill(status: string): string {
+  switch (status) {
+    case 'sent':
+      return 'bg-emerald-100 text-emerald-800'
+    case 'failed':
+      return 'bg-red-100 text-red-700'
+    case 'skipped':
+      return 'bg-ink-100 text-ink-500'
+    default:
+      return 'bg-amber-100 text-amber-800'
+  }
+}
+
+const channelLabel = (value: string) =>
+  NOTIFY_CHANNELS.find((c) => c.value === value)?.label ?? value
+
+const addressLines = [
+  carrier?.phy_street,
+  [carrier?.phy_city, carrier?.phy_state].filter(Boolean).join(', '),
+  carrier?.phy_zip,
+].filter((line) => Boolean(line && String(line).trim()))
+
+const params = Astro.url.searchParams
+const ERRORS: Record<string, string> = {
+  dot_digits: 'A USDOT number is digits only — no letters, spaces or punctuation.',
+  dot_present: 'A USDOT number is already on file, so this one was not saved.',
+  dot_taken: 'Another account is already using that USDOT number.',
+  tz_unknown: 'That is not a timezone we recognise.',
+  quiet_pair: 'Quiet hours need both a start and an end, or neither.',
+  quiet_same: 'Quiet hours that start and end at the same minute do not silence anything.',
+  snooze_unknown: 'That snooze is not one of yours.',
+  channels_failed: 'Your lead times were saved, but the channels were not. Try that part again.',
+  save_failed: 'We could not save that just now. Try again in a moment.',
+}
+
+// `Object.hasOwn`, not `ERRORS[code]`: a plain lookup answers `?error=toString`
+// with a function, which renders as source code across the top of the page.
+const errorCode = params.get('error')
+const error = errorCode && Object.hasOwn(ERRORS, errorCode) ? ERRORS[errorCode] : null
+const saved = params.get('saved')
+
+const savedMessage: Record<string, string> = {
+  timezone: 'Timezone saved.',
+  alerts: 'Alert settings saved.',
+  quiet: 'Quiet hours saved.',
+  unsnoozed: 'Un-snoozed. That item is back in the alerts.',
+  dot: 'USDOT number saved. Your federal record will start filling in the rest.',
+}
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const checkbox = 'size-4 rounded border-ink-300'
+const th = 'px-4 py-3 font-medium'
+---
+
+<App title="Settings" subtitle="Who gets told what, and how loudly.">
+  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {
+    saved && savedMessage[saved] && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        {savedMessage[saved]}
+      </p>
+    )
+  }
+
+  {/* ============================================================ carrier */}
+
+  <section>
+    <h2 class="text-lg font-semibold tracking-tight">Your carrier</h2>
+    <p class="mt-1 max-w-3xl text-sm text-ink-500">
+      This comes from your federal record at FMCSA, not from anything typed here, so it cannot be
+      edited on this page. If it is wrong there, it is wrong everywhere that matters — fix it by
+      filing an MCS-150 update, and it will change here too.
+    </p>
+
+    {
+      /*
+        Only when there is no number on file. A carrier who signed up without one
+        has an MCS-150 row on his dashboard that nothing in the app can ever
+        answer — the column is written by the signup form and nowhere else — and
+        every federal lookup we do is keyed on this number, so until it is here
+        the promise to "fill in what we can" has nothing to fill in from.
+
+        Deliberately not an edit. Once a number is on file this disappears, and
+        the paragraph above it goes back to being the whole truth.
+      */
+      !carrier?.dot_number && (
+        <form method="POST" class="mt-3 rounded-xl border border-amber-200 bg-amber-50/40 p-5">
+          <h3 class="text-sm font-semibold tracking-tight">
+            We do not have your USDOT number
+          </h3>
+          <p class="mt-1 max-w-2xl text-sm text-amber-900">
+            Without it we cannot read your federal record, and the MCS-150 update on your
+            dashboard has nothing to count from. You can set it once here; after that it comes
+            from FMCSA like everything else above.
+          </p>
+          <div class="mt-3 flex flex-wrap items-end gap-3">
+            <label class="block">
+              <span class="text-sm font-medium">USDOT number</span>
+              <input
+                type="text"
+                name="dot_number"
+                inputmode="numeric"
+                pattern="[0-9]{1,8}"
+                required
+                autocomplete="off"
+                class={`${field} w-48 tabular-nums`}
+              />
+            </label>
+            <button
+              type="submit"
+              name="intent"
+              value="set_dot_number"
+              class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+            >
+              Save it
+            </button>
+          </div>
+        </form>
+      )
+    }
+
+    <div class="mt-3 grid gap-4 lg:grid-cols-[1fr_minmax(0,22rem)]">
+      <div class={card}>
+        <dl class="divide-y divide-ink-100 text-sm">
+          <div class="flex justify-between gap-4 py-2.5">
+            <dt class="text-ink-500">Legal name</dt>
+            <dd class="text-right font-medium">{carrier?.legal_name ?? '—'}</dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2.5">
+            <dt class="text-ink-500">Doing business as</dt>
+            <dd class="text-right font-medium">
+              {carrier?.dba_name || <span class="font-normal text-ink-300">none on file</span>}
+            </dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2.5">
+            <dt class="text-ink-500">USDOT number</dt>
+            <dd class="text-right font-medium tabular-nums">{carrier?.dot_number ?? '—'}</dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2.5">
+            <dt class="text-ink-500">Physical address</dt>
+            <dd class="text-right font-medium">
+              {
+                addressLines.length > 0 ? (
+                  addressLines.map((line) => <div class="tabular-nums">{line}</div>)
+                ) : (
+                  <span class="font-normal text-ink-300">none on file</span>
+                )
+              }
+            </dd>
+          </div>
+        </dl>
+      </div>
+
+      <form method="POST" class={card}>
+        <h3 class="font-medium tracking-tight">Your timezone</h3>
+        <label class="mt-3 block">
+          <span class="text-sm font-medium">Send my alerts on this clock</span>
+          <select name="timezone" class={field}>
+            {
+              timezoneOptions(timezone).map((tz) => (
+                <option value={tz.value} selected={tz.value === timezone}>
+                  {tz.label}
+                </option>
+              ))
+            }
+          </select>
+          <span class="mt-1 block text-xs text-ink-500">
+            Yours, not the company's — so a morning digest lands in the morning where you actually
+            are, and your quiet hours mean the hours on your own clock. It also decides how the
+            times on this page are printed. Until you save one, we use the carrier's.
+          </span>
+        </label>
+        <button
+          type="submit"
+          name="intent"
+          value="save_timezone"
+          class="mt-4 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-brand-700"
+        >
+          Save timezone
+        </button>
+      </form>
+    </div>
+  </section>
+
+  {/* ======================================================== the matrix */}
+
+  <section class="mt-10">
+    <h2 class="text-lg font-semibold tracking-tight">Who gets told what</h2>
+    <p class="mt-1 max-w-3xl text-sm text-ink-500">
+      These are your settings, not the company's. Everyone on the account sets their own, so the
+      office manager can take every deadline and the owner can take only the ones that are already
+      overdue.
+    </p>
+
+    {
+      !hasSavedPrefs && (
+        <p class="mt-3 max-w-3xl rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+          You have not changed anything yet, so what is ticked below is what we do by default:
+          deadlines, by email. Saving this page turns that default into a choice.
+        </p>
+      )
+    }
+
+    <form method="POST" class="mt-3">
+      <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
+        <table class="w-full min-w-[56rem] text-sm">
+          <thead
+            class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase"
+          >
+            <tr>
+              <th class={th}>What</th>
+              {
+                NOTIFY_CHANNELS.map((c) => (
+                  <th class={`${th} text-center`}>
+                    <div>{c.label}</div>
+                    {c.note && (
+                      <div
+                        class:list={[
+                          'mt-0.5 text-[11px] normal-case',
+                          c.live ? 'text-ink-300' : 'text-amber-700',
+                        ]}
+                      >
+                        {c.note}
+                      </div>
+                    )}
+                  </th>
+                ))
+              }
+              <th class={th}>Warn me this many days out</th>
+              <th class={`${th} text-center`}>Roll into one daily message</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-ink-100">
+            {
+              NOTIFY_CATEGORIES.map((category) => (
+                <tr class="hover:bg-ink-50/60">
+                  <td class="px-4 py-3 align-top">
+                    <div class="font-medium">{category.label}</div>
+                    <div class="mt-0.5 max-w-xs text-xs text-ink-500">{category.blurb}</div>
+                    {!category.live && (
+                      <div class="mt-1 max-w-xs text-xs text-amber-700">
+                        Nothing is sent for this yet — the job that watches for it is not written.
+                        Your choice is kept and will be honoured the day it is.
+                      </div>
+                    )}
+                  </td>
+
+                  {NOTIFY_CHANNELS.map((channel) => (
+                    <td class="px-4 py-3 text-center align-top">
+                      {channel.live ? (
+                        <input
+                          type="checkbox"
+                          name={`on_${category.value}_${channel.value}`}
+                          checked={isEnabled(category.value, channel.value)}
+                          aria-label={`${category.label} by ${channel.label}`}
+                          class={checkbox}
+                        />
+                      ) : (
+                        /* Disabled, not absent, and not a live box that does
+                           nothing. A ticked box that produced no text message
+                           would be a promise the system cannot keep — which is
+                           exactly the mistake the last build shipped. */
+                        <input
+                          type="checkbox"
+                          disabled
+                          checked={false}
+                          aria-label={`${category.label} by ${channel.label} — not available`}
+                          title="Text messages are not switched on yet."
+                          class={`${checkbox} opacity-40`}
+                        />
+                      )}
+                    </td>
+                  ))}
+
+                  <td class="px-4 py-3 align-top">
+                    <input
+                      type="text"
+                      name={`lead_${category.value}`}
+                      value={formatLeadDays(leadDaysFor(category.value))}
+                      inputmode="text"
+                      class={`${field} w-44 tabular-nums`}
+                      aria-label={`Lead times for ${category.label}`}
+                    />
+                    <span class="mt-1 block max-w-[14rem] text-xs text-ink-500">
+                      {describeLeadDays(leadDaysFor(category.value))}
+                    </span>
+                  </td>
+
+                  <td class="px-4 py-3 text-center align-top">
+                    <input
+                      type="checkbox"
+                      name={`digest_${category.value}`}
+                      checked={digestFor(category.value)}
+                      aria-label={`Daily digest for ${category.label}`}
+                      class={checkbox}
+                    />
+                  </td>
+                </tr>
+              ))
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <div class="mt-4 grid gap-4 lg:grid-cols-2">
+        <div class="rounded-xl border border-ink-100 bg-white p-4 text-sm text-ink-500">
+          <p class="font-medium text-ink-900">About those numbers</p>
+          <p class="mt-1">
+            Days before the deadline, separated by commas. <span class="tabular-nums">30, 7, 1</span
+            > means we warn you a month out, a week out, and the day before.
+          </p>
+          <p class="mt-2">
+            A <span class="font-medium text-ink-900">negative</span> number is a nudge
+            <span class="font-medium text-ink-900">after</span> the date has gone by:
+            <span class="tabular-nums">-1</span> means "tell me again the day after it lapsed",
+            because that is the day it starts costing money. The sentence under each box is what we
+            read your numbers as — if it does not match what you meant, the numbers are wrong.
+          </p>
+          <p class="mt-2">
+            Emptying the box does not mean "never". We put the standard
+            <span class="tabular-nums">30, 7, 1, -1</span> back, because nobody has ever actually
+            wanted a deadline they are never warned about.
+          </p>
+        </div>
+
+        <div class="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+          <p class="font-medium">What actually goes out today</p>
+          <ul class="mt-1 space-y-1">
+            <li>
+              <span class="font-medium">Email about deadlines</span> — live. One message a morning
+              with everything that has reached a warning day.
+            </li>
+            <li>
+              <span class="font-medium">Text messages</span> — not switched on yet. The carrier
+              registration that lets a business send texts does not exist for us yet, so a text
+              would be rejected rather than delivered. We are not going to tick a box that does
+              nothing.
+            </li>
+            <li>
+              <span class="font-medium">In the app</span> — that is the dashboard, which lists
+              everything whether or not this is ticked.
+            </li>
+            <li>
+              <span class="font-medium">One daily message</span> — we already batch into one email
+              a day. This tick is stored, but nothing reads it yet, so leaving it off will not get
+              you separate messages.
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <div
+        class="sticky bottom-0 mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white/95 p-4 backdrop-blur"
+      >
+        <span class="flex-1 text-sm text-ink-500">
+          Saving rewrites every box on this table at once, so nothing is left half-ticked. The
+          lead times are written first; if anything goes wrong after that, the message says so
+          rather than leaving you to guess which half landed.
+        </span>
+        <button
+          type="submit"
+          name="intent"
+          value="save_alerts"
+          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+        >
+          Save alert settings
+        </button>
+      </div>
+    </form>
+  </section>
+
+  {/* ======================================================= quiet hours */}
+
+  <section class="mt-10">
+    <h2 class="text-lg font-semibold tracking-tight">Quiet hours</h2>
+    <p class="mt-1 max-w-3xl text-sm text-ink-500">
+      Hours when we hold a message rather than send it. Times are on your own clock — the one set
+      above — so they mean what they say wherever you are.
+    </p>
+
+    <form method="POST" class={`${card} mt-3 max-w-2xl`}>
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">Quiet from</span>
+          <input
+            type="time"
+            name="quiet_from"
+            value={timeForInput(profile?.quiet_from)}
+            class={`${field} tabular-nums`}
+          />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Quiet until</span>
+          <input
+            type="time"
+            name="quiet_to"
+            value={timeForInput(profile?.quiet_to)}
+            class={`${field} tabular-nums`}
+          />
+        </label>
+      </div>
+      <p class="mt-2 text-xs text-ink-500">
+        Leave both blank for no quiet hours. A window that runs past midnight —
+        <span class="tabular-nums">22:00</span> to <span class="tabular-nums">07:00</span> — is the
+        normal one and works correctly. Filling in only one of the two is refused, because half a
+        window silences nothing while looking like it does.
+      </p>
+
+      <label class="mt-4 flex items-start gap-3 border-t border-ink-100 pt-4">
+        <input
+          type="checkbox"
+          name="quiet_allow_critical"
+          checked={profile?.quiet_allow_critical ?? true}
+          class={`${checkbox} mt-0.5`}
+        />
+        <span>
+          <span class="text-sm font-medium">Let the urgent ones through anyway</span>
+          <span class="mt-1 block text-sm text-ink-500">
+            "Urgent" is a short, fixed list, and you should be able to see exactly what is on it:
+            anything <span class="font-medium text-ink-900">already overdue</span>, and anything
+            <span class="font-medium text-ink-900">due tomorrow</span>. Nothing else qualifies, and
+            nothing else ever will without this line changing. Untick this and we hold even those
+            until your quiet hours end.
+          </span>
+        </span>
+      </label>
+
+      <p class="mt-4 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+        Obeyed. The morning job checks these times on your clock before it sends anything, and a
+        message caught inside the window is <span class="font-medium">held</span>, not dropped —
+        it goes out on the next run after your quiet hours end, still saying the same thing.
+      </p>
+      <p class="mt-2 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        One thing to know before you set a wide window: the job runs on a schedule, and a message
+        can only go out when the job is awake. A quiet window covering every hour the job runs
+        holds everything indefinitely — so if you want silence for most of the day, leave
+        <span class="font-medium">let the urgent ones through</span> ticked.
+      </p>
+
+      <div class="mt-4 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+        <button
+          type="submit"
+          name="intent"
+          value="save_quiet"
+          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+        >
+          Save quiet hours
+        </button>
+      </div>
+    </form>
+  </section>
+
+  {/* ============================================================ snoozes */}
+
+  <section class="mt-10">
+    <h2 class="text-lg font-semibold tracking-tight">
+      Snoozed items
+      {
+        snoozes.length > 0 && (
+          <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">{snoozes.length}</span>
+        )
+      }
+    </h2>
+    <p class="mt-1 max-w-3xl text-sm text-ink-500">
+      Items somebody looked at and decided could wait. They stay off your alerts until the date
+      shown, and then come back on their own — a snooze is never permanent, because the deadline
+      is not.
+    </p>
+
+    {
+      snoozes.length === 0 ? (
+        <div class="mt-3 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+          <p class="font-medium">Nothing is snoozed</p>
+          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+            Everything we track is alerting normally. When you snooze something it appears here,
+            with the date it comes back.
+          </p>
+        </div>
+      ) : (
+        <ul class="mt-3 space-y-2">
+          {snoozes.map((s) => {
+            const rule = ruleByCode(s.rule_code)
+            return (
+              <li class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-ink-100 bg-white px-4 py-3">
+                <div class="min-w-0 flex-1">
+                  <p class="font-medium">{rule?.title ?? s.rule_code}</p>
+                  <p class="mt-0.5 text-sm text-ink-500">
+                    {snoozeSubject(s)}
+                    {/* The rule code is shown as well as the title. It is the
+                        string actually stored in the row, and it is what
+                        support has to match on when the title and the row
+                        disagree — which happens the moment a rule is renamed. */}
+                    <span class="text-ink-300"> · {s.rule_code}</span>
+                  </p>
+                  {s.reason && <p class="mt-0.5 text-xs text-ink-300">{s.reason}</p>}
+                </div>
+                <div class="text-sm whitespace-nowrap">
+                  <span class="text-ink-500">Quiet until</span>{' '}
+                  <span class="font-medium tabular-nums">{formatDate(s.until)}</span>
+                </div>
+                <form method="POST" class="shrink-0">
+                  <input type="hidden" name="snooze_id" value={s.id} />
+                  <button
+                    type="submit"
+                    name="intent"
+                    value="unsnooze"
+                    class="rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
+                  >
+                    Un-snooze
+                  </button>
+                </form>
+              </li>
+            )
+          })}
+        </ul>
+      )
+    }
+  </section>
+
+  {/* ==================================================== recent messages */}
+
+  <section class="mt-10">
+    <h2 class="text-lg font-semibold tracking-tight">Recent messages</h2>
+    <p class="mt-1 max-w-3xl text-sm text-ink-500">
+      The last <span class="tabular-nums">20</span> messages we sent about this carrier, to anyone
+      on the account. This is a record, not a setting: it cannot be edited or cleared from here, by
+      anyone, because its whole value is answering "did you tell me?" months later. The address
+      shown is where the message actually went, not where we would send one today.
+    </p>
+
+    {
+      log.length === 0 ? (
+        <div class="mt-3 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+          <p class="font-medium">Nothing sent yet</p>
+          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+            Once a deadline reaches one of your warning days, the message we send about it is
+            listed here — including any we tried to send and could not.
+          </p>
+        </div>
+      ) : (
+        <div class="mt-3 overflow-x-auto rounded-xl border border-ink-100 bg-white">
+          <table class="w-full min-w-[48rem] text-sm">
+            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+              <tr>
+                <th class={th}>When</th>
+                <th class={th}>How</th>
+                <th class={th}>To</th>
+                <th class={th}>About</th>
+                <th class={th}>Result</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink-100">
+              {log.map((row) => (
+                <tr class="hover:bg-ink-50/60">
+                  <td class="px-4 py-3 whitespace-nowrap tabular-nums">{stamp(row.sent_at)}</td>
+                  <td class="px-4 py-3">{channelLabel(row.channel)}</td>
+                  <td class="px-4 py-3 tabular-nums">{row.destination}</td>
+                  <td class="px-4 py-3">
+                    {row.subject ?? <span class="text-ink-300">no subject line</span>}
+                  </td>
+                  <td class="px-4 py-3">
+                    <span
+                      class:list={[
+                        'rounded-md px-2 py-0.5 text-xs font-medium',
+                        statusPill(row.status),
+                      ]}
+                    >
+                      {row.status}
+                    </span>
+                    {/* A message we tried and failed to send is exactly the
+                        thing somebody will ask about, so the reason is on the
+                        row rather than in a log only we can read. */}
+                    {row.error && <div class="mt-1 text-xs text-ink-500">{row.error}</div>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+  </section>
+</App>

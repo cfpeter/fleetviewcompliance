@@ -1,0 +1,751 @@
+---
+/**
+ * What this driver is paid, and — the part that matters — on what terms.
+ *
+ * Every field on this screen exists because of an argument that happens six
+ * weeks later at a kitchen table. The rate is never the argument; both people
+ * agreed on the rate. The argument is always about a term nobody wrote down:
+ * WHICH MILES, or WHAT THE PERCENTAGE IS OF. So this page will not let either
+ * one be skipped, and the database will not either (0016_settlements.sql).
+ *
+ * SEVERAL AGREEMENTS AT ONCE is the normal case, not an edge case. A real
+ * driver is per-mile on linehaul AND flat $25 a stop AND hourly for detention.
+ * A single "pay rate" field on the driver record cannot say that, and what
+ * happens next is that the stop pay gets typed onto the settlement by hand every
+ * week until somebody forgets.
+ *
+ * THE FORM IS SPLIT BY METHOD, chosen with a GET parameter, and that is a
+ * deliberate consequence of shipping no JavaScript. One combined form would have
+ * to show or hide the mileage basis as the method changes; with no script it
+ * would have to show all of it at once, and a mileage basis sitting next to an
+ * hourly rate is a field somebody fills in. Four small forms, each asking only
+ * for what its method actually requires, is the version that cannot collect a
+ * wrong answer.
+ *
+ * Three intents, one page, and every one of them ends in a 303 — a refresh must
+ * never write a second agreement, because two live agreements with the same
+ * label pay the driver twice.
+ */
+import App from '../../../../layouts/App.astro'
+import { formText, fullName, formatDate, todayInCalifornia } from '../../../../lib/drivers.ts'
+import { parseMoneyToCents } from '../../../../lib/loads.ts'
+import {
+  MILEAGE_BASES,
+  PAY_METHODS,
+  type PayAgreement,
+  type PayMethod,
+  isMileageBasis,
+  isPayMethod,
+  missingTerms,
+  parsePercentToBp,
+  parseRateToMills,
+  payMethodLabel,
+  rateSummary,
+  termsSummary,
+} from '../../../../lib/settlements/compute.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+const id = Astro.params.id ?? ''
+
+const back = (params: string) =>
+  Astro.redirect(`/app/drivers/${id}/pay${params ? `?${params}` : ''}`, 303)
+
+const fail = (message: string, keep = '') =>
+  back(`error=${encodeURIComponent(message)}${keep ? `&add=${keep}` : ''}`)
+
+const toRoster = (message: string) =>
+  Astro.redirect(`/app/drivers?error=${encodeURIComponent(message)}`, 303)
+
+const NOT_YOURS = 'That driver is not in your fleet.'
+
+// A hand-edited URL like /app/drivers/abc/pay is not a missing row, it is a
+// failed uuid cast: Postgres raises and the office manager gets "invalid input
+// syntax for type uuid" across the top of her screen. Checked here so a REAL
+// database failure further down still reaches her as a real database failure.
+if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+  return toRoster(NOT_YOURS)
+}
+
+/**
+ * THE DRIVER IS FETCHED BEFORE THE POST IS DISPATCHED, ON PURPOSE.
+ *
+ * RLS on pay_agreements checks one thing: that carrier_id is mine. It does not
+ * check that driver_id points at a driver of mine — a database trigger does that
+ * separately — but proving the driver is visible here means the failure is a
+ * sentence on this page rather than a raw trigger exception, and it costs one
+ * query the page needs for its heading anyway.
+ *
+ * No .eq('carrier_id', …). RLS already scopes it, and repeating the filter would
+ * say in code that we do not quite believe the policy — which is how somebody
+ * eventually "fixes" a bug by loosening the policy instead of the query.
+ */
+const { data: driverData, error: driverError } = await supabase
+  .from('drivers')
+  .select('id, first_name, last_name, status')
+  .eq('id', id)
+  .maybeSingle()
+
+if (driverError) return toRoster(driverError.message)
+// maybeSingle() returns null for "no such driver" and for "another carrier's
+// driver" alike, because RLS makes the second look exactly like the first. That
+// is the point: this page cannot be used to find out who exists elsewhere.
+if (!driverData) return toRoster(NOT_YOURS)
+const driver = driverData as { id: string; first_name: string; last_name: string; status: string }
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  if (intent === 'add_agreement') {
+    const requested = String(form.get('method') ?? '')
+    // An unrecognised method would be handed straight to Postgres, which raises
+    // `invalid input value for enum pay_method` — a 500 on a page reached by
+    // editing the URL. Guarded here so it comes back as a sentence.
+    if (!isPayMethod(requested)) return fail('Pick how this agreement pays.')
+    const method: PayMethod = requested
+
+    const label = formText(form, 'label')
+    if (!label) {
+      return fail('Give the agreement a name — "Linehaul", "Stop pay". It prints on the statement.', method)
+    }
+
+    const patch: Record<string, unknown> = {
+      // Supplied, never filtered on: RLS checks carrier_id but does not fill it
+      // in, and a trigger separately refuses a driver_id from another carrier —
+      // so a tampered id in the URL fails at the database, not on our trust.
+      carrier_id: carrierId,
+      driver_id: id,
+      label,
+      method,
+      note: formText(form, 'note'),
+      effective_on: formText(form, 'effective_on') ?? todayInCalifornia(),
+      ends_on: formText(form, 'ends_on'),
+    }
+
+    if (method === 'per_mile') {
+      const rate = parseRateToMills(form.get('rate_mills'), { label: 'The rate per mile' })
+      if (!rate.ok) return fail(rate.message, method)
+      if (rate.value === null) return fail('Enter the rate per mile.', method)
+      patch.rate_mills = rate.value
+
+      // THE BASIS IS REQUIRED AND IS NEVER DEFAULTED.
+      //
+      // The same run is four different numbers: practical, shortest, HHG and the
+      // odometer, routinely 6% apart. On a 2,500-mile driver at $0.60 that is
+      // $90 a week — every week, forever — and he is not wrong to ask, because
+      // nobody ever wrote down which book was meant. Defaulting to 'practical'
+      // here would be the unlabelled rate wearing a label we chose for him.
+      const basis = String(form.get('mileage_basis') ?? '')
+      if (!isMileageBasis(basis)) {
+        return fail('Say which miles this rate pays on. An unlabelled rate per mile is a dispute waiting to happen.', method)
+      }
+      patch.mileage_basis = basis
+    } else if (method === 'percentage') {
+      const share = parsePercentToBp(form.get('percent_bp'), { label: 'The share' })
+      if (!share.ok) return fail(share.message, method)
+      if (share.value === null) return fail('Enter the percentage.', method)
+      patch.percent_bp = share.value
+
+      /**
+       * WHAT THE PERCENTAGE IS A PERCENTAGE OF.
+       *
+       * Read as two RADIO groups with no preselected option, and absence is an
+       * ERROR rather than false. A checkbox would have been the obvious control
+       * and it is the bug: an unchecked checkbox submits nothing, which this
+       * handler would read as "fuel surcharge excluded" — a definite answer to a
+       * question nobody was asked, and it happens to be the carrier's side of
+       * the argument. One load at $2,000 linehaul + $400 FSC + $150 lumper
+       * settles at $1,400, $1,680 or $1,785 depending on these two fields.
+       */
+      const fsc = String(form.get('includes_fsc') ?? '')
+      const acc = String(form.get('includes_accessorials') ?? '')
+      if (fsc !== 'yes' && fsc !== 'no') {
+        return fail('Say whether the fuel surcharge is part of the percentage.', method)
+      }
+      if (acc !== 'yes' && acc !== 'no') {
+        return fail('Say whether accessorials are part of the percentage.', method)
+      }
+      patch.percent_includes_fuel_surcharge = fsc === 'yes'
+      patch.percent_includes_accessorials = acc === 'yes'
+    } else {
+      // hourly and flat_per_trip both pay a plain amount, so the money parser in
+      // loads.ts is reused unchanged. There is deliberately no second money
+      // parser in this feature; a second one is a second set of rounding rules.
+      const amount = parseMoneyToCents(form.get('rate_cents'), {
+        label: method === 'hourly' ? 'The hourly rate' : 'The flat rate',
+      })
+      if (!amount.ok) return fail(amount.message, method)
+      if (amount.value === null || amount.value <= 0) {
+        return fail('Enter the rate. Zero is an unfinished form, not an agreement.', method)
+      }
+      patch.rate_cents = amount.value
+    }
+
+    const { error } = await supabase.from('pay_agreements').insert(patch)
+    if (error) return fail(error.message, method)
+    // Redirect rather than render: this page would otherwise leave the browser
+    // holding a form submission, and a refresh would write a SECOND live
+    // agreement with the same label — which pays the driver twice and looks
+    // like a rate dispute rather than a duplicate row.
+    return back('added=1')
+  }
+
+  if (intent === 'end_agreement') {
+    const agreementId = String(form.get('agreement_id') ?? '')
+    if (!agreementId) return fail('Nothing to end.')
+    // ENDED, NOT DELETED. The rate that was in force last March is the answer to
+    // "why does this statement say 58 cents", and a deleted row answers nothing.
+    // Settlement lines keep their own copy of the terms as well, so an ended
+    // agreement never changes a statement that has already been produced.
+    // Scoped to THIS driver as well as to the id. Not a defensive carrier_id
+    // filter — RLS covers tenancy — but an agreement id belonging to a
+    // DIFFERENT driver of the same carrier passes every policy, and ending
+    // somebody else's linehaul rate from a stale tab is a silent change nobody
+    // would look for.
+    const { error } = await supabase
+      .from('pay_agreements')
+      .update({ ends_on: todayInCalifornia() })
+      .eq('id', agreementId)
+      .eq('driver_id', id)
+    if (error) return fail(error.message)
+    return back('ended=1')
+  }
+
+  if (intent === 'delete_agreement') {
+    const agreementId = String(form.get('agreement_id') ?? '')
+    if (!agreementId) return fail('Nothing to remove.')
+    // For a row typed in error. Any settlement line that referenced it keeps its
+    // snapshotted terms — pay_agreement_id is ON DELETE SET NULL — so removing a
+    // mistyped agreement cannot rewrite a statement somebody already has.
+    const { error } = await supabase
+      .from('pay_agreements')
+      .delete()
+      .eq('id', agreementId)
+      .eq('driver_id', id)
+    if (error) return fail(error.message)
+    return back('removed=1')
+  }
+
+  return back('')
+}
+
+interface AgreementRow {
+  id: string
+  label: string
+  method: PayMethod
+  rate_mills: number | null
+  percent_bp: number | null
+  rate_cents: number | null
+  mileage_basis: string | null
+  percent_includes_fuel_surcharge: boolean | null
+  percent_includes_accessorials: boolean | null
+  effective_on: string
+  ends_on: string | null
+  note: string | null
+}
+
+// One line, not concatenated: supabase-js reads the select list as a string
+// LITERAL to type the row it returns, and a string built by concatenation is
+// just `string` to the compiler — which turns every column into GenericStringError.
+const AGREEMENT_COLUMNS =
+  'id, label, method, rate_mills, percent_bp, rate_cents, mileage_basis, percent_includes_fuel_surcharge, percent_includes_accessorials, effective_on, ends_on, note'
+
+const { data: agreementData, error: listError } = await supabase
+  .from('pay_agreements')
+  .select(AGREEMENT_COLUMNS)
+  .eq('driver_id', id)
+  .order('effective_on', { ascending: false })
+
+const agreements = (agreementData ?? []) as unknown as AgreementRow[]
+
+/** The database shape, in the shape the compute helpers read. */
+const asAgreement = (r: AgreementRow): PayAgreement => ({
+  id: r.id,
+  label: r.label,
+  method: r.method,
+  rateMills: r.rate_mills,
+  percentBp: r.percent_bp,
+  rateCents: r.rate_cents,
+  mileageBasis: isMileageBasis(r.mileage_basis ?? '') ? (r.mileage_basis as never) : null,
+  percentIncludesFuelSurcharge: r.percent_includes_fuel_surcharge,
+  percentIncludesAccessorials: r.percent_includes_accessorials,
+  effectiveOn: r.effective_on,
+  endsOn: r.ends_on,
+})
+
+const today = todayInCalifornia()
+const live = agreements.filter((a) => !a.ends_on || a.ends_on >= today)
+const ended = agreements.filter((a) => a.ends_on && a.ends_on < today)
+
+const params = Astro.url.searchParams
+const requestedAdd = params.get('add') ?? ''
+const adding: PayMethod | null = isPayMethod(requestedAdd) ? requestedAdd : null
+const error = params.get('error') ?? listError?.message ?? null
+const added = params.has('added')
+const endedNotice = params.has('ended')
+const removed = params.has('removed')
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
+const primary =
+  'rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700'
+---
+
+<App
+  title={`Pay — ${fullName(driver)}`}
+  subtitle="The rate, and the terms that stop an argument about the rate."
+>
+  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {
+    added && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Agreement added. It applies to settlements from its start date onward.
+      </p>
+    )
+  }
+  {
+    endedNotice && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Ended today. It stays on the record, because it is the answer to “why does last month’s
+        statement say that rate”.
+      </p>
+    )
+  }
+  {removed && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Removed.</p>}
+
+  {/* Said once, plainly, on every settlement screen. A carrier who believes
+      this is payroll is a carrier who stops withholding. */}
+  <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+    This is not payroll. FleetView works out what the driver is owed and prints the statement —
+    it does not withhold tax or file anything. Hand the net figure to whoever runs your payroll.
+  </p>
+
+  <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
+    <div class="space-y-6">
+      <section>
+        <h2 class="text-lg font-semibold tracking-tight">In force</h2>
+        <p class="mt-1 text-sm text-ink-500">
+          More than one is normal — per mile on the linehaul, flat on the stops, hourly on
+          detention. Every one of these is applied when a settlement is built.
+        </p>
+
+        {
+          live.length === 0 ? (
+            <div class="mt-4 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+              <p class="font-medium">No pay agreement yet</p>
+              <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+                Until there is one, a settlement for this driver has to be typed by hand every
+                week — which is where the line that gets forgotten comes from.
+              </p>
+            </div>
+          ) : (
+            <ul class="mt-4 space-y-3">
+              {live.map((a) => {
+                const gap = missingTerms(asAgreement(a))
+                return (
+                  <li class:list={[card, gap && 'border-amber-300 bg-amber-50/40']}>
+                    <div class="flex flex-wrap items-start gap-3">
+                      <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-2">
+                          <span class="font-medium">{a.label}</span>
+                          <span class="rounded-md bg-ink-100 px-2 py-0.5 text-xs font-medium text-ink-500">
+                            {payMethodLabel(a.method)}
+                          </span>
+                        </div>
+                        <div class="mt-1 text-2xl font-semibold tabular-nums">
+                          {rateSummary(asAgreement(a))}
+                        </div>
+                        {termsSummary(asAgreement(a)) && (
+                          <p class="mt-0.5 text-sm text-ink-500">{termsSummary(asAgreement(a))}</p>
+                        )}
+                        <p class="mt-2 text-xs text-ink-500 tabular-nums">
+                          From {formatDate(a.effective_on)}
+                          {a.ends_on ? ` until ${formatDate(a.ends_on)}` : ''}
+                        </p>
+                        {a.note && <p class="mt-2 text-sm text-ink-700">{a.note}</p>}
+                        {gap && (
+                          <p class="mt-3 rounded-lg bg-amber-100 px-3 py-2 text-sm text-amber-900">
+                            {gap}
+                          </p>
+                        )}
+                      </div>
+                      <form method="POST" class="flex shrink-0 flex-col items-end gap-2">
+                        <input type="hidden" name="agreement_id" value={a.id} />
+                        <button
+                          type="submit"
+                          name="intent"
+                          value="end_agreement"
+                          class="rounded-lg border border-ink-100 px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50"
+                        >
+                          End today
+                        </button>
+                        <button
+                          type="submit"
+                          name="intent"
+                          value="delete_agreement"
+                          class="text-xs text-red-600 hover:underline"
+                        >
+                          Remove — typed in error
+                        </button>
+                      </form>
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          )
+        }
+      </section>
+
+      <section>
+        <h2 class="text-lg font-semibold tracking-tight">Add an agreement</h2>
+        <p class="mt-1 text-sm text-ink-500">
+          Pick how it pays first. Each one asks for the terms that method actually needs, and
+          nothing it does not.
+        </p>
+
+        {/* Links, not a script. The chosen method is a GET parameter, so the
+            half-filled form survives a back button and can be reached by URL. */}
+        <div class="mt-3 flex flex-wrap gap-1">
+          {
+            PAY_METHODS.map((m) => (
+              <a
+                href={`/app/drivers/${id}/pay?add=${m.value}`}
+                class:list={[
+                  tab,
+                  adding === m.value
+                    ? 'bg-brand-500/10 text-brand-700'
+                    : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
+                ]}
+              >
+                {m.label}
+              </a>
+            ))
+          }
+        </div>
+
+        {
+          adding && (
+            <form method="POST" class={`mt-4 space-y-4 ${card}`}>
+              <input type="hidden" name="method" value={adding} />
+
+              <p class="text-sm text-ink-500">
+                {PAY_METHODS.find((m) => m.value === adding)?.help}
+              </p>
+
+              <label class="block">
+                <span class="text-sm font-medium">
+                  What to call it <span class="text-red-600">*</span>
+                </span>
+                <input
+                  type="text"
+                  name="label"
+                  required
+                  placeholder={adding === 'flat_per_trip' ? 'Stop pay' : 'Linehaul'}
+                  class={field}
+                />
+                <span class="mt-1 block text-xs text-ink-500">
+                  This prints on the settlement line, so it is how he knows which of his
+                  agreements produced a number.
+                </span>
+              </label>
+
+              {adding === 'per_mile' && (
+                <div class="grid gap-4 sm:grid-cols-2">
+                  <label class="block">
+                    <span class="text-sm font-medium">
+                      Rate per mile <span class="text-red-600">*</span>
+                    </span>
+                    <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
+                      <span class="pl-3 text-ink-300">$</span>
+                      <input
+                        name="rate_mills"
+                        required
+                        inputmode="decimal"
+                        placeholder="0.585"
+                        class="w-full bg-transparent px-2 py-2 text-base tabular-nums outline-none"
+                      />
+                    </div>
+                    <span class="mt-1 block text-xs text-ink-500">
+                      Three decimals are kept. Half cents are real — 0.585 is not 0.58.
+                    </span>
+                  </label>
+
+                  <label class="block">
+                    <span class="text-sm font-medium">
+                      Which miles <span class="text-red-600">*</span>
+                    </span>
+                    {/* No option is preselected, and there is no default on the
+                        column either. The whole point of this field is that
+                        somebody answered it. */}
+                    <select name="mileage_basis" required class={field}>
+                      <option value="">— choose —</option>
+                      {MILEAGE_BASES.map((b) => (
+                        <option value={b.value}>{b.label}</option>
+                      ))}
+                    </select>
+                    <ul class="mt-2 space-y-1 text-xs text-ink-500">
+                      {MILEAGE_BASES.map((b) => (
+                        <li>
+                          <span class="font-medium text-ink-700">{b.label}</span> — {b.help}
+                        </li>
+                      ))}
+                    </ul>
+                  </label>
+                </div>
+              )}
+
+              {adding === 'percentage' && (
+                <div class="space-y-4">
+                  <label class="block sm:max-w-xs">
+                    <span class="text-sm font-medium">
+                      Share of the load <span class="text-red-600">*</span>
+                    </span>
+                    <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
+                      <input
+                        name="percent_bp"
+                        required
+                        inputmode="decimal"
+                        placeholder="68"
+                        class="w-full bg-transparent px-3 py-2 text-base tabular-nums outline-none"
+                      />
+                      <span class="pr-3 text-ink-300">%</span>
+                    </div>
+                    <span class="mt-1 block text-xs text-ink-500">
+                      Owner-operators leased on run 65–75% in 2026.
+                    </span>
+                  </label>
+
+                  <fieldset class="rounded-xl border border-amber-300 bg-amber-50/40 p-4">
+                    <legend class="px-1 text-sm font-medium text-amber-900">
+                      A percentage of WHAT
+                    </legend>
+                    <p class="text-sm text-amber-900">
+                      This is the single most common settlement dispute there is. A load paying
+                      <span class="tabular-nums"> $2,000</span> linehaul,
+                      <span class="tabular-nums"> $400</span> fuel surcharge and
+                      <span class="tabular-nums"> $150</span> lumper settles at
+                      <span class="tabular-nums"> $1,400</span>,
+                      <span class="tabular-nums"> $1,680</span> or
+                      <span class="tabular-nums"> $1,785</span> — on the same 70%. Answer both,
+                      now, while you are both looking at it.
+                    </p>
+
+                    {/* Radios, not checkboxes, and nothing preselected. An
+                        unchecked checkbox submits NOTHING, which the handler
+                        would have to read as "excluded" — a definite answer to
+                        a question nobody asked, and it happens to be the
+                        carrier's side of the argument. */}
+                    <div class="mt-4 grid gap-4 sm:grid-cols-2">
+                      <div>
+                        <span class="text-sm font-medium">
+                          Fuel surcharge <span class="text-red-600">*</span>
+                        </span>
+                        <div class="mt-2 space-y-1.5">
+                          <label class="flex items-center gap-2 text-sm">
+                            <input type="radio" name="includes_fsc" value="yes" required class="size-4" />
+                            Included in the percentage
+                          </label>
+                          <label class="flex items-center gap-2 text-sm">
+                            <input type="radio" name="includes_fsc" value="no" required class="size-4" />
+                            Not included — the carrier keeps it
+                          </label>
+                        </div>
+                      </div>
+                      <div>
+                        <span class="text-sm font-medium">
+                          Accessorials <span class="text-red-600">*</span>
+                        </span>
+                        <div class="mt-2 space-y-1.5">
+                          <label class="flex items-center gap-2 text-sm">
+                            <input
+                              type="radio"
+                              name="includes_accessorials"
+                              value="yes"
+                              required
+                              class="size-4"
+                            />
+                            Included in the percentage
+                          </label>
+                          <label class="flex items-center gap-2 text-sm">
+                            <input
+                              type="radio"
+                              name="includes_accessorials"
+                              value="no"
+                              required
+                              class="size-4"
+                            />
+                            Not included — the carrier keeps them
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </fieldset>
+                </div>
+              )}
+
+              {(adding === 'hourly' || adding === 'flat_per_trip') && (
+                <label class="block sm:max-w-xs">
+                  <span class="text-sm font-medium">
+                    {adding === 'hourly' ? 'Rate per hour' : 'Flat rate'}{' '}
+                    <span class="text-red-600">*</span>
+                  </span>
+                  <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
+                    <span class="pl-3 text-ink-300">$</span>
+                    <input
+                      name="rate_cents"
+                      required
+                      inputmode="decimal"
+                      placeholder={adding === 'hourly' ? '28.50' : '25.00'}
+                      class="w-full bg-transparent px-2 py-2 text-base tabular-nums outline-none"
+                    />
+                  </div>
+                  <span class="mt-1 block text-xs text-ink-500">
+                    {adding === 'hourly'
+                      ? 'Local and drayage work. Part hours are kept — 7.5 is seven and a half.'
+                      : 'Per trip, or per stop. Which one it is belongs in the name above.'}
+                  </span>
+                </label>
+              )}
+
+              <div class="grid gap-4 sm:grid-cols-2">
+                <label class="block">
+                  <span class="text-sm font-medium">Starts</span>
+                  <input
+                    type="date"
+                    name="effective_on"
+                    value={today}
+                    class={`${field} tabular-nums`}
+                  />
+                  <span class="mt-1 block text-xs text-ink-500">
+                    Settlements before this date are untouched by it.
+                  </span>
+                </label>
+                <label class="block">
+                  <span class="text-sm font-medium">
+                    Ends <span class="font-normal text-ink-300">(optional)</span>
+                  </span>
+                  <input type="date" name="ends_on" class={`${field} tabular-nums`} />
+                </label>
+              </div>
+
+              <label class="block">
+                <span class="text-sm font-medium">
+                  Note <span class="font-normal text-ink-300">(optional)</span>
+                </span>
+                <input
+                  type="text"
+                  name="note"
+                  placeholder="What was agreed, in your own words."
+                  class={field}
+                />
+              </label>
+
+              <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+                <button type="submit" name="intent" value="add_agreement" class={primary}>
+                  Add {payMethodLabel(adding).toLowerCase()} agreement
+                </button>
+                <a href={`/app/drivers/${id}/pay`} class="text-sm font-medium text-brand-600 hover:underline">
+                  Cancel
+                </a>
+              </div>
+            </form>
+          )
+        }
+      </section>
+
+      {
+        ended.length > 0 && (
+          <section>
+            <h2 class="text-lg font-semibold tracking-tight">Ended</h2>
+            <p class="mt-1 text-sm text-ink-500">
+              Kept, because these are the answer to “why does last March’s statement say that
+              rate”. They apply to nothing new.
+            </p>
+            <div class="mt-4 overflow-x-auto rounded-xl border border-ink-100 bg-white">
+              <table class="w-full text-sm">
+                <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+                  <tr>
+                    <th class="px-4 py-3 font-medium">Agreement</th>
+                    <th class="px-4 py-3 text-right font-medium">Rate</th>
+                    <th class="px-4 py-3 font-medium">Terms</th>
+                    <th class="px-4 py-3 text-right font-medium">Ran</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-ink-100">
+                  {ended.map((a) => (
+                    <tr class="hover:bg-ink-50/60">
+                      <td class="px-4 py-3">
+                        <span class="font-medium">{a.label}</span>
+                        <span class="block text-xs text-ink-300">{payMethodLabel(a.method)}</span>
+                      </td>
+                      <td class="px-4 py-3 text-right tabular-nums">
+                        {rateSummary(asAgreement(a))}
+                      </td>
+                      <td class="px-4 py-3 text-ink-500">{termsSummary(asAgreement(a)) || '—'}</td>
+                      <td class="px-4 py-3 text-right text-ink-500 tabular-nums whitespace-nowrap">
+                        {formatDate(a.effective_on)} – {formatDate(a.ends_on)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )
+      }
+    </div>
+
+    <aside class="space-y-4">
+      <div class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">Agreements in force</div>
+        <div class="mt-1 text-3xl font-semibold tabular-nums">{live.length}</div>
+        <p class="mt-2 text-sm text-ink-500">
+          All of them are applied when a settlement is built. Real carriers mix models, and a
+          driver is routinely on two or three at once.
+        </p>
+      </div>
+
+      <div class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">2026 going rates</div>
+        <dl class="mt-2 divide-y divide-ink-100 text-sm">
+          <div class="flex justify-between gap-4 py-2">
+            <dt class="text-ink-500">Per mile, solo OTR</dt>
+            <dd class="text-right tabular-nums">$0.58 – $0.78</dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2">
+            <dt class="text-ink-500">Entry</dt>
+            <dd class="text-right tabular-nums">$0.45 – $0.52</dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2">
+            <dt class="text-ink-500">Senior</dt>
+            <dd class="text-right tabular-nums">$0.65 – $0.80</dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2">
+            <dt class="text-ink-500">Owner-operator split</dt>
+            <dd class="text-right tabular-nums">65% – 75%</dd>
+          </div>
+        </dl>
+        <p class="mt-3 text-xs text-ink-500">
+          Flatbed and tanker run 5–10¢ over the solo range. These are a sanity check on a number
+          you typed, not advice.
+        </p>
+      </div>
+
+      <div class={card}>
+        <div class="text-xs tracking-wide text-ink-500 uppercase">Elsewhere</div>
+        <div class="mt-2 space-y-2 text-sm">
+          <a href={`/app/drivers/${id}`} class="block font-medium text-brand-600 hover:underline">
+            Driver record →
+          </a>
+          <a href={`/app/settlements?driver=${id}`} class="block font-medium text-brand-600 hover:underline">
+            His settlements →
+          </a>
+        </div>
+      </div>
+    </aside>
+  </div>
+</App>

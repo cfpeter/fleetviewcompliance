@@ -1,0 +1,270 @@
+---
+/**
+ * The fleet list.
+ *
+ * Power units and trailers live in ONE table split by `kind`, so this page is
+ * also the only place the split is visible to the owner. The segmented control
+ * is three plain links: a filtered view stays shareable, survives a back button,
+ * and works on a phone with one bar of signal in a yard — which is where this
+ * screen actually gets used.
+ */
+import App from '../../../layouts/App.astro'
+import {
+  byUnitNumber,
+  gvwrReading,
+  likeSafe,
+  statusLabel,
+  statusPillClass,
+  vehicleLabel,
+  type VehicleKind,
+  type VehicleRow,
+} from '../../../lib/vehicles.ts'
+
+const supabase = Astro.locals.supabase!
+
+const params = Astro.url.searchParams
+const rawKind = params.get('kind') ?? ''
+// Anything that is not one of the two real kinds means "All". A bad ?kind= in a
+// pasted URL must not produce an empty page that reads as an empty fleet.
+const kind: VehicleKind | null =
+  rawKind === 'power_unit' || rawKind === 'trailer' ? rawKind : null
+const q = (params.get('q') ?? '').trim()
+const error = params.get('error')
+
+const search = likeSafe(q)
+
+// No .eq('carrier_id', ...) anywhere here. RLS on `vehicles` already scopes this
+// to the signed-in user's carrier, and adding the filter would say in code that
+// we do not quite believe the policy — which is the sentence that eventually
+// justifies someone reaching for a service-role client.
+let query = supabase
+  .from('vehicles')
+  .select(
+    'id, kind, unit_number, vin, make, model, model_year, gvwr_lbs, plate, plate_state, status, notes',
+  )
+  .limit(500)
+
+if (search) {
+  // ilike both columns. Chained .ilike() calls would AND, which finds nothing:
+  // no string is both a unit number and a VIN.
+  query = query.or(`unit_number.ilike.%${search}%,vin.ilike.%${search}%`)
+}
+
+const { data, error: loadError } = await query
+const all = ((data ?? []) as VehicleRow[]).slice().sort(byUnitNumber)
+
+// The segment counts are taken from the SEARCHED set, not from the whole fleet.
+// Counted off everything, the control would say "3 trailers" while the search
+// showing beneath it has none of them, and the owner would click through to an
+// empty list and conclude the filter is broken.
+const powerUnits = all.filter((v) => v.kind === 'power_unit')
+const trailers = all.filter((v) => v.kind === 'trailer')
+const shown = kind === 'power_unit' ? powerUnits : kind === 'trailer' ? trailers : all
+
+/** A segment link that keeps the current search. */
+function viewHref(k: string): string {
+  const next = new URLSearchParams()
+  if (k) next.set('kind', k)
+  if (q) next.set('q', q)
+  const s = next.toString()
+  return `/app/vehicles${s ? `?${s}` : ''}`
+}
+
+const segments = [
+  { key: 'power_unit', label: 'Power units', count: powerUnits.length },
+  { key: 'trailer', label: 'Trailers', count: trailers.length },
+  { key: '', label: 'All', count: all.length },
+]
+
+// The add button carries the segment you are standing on, so "Add" from the
+// Trailers tab pre-selects trailer instead of making that choice twice.
+const addHref = kind ? `/app/vehicles/new?kind=${kind}` : '/app/vehicles/new'
+
+const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
+const emptyAll = all.length === 0 && !q
+---
+
+<App
+  title="Trucks"
+  subtitle="Power units and trailers. Each unit of a combination carries its own inspection clock."
+>
+  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {
+    loadError && (
+      <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+        We could not load your fleet: {loadError.message}
+      </p>
+    )
+  }
+
+  <div class="mb-4 flex flex-wrap items-center gap-3">
+    <div class="-mx-4 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
+      {
+        segments.map((s) => (
+          <a
+            href={viewHref(s.key)}
+            class:list={[
+              tab,
+              (s.key === '' ? kind === null : s.key === kind)
+                ? 'bg-brand-500/10 text-brand-700'
+                : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
+            ]}
+          >
+            {s.label}
+            <span class="ml-1.5 text-xs tabular-nums opacity-70">{s.count}</span>
+          </a>
+        ))
+      }
+    </div>
+
+    <form method="GET" class="ml-auto flex items-center gap-2">
+      {/* Carried so a search does not silently drop you back to All. */}
+      {kind && <input type="hidden" name="kind" value={kind} />}
+      <div class="relative">
+        <svg
+          class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-300"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+        >
+          <circle cx="11" cy="11" r="7"></circle>
+          <path d="m20 20-3.5-3.5"></path>
+        </svg>
+        <input
+          type="search"
+          name="q"
+          value={q}
+          placeholder="Unit number or VIN…"
+          aria-label="Search by unit number or VIN"
+          class="w-56 rounded-lg border border-ink-100 bg-white py-2 pr-3 pl-10 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 sm:w-64"
+        />
+      </div>
+      <button
+        type="submit"
+        class="rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
+      >
+        Search
+      </button>
+    </form>
+
+    <a
+      href={addHref}
+      class="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+    >
+      Add a vehicle
+    </a>
+  </div>
+
+  {
+    q && (
+      <p class="mb-4 text-sm text-ink-500">
+        <span class="tabular-nums">{shown.length}</span>
+        {shown.length === 1 ? ' match' : ' matches'} for “{q}”.
+        <a href={viewHref(kind ?? '')} class="ml-2 font-medium text-brand-600 hover:underline">
+          Clear
+        </a>
+      </p>
+    )
+  }
+
+  {
+    shown.length === 0 ? (
+      <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+        <p class="font-medium">{emptyAll ? 'No trucks yet' : 'Nothing here'}</p>
+        <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+          {emptyAll
+            ? 'Add a power unit or a trailer. You can put in just the unit number now and fill in the VIN, the weight and the dates whenever you have them.'
+            : 'No vehicle in this view matches. Try the All tab, or a shorter piece of the VIN.'}
+        </p>
+        {emptyAll && (
+          <a
+            href={addHref}
+            class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+          >
+            Add a vehicle →
+          </a>
+        )}
+      </div>
+    ) : (
+      <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
+        <table class="w-full min-w-[56rem] text-sm">
+          <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+            <tr>
+              <th class="px-4 py-3 font-medium">Unit</th>
+              <th class="px-4 py-3 font-medium">VIN</th>
+              <th class="px-4 py-3 font-medium">Year / make / model</th>
+              <th class="px-4 py-3 font-medium">Plate</th>
+              <th class="px-4 py-3 text-right font-medium">GVWR</th>
+              <th class="px-4 py-3 font-medium">Status</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-ink-100">
+            {shown.map((v) => {
+              const gvwr = gvwrReading(v.gvwr_lbs)
+              const ymm = [v.model_year, v.make, v.model].filter(Boolean).join(' ')
+              return (
+                <tr class="hover:bg-ink-50/60">
+                  <td class="px-4 py-3">
+                    <a
+                      href={`/app/vehicles/${v.id}`}
+                      class="font-medium hover:text-brand-600 hover:underline"
+                    >
+                      {vehicleLabel(v)}
+                    </a>
+                    <div class="text-xs text-ink-300">
+                      {v.kind === 'trailer' ? 'Trailer' : 'Power unit'}
+                    </div>
+                  </td>
+                  <td class="px-4 py-3 font-mono text-xs tracking-tight text-ink-500 tabular-nums">
+                    {v.vin ?? <span class="font-sans text-ink-300">Not given</span>}
+                  </td>
+                  <td class="px-4 py-3">{ymm || <span class="text-ink-300">Not given</span>}</td>
+                  <td class="px-4 py-3 whitespace-nowrap">
+                    {v.plate ? (
+                      <>
+                        <span class="tabular-nums">{v.plate}</span>
+                        {v.plate_state && <span class="ml-1 text-ink-500">{v.plate_state}</span>}
+                      </>
+                    ) : (
+                      <span class="text-ink-300">Not given</span>
+                    )}
+                  </td>
+                  {/*
+                    NULL renders as "Unknown", in amber, and never as a dash.
+                    A blank or a dash in a weight column reads as "this truck is
+                    under the line" — the engine reads it as the opposite, and
+                    treats the unit as fully regulated.
+                  */}
+                  <td class={`px-4 py-3 text-right tabular-nums ${gvwr.className}`}>{gvwr.text}</td>
+                  <td class="px-4 py-3">
+                    <span
+                      class:list={[
+                        'rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
+                        statusPillClass(v.status),
+                      ]}
+                    >
+                      {statusLabel(v.status)}
+                    </span>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
+
+  {
+    all.some((v) => v.gvwr_lbs === null) && (
+      <p class="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        <span class="tabular-nums">{all.filter((v) => v.gvwr_lbs === null).length}</span> of these
+        have no GVWR on file. That does not exempt them: a truck of unknown weight is treated as
+        fully regulated, so every weight-conditional deadline stays switched on until you tell us
+        otherwise.
+      </p>
+    )
+  }
+</App>

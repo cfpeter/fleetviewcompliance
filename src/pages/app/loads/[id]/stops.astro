@@ -1,0 +1,970 @@
+---
+/**
+ * The stops on one load: the order the truck runs them in, which appointments
+ * are hard, and the clock every detention argument is settled from.
+ *
+ * Six intents, one page, and every one of them ends in a 303. That matters more
+ * here than on the driver page: a replayed POST would not merely duplicate a
+ * row, it would re-run a reordering plan against a list that has already moved,
+ * and the second run of "park then set" on stale numbers is exactly the
+ * unique (load_id, sequence) collision the planners exist to avoid.
+ *
+ * There is no client-side JavaScript on this screen, and reordering is two form
+ * buttons per row. That is not austerity: the person using it is a dispatcher on
+ * a phone in a yard, and a drag handle that needs a framework to boot is a
+ * control that does nothing on one bar of signal.
+ */
+import App from '../../../../layouts/App.astro'
+import {
+  APPOINTMENT_TYPES,
+  STOP_TYPES,
+  appointmentBadgeClass,
+  appointmentLabel,
+  formFlag,
+  formText,
+  formatCents,
+  formatMinutes,
+  formatStopTime,
+  formatWindow,
+  freeHoursFor,
+  hasSequenceGaps,
+  isAppointmentType,
+  isStopType,
+  isoToLocalInput,
+  localInputToIso,
+  nextSequence,
+  orderStops,
+  parseStopState,
+  planAfterRemoval,
+  planMove,
+  planRenumber,
+  stopClock,
+  stopTypeBadgeClass,
+  stopTypeLabel,
+  type DetentionTerms,
+  type SequenceWrite,
+  type StopRow,
+} from '../../../../lib/stops.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+const loadId = Astro.params.id ?? ''
+
+/**
+ * Written out rather than `select('*')`. An untyped client returns `any` for a
+ * star, so a column renamed in a migration would render as an empty appointment
+ * window — which on this screen reads as "nobody set one" rather than as a bug,
+ * and an appointment nobody thinks exists is a load nobody chases.
+ */
+// Kept on one line on purpose: supabase-js reads the select list as a string
+// LITERAL to type the row it returns, and a string built by concatenation is
+// just `string` to the compiler — which turns every column below into
+// `GenericStringError` and the whole result into something no cast can rescue.
+const STOP_COLUMNS =
+  'id, sequence, stop_type, company_name, street, city, state, zip, contact_name, phone, appointment_type, window_start, window_end, arrived_at, departed_at, reference_numbers, instructions, lumper_required'
+
+interface LoadRow {
+  id: string
+  load_number: string | null
+  broker_reference: string | null
+  status: string
+  free_hours_pickup: number | null
+  free_hours_delivery: number | null
+  detention_rate_cents: number | null
+  detention_requires_preapproval: boolean | null
+}
+
+const go = (query: string) => Astro.redirect(`/app/loads/${loadId}/stops${query}`, 303)
+
+/**
+ * A failure comes back with the stop it was about, so the browser re-opens that
+ * row's editor and scrolls to it. Without the `edit` parameter the error banner
+ * appears at the top of the page above a collapsed card, describing a field the
+ * dispatcher can no longer see.
+ */
+const fail = (message: string, stopId = '') =>
+  go(
+    `?error=${encodeURIComponent(message)}${stopId ? `&edit=${stopId}#stop-${stopId}` : ''}`,
+  )
+
+const toLoads = (message: string) =>
+  Astro.redirect(`/app/loads?error=${encodeURIComponent(message)}`, 303)
+
+const NOT_YOURS = 'That load is not on your board.'
+const STOP_GONE = 'That stop is no longer on this load.'
+
+// A hand-edited URL like /app/loads/abc/stops is not a missing row, it is a
+// failed uuid cast: Postgres raises, and the dispatcher gets "invalid input
+// syntax for type uuid" across her screen. Checked here so that a REAL database
+// failure further down still reaches her as a real database failure.
+if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(loadId)) {
+  return toLoads(NOT_YOURS)
+}
+
+/**
+ * THE LOAD IS FETCHED BEFORE THE POST IS DISPATCHED, ON PURPOSE.
+ *
+ * RLS on `load_stops` checks one thing: that carrier_id is mine. It does not
+ * check that load_id points at a load of mine — so a crafted POST carrying
+ * somebody else's load id and my carrier id passes the policy and writes an
+ * orphan stop. Proving the load is visible to me first is what makes the
+ * load_id in every insert below trustworthy, and it costs one query we need for
+ * rendering anyway.
+ *
+ * No .eq('carrier_id', …) on this select. RLS already scopes it, and adding the
+ * filter would say in code that we do not quite believe the policy.
+ */
+const { data: loadData, error: loadError } = await supabase
+  .from('loads')
+  .select(
+    'id, load_number, broker_reference, status, free_hours_pickup, free_hours_delivery, detention_rate_cents, detention_requires_preapproval',
+  )
+  .eq('id', loadId)
+  .maybeSingle()
+
+if (loadError) return toLoads(loadError.message)
+// maybeSingle() returns null for "no such load" and for "another carrier's
+// load" alike, because RLS makes the second look exactly like the first. That
+// is the point: this page cannot be used to find out what exists elsewhere.
+if (!loadData) return toLoads(NOT_YOURS)
+const load = loadData as LoadRow
+
+const terms: DetentionTerms = {
+  free_hours_pickup: load.free_hours_pickup,
+  free_hours_delivery: load.free_hours_delivery,
+  detention_rate_cents: load.detention_rate_cents,
+  detention_requires_preapproval: load.detention_requires_preapproval,
+}
+
+/**
+ * The stops, in order.
+ *
+ * The error is returned rather than swallowed because a failed read must never
+ * be mistaken for an empty load: `nextSequence([])` is 1, which on a real load
+ * is occupied, and the insert would die on the unique index with a message
+ * about an index. `.eq('load_id', …)` is a scope, not a tenancy filter — RLS
+ * does the tenancy.
+ */
+async function fetchStops(): Promise<{ rows: StopRow[]; error: string | null }> {
+  const { data, error } = await supabase.from('load_stops').select(STOP_COLUMNS).eq('load_id', loadId)
+  if (error) return { rows: [], error: error.message }
+  return { rows: orderStops((data ?? []) as StopRow[]), error: null }
+}
+
+/**
+ * Apply a sequence plan, one statement at a time, stopping at the first refusal.
+ *
+ * PostgREST gives us no transaction, so a plan interrupted halfway leaves rows
+ * parked above the live range — a visible, loud, repairable state rather than a
+ * silent one: the page detects it and offers the Renumber button. That is the
+ * honest trade for not hiding this logic in a stored procedure where it could
+ * not be tested without a database.
+ */
+async function runWrites(writes: SequenceWrite[]): Promise<string | null> {
+  for (const write of writes) {
+    const { error } = await supabase
+      .from('load_stops')
+      .update({ sequence: write.sequence })
+      .eq('id', write.id)
+    if (error) return error.message
+  }
+  return null
+}
+
+/** Everything the add form and the edit form both write. Parsed once. */
+function readStopFields(form: FormData):
+  | { ok: true; value: Record<string, unknown> }
+  | { ok: false; message: string } {
+  const stopType = String(form.get('stop_type') ?? '')
+  // A `<select>` posts what the browser sends and a crafted POST posts anything.
+  // Postgres would refuse a bad enum with a sentence naming a type; this refuses
+  // it with a sentence naming a stop.
+  if (!isStopType(stopType)) return { ok: false, message: 'Pick what kind of stop this is.' }
+
+  const rawAppointment = String(form.get('appointment_type') ?? '')
+  // Blank is a real, third state and it is stored as NULL rather than guessed
+  // into 'fcfs'. Guessing here would print "FCFS window" next to a stop that is
+  // in fact a hard appointment, which is the one mistake on this page that
+  // refuses a load.
+  if (rawAppointment !== '' && !isAppointmentType(rawAppointment)) {
+    return { ok: false, message: 'That is not an appointment type we recognise.' }
+  }
+
+  const state = parseStopState(form.get('state'))
+  if (!state.ok) return { ok: false, message: state.message }
+
+  const windowStart = localInputToIso(String(form.get('window_start') ?? ''))
+  const windowEnd = localInputToIso(String(form.get('window_end') ?? ''))
+  // An inverted window is not a harmless typo: the "running late" alert and the
+  // free-time clock both read it, and a window that closes before it opens
+  // makes every stop look late forever.
+  if (windowStart && windowEnd && new Date(windowEnd) < new Date(windowStart)) {
+    return { ok: false, message: 'The appointment window ends before it starts.' }
+  }
+
+  return {
+    ok: true,
+    value: {
+      stop_type: stopType,
+      company_name: formText(form, 'company_name'),
+      street: formText(form, 'street'),
+      city: formText(form, 'city'),
+      state: state.value,
+      zip: formText(form, 'zip'),
+      contact_name: formText(form, 'contact_name'),
+      phone: formText(form, 'phone'),
+      appointment_type: rawAppointment === '' ? null : rawAppointment,
+      window_start: windowStart,
+      window_end: windowEnd,
+      reference_numbers: formText(form, 'reference_numbers'),
+      instructions: formText(form, 'instructions'),
+      lumper_required: formFlag(form, 'lumper_required'),
+    },
+  }
+}
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+  const stopId = String(form.get('stop_id') ?? '')
+
+  if (intent === 'add_stop') {
+    const fields = readStopFields(form)
+    if (!fields.ok) return fail(fields.message)
+
+    const { rows, error } = await fetchStops()
+    if (error) return fail(error)
+
+    const { error: insertError } = await supabase.from('load_stops').insert({
+      // carrier_id is SET on insert and never filtered on. RLS checks it but
+      // does not fill it in, and a row inserted without it fails the WITH CHECK
+      // half of the policy — which reads as a permissions error about a stop the
+      // dispatcher has every right to add.
+      carrier_id: carrierId,
+      load_id: load.id,
+      // One past the largest, never rows.length + 1. See nextSequence().
+      sequence: nextSequence(rows),
+      ...fields.value,
+    })
+    if (insertError) return fail(insertError.message)
+    return go('?added=1')
+  }
+
+  if (intent === 'save_stop') {
+    const fields = readStopFields(form)
+    if (!fields.ok) return fail(fields.message, stopId)
+
+    // No sequence and no carrier_id in this patch. The order is changed by the
+    // arrows, through a plan that cannot collide; letting a hidden field in the
+    // edit form carry a sequence would put a second, unplanned writer on the
+    // one column with a unique constraint on it. carrier_id is set once, on
+    // insert, and leaving it out is what stops a stop being moved between
+    // tenancies by an UPDATE.
+    const { data, error } = await supabase
+      .from('load_stops')
+      .update(fields.value)
+      .eq('id', stopId)
+      .select('id')
+
+    if (error) return fail(error.message, stopId)
+    // An UPDATE that matches nothing is not an error in Postgres, so without
+    // this the page would report a cheerful "Saved." for a stop that was
+    // removed in another tab a moment ago.
+    if (!data || data.length === 0) return fail(STOP_GONE)
+    return go('?saved=1')
+  }
+
+  if (intent === 'record_times') {
+    // A blank box here CLEARS the stored time, unlike the compliance dates on
+    // the driver page where blank means "leave it alone". The difference is
+    // real: those are append-only evidence a driver was qualified, these are
+    // operational facts that get corrected, and the form the dispatcher just
+    // looked at showed her exactly what is stored. Emptying a box she can see
+    // filled in is an instruction, not an accident.
+    const arrived = localInputToIso(String(form.get('arrived_at') ?? ''))
+    const departed = localInputToIso(String(form.get('departed_at') ?? ''))
+
+    // Refused rather than stored and flagged. These two timestamps are what a
+    // detention invoice is argued from, and a pair in the wrong order is a
+    // claim the broker throws out — better to catch the transposed digits while
+    // the dispatcher still has the driver on the phone.
+    if (arrived && departed && new Date(departed) < new Date(arrived)) {
+      return fail('That departure is before the arrival — check the times.', stopId)
+    }
+
+    const { data, error } = await supabase
+      .from('load_stops')
+      .update({ arrived_at: arrived, departed_at: departed })
+      .eq('id', stopId)
+      .select('id')
+
+    if (error) return fail(error.message, stopId)
+    if (!data || data.length === 0) return fail(STOP_GONE)
+    return go('?times=1')
+  }
+
+  if (intent === 'move_stop') {
+    const direction = String(form.get('dir') ?? '')
+    if (direction !== 'up' && direction !== 'down') return fail('That is not a direction.')
+
+    const { rows, error } = await fetchStops()
+    if (error) return fail(error)
+    // planMove is a no-op for a stop that is not there, which would redirect
+    // with a cheerful "Stop moved" after moving nothing.
+    if (!rows.some((r) => r.id === stopId)) return fail(STOP_GONE)
+
+    // Planned against the rows as they are RIGHT NOW, never against numbers
+    // carried in the form. A hidden sequence would be the number the page had
+    // when it rendered, and two dispatchers on the same load would plan against
+    // a list neither of them is looking at.
+    const writeError = await runWrites(planMove(rows, stopId, direction))
+    if (writeError) return fail(writeError)
+    return go('?moved=1')
+  }
+
+  if (intent === 'remove_stop') {
+    const { rows, error } = await fetchStops()
+    if (error) return fail(error)
+    if (!rows.some((r) => r.id === stopId)) return fail(STOP_GONE)
+
+    const { error: deleteError } = await supabase.from('load_stops').delete().eq('id', stopId)
+    if (deleteError) return fail(deleteError.message)
+
+    // Renumber AFTER the delete, from the rows that are left. Planning the
+    // renumber first would count a stop that is about to vanish, and every
+    // target would be one too high; doing it after means the hole is genuinely
+    // free and the plan is over the list that actually exists.
+    const writeError = await runWrites(planAfterRemoval(rows, stopId))
+    if (writeError) {
+      return fail(`The stop was removed, but renumbering the rest failed: ${writeError}`)
+    }
+    return go('?removed=1')
+  }
+
+  if (intent === 'renumber') {
+    const { rows, error } = await fetchStops()
+    if (error) return fail(error)
+    const writes = planRenumber(rows)
+    const writeError = await runWrites(writes)
+    if (writeError) return fail(writeError)
+    return go(`?renumbered=${writes.length}`)
+  }
+
+  // An unknown intent is a reload of a form from an older deploy. Redirect
+  // rather than fall through to rendering: falling through would answer a POST
+  // with a 200 page, and the next refresh replays it.
+  return go('')
+}
+
+const { rows: stops, error: stopsError } = await fetchStops()
+
+const params = Astro.url.searchParams
+const error = params.get('error') ?? stopsError
+const added = params.get('added') === '1'
+const saved = params.get('saved') === '1'
+const removed = params.get('removed') === '1'
+const moved = params.get('moved') === '1'
+const timed = params.get('times') === '1'
+// Number() of a hand-typed ?renumbered=soon is NaN, which renders as the word
+// NaN inside an otherwise reassuring green banner.
+const renumberedRaw = Number(params.get('renumbered'))
+const renumbered = Number.isFinite(renumberedRaw) && params.has('renumbered') ? renumberedRaw : null
+/** Which row's editor is open, and which row is asking to be removed. */
+const editOpen = params.get('edit') ?? ''
+const confirmRemove = params.get('confirm') ?? ''
+
+const gaps = hasSequenceGaps(stops)
+
+/**
+ * The add form is the last entry in the same list as the stops.
+ *
+ * One block of markup renders both, which is the only way the two stay in step:
+ * an add form and an edit form written separately drift within a month, and the
+ * field that goes missing is always the one nobody looks at until it matters —
+ * lumper required, or the reference numbers the receiver asks for at the gate.
+ */
+const rowsToRender: (StopRow | null)[] = [...stops, null]
+
+/**
+ * Defaults for the blank row. The first stop of a load is a pickup and every
+ * one after it is more often a delivery — a default, not a shape. Nothing on
+ * this page caps the list at two, and the fourth stop gets the same treatment
+ * as the second.
+ */
+const blank: StopRow = {
+  id: '',
+  sequence: 0,
+  stop_type: stops.length === 0 ? 'pickup' : 'delivery',
+  company_name: null,
+  street: null,
+  city: null,
+  state: null,
+  zip: null,
+  contact_name: null,
+  phone: null,
+  appointment_type: null,
+  window_start: null,
+  window_end: null,
+  arrived_at: null,
+  departed_at: null,
+  reference_numbers: null,
+  instructions: null,
+  lumper_required: false,
+}
+
+const loadName = load.load_number
+  ? `Load ${load.load_number}`
+  : load.broker_reference
+    ? `Broker ref ${load.broker_reference}`
+    : 'Load'
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const badge = 'rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset'
+const arrow =
+  'rounded-lg border border-ink-100 px-2.5 py-1.5 text-sm font-medium transition hover:bg-ink-50 disabled:cursor-not-allowed disabled:text-ink-300 disabled:hover:bg-white'
+---
+
+<App
+  title={`Stops · ${loadName}`}
+  subtitle={`${stops.length} ${stops.length === 1 ? 'stop' : 'stops'} · ${load.status}`}
+>
+  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {added && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop added to the end of the run.</p>}
+  {saved && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop saved.</p>}
+  {timed && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Times recorded.</p>}
+  {moved && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop moved. The rest renumbered with it.</p>}
+  {removed && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop removed and the run renumbered.</p>}
+  {
+    renumbered !== null &&
+      (renumbered === 0 ? (
+        <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+          Nothing to renumber — the stops were already 1 to {stops.length}.
+        </p>
+      ) : (
+        <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          Numbering repaired in <span class="tabular-nums">{renumbered}</span>
+          {renumbered === 1 ? ' write.' : ' writes.'}
+        </p>
+      ))
+  }
+
+  {
+    gaps && (
+      <form
+        method="POST"
+        class="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4"
+      >
+        <div class="min-w-0 flex-1">
+          <p class="font-medium text-amber-900">The stop numbers have a hole in them</p>
+          <p class="mt-0.5 text-sm text-amber-800">
+            The driver's "stop 3" and this screen's stop 3 are now different stops. This happens
+            when a renumber was interrupted partway; the order below is right, the numbers are not.
+          </p>
+        </div>
+        <button
+          type="submit"
+          name="intent"
+          value="renumber"
+          class="rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-amber-700"
+        >
+          Renumber 1–{stops.length}
+        </button>
+      </form>
+    )
+  }
+
+  <div class={`mb-6 ${card}`}>
+    <div class="flex flex-wrap items-baseline justify-between gap-3">
+      <h2 class="text-lg font-semibold tracking-tight">Detention terms on this load</h2>
+      <a href={`/app/loads/${load.id}`} class="text-sm font-medium text-brand-600 hover:underline">
+        Back to the load →
+      </a>
+    </div>
+
+    <dl class="mt-3 grid gap-4 sm:grid-cols-4">
+      <div>
+        <dt class="text-xs tracking-wide text-ink-500 uppercase">Free at pickup</dt>
+        <dd class="mt-1 text-2xl font-semibold tabular-nums">
+          {load.free_hours_pickup === null ? <span class="text-ink-300">—</span> : `${load.free_hours_pickup}h`}
+        </dd>
+      </div>
+      <div>
+        <dt class="text-xs tracking-wide text-ink-500 uppercase">Free at delivery</dt>
+        <dd class="mt-1 text-2xl font-semibold tabular-nums">
+          {load.free_hours_delivery === null ? <span class="text-ink-300">—</span> : `${load.free_hours_delivery}h`}
+        </dd>
+      </div>
+      <div>
+        <dt class="text-xs tracking-wide text-ink-500 uppercase">Detention rate</dt>
+        <dd class="mt-1 text-2xl font-semibold tabular-nums">
+          {load.detention_rate_cents === null ? <span class="text-ink-300">—</span> : `${formatCents(load.detention_rate_cents)}/h`}
+        </dd>
+      </div>
+      <div>
+        <dt class="text-xs tracking-wide text-ink-500 uppercase">Pre-approval</dt>
+        <dd class="mt-1 text-sm font-medium">
+          {
+            load.detention_requires_preapproval === true ? (
+              <span class="text-amber-800">Required before the clock counts</span>
+            ) : load.detention_requires_preapproval === false ? (
+              'Not required'
+            ) : (
+              <span class="text-ink-300">Not on file</span>
+            )
+          }
+        </dd>
+      </div>
+    </dl>
+
+    {
+      /* The single most expensive sentence on the screen, and it is deliberately
+         at the top rather than beside the clock. By the time a stop shows four
+         hours elapsed, the call that had to be made has not been made. */
+      load.detention_requires_preapproval === true && (
+        <p class="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          This broker pays detention only if it was approved first. Call before the free time runs
+          out and write the approval into the stop's instructions — an unapproved claim on this load
+          is a claim that gets short-paid.
+        </p>
+      )
+    }
+    {
+      (load.free_hours_pickup === null || load.free_hours_delivery === null) && (
+        <p class="mt-4 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+          Free hours are missing from this load, so the stops below cannot say when a wait turned
+          into detention. The numbers are on the rate confirmation.
+        </p>
+      )
+    }
+  </div>
+
+  {
+    stops.length === 0 && (
+      <p class="mb-4 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center text-sm text-ink-500">
+        No stops on this load yet. A load is an ordered list of them — two is the common shape, and
+        five is an ordinary Tuesday.
+      </p>
+    )
+  }
+
+  <div class="space-y-4">
+    {
+      rowsToRender.map((stop, index) => {
+        const s = stop ?? blank
+        const isNew = stop === null
+        const position = index + 1
+        const clock = stop ? stopClock(stop, terms) : null
+        const freeHours = freeHoursFor(s.stop_type, terms)
+        const appointment = stop ? formatWindow(stop.window_start, stop.window_end) : ''
+        const place = [s.city, s.state].filter(Boolean).join(', ')
+        const removing = !isNew && confirmRemove === s.id
+
+        return (
+          <div id={isNew ? 'add' : `stop-${s.id}`} class={`scroll-mt-24 ${card}`}>
+            {isNew ? (
+              <h2 class="text-lg font-semibold tracking-tight">Add a stop</h2>
+            ) : (
+              <div class="flex flex-wrap items-start gap-4">
+                {/* The printed number. Everyone on the phone says "stop 3". */}
+                <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-ink-900 text-sm font-semibold tabular-nums text-white">
+                  {position}
+                </span>
+
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class:list={[badge, stopTypeBadgeClass(s.stop_type)]}>
+                      {stopTypeLabel(s.stop_type)}
+                    </span>
+                    {/* Appointment type sits in the LIST, not in the editor.
+                        Hard versus FCFS decides whether being twenty minutes
+                        late costs a wait or costs the load, and a dispatcher
+                        scanning six stops has to see it without opening one. */}
+                    <span class:list={[badge, appointmentBadgeClass(s.appointment_type)]}>
+                      {appointmentLabel(s.appointment_type)}
+                    </span>
+                    {s.lumper_required && (
+                      <span class="rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                        Lumper
+                      </span>
+                    )}
+                  </div>
+
+                  <p class="mt-1.5 font-medium">
+                    {s.company_name ?? <span class="text-ink-300">No company name</span>}
+                  </p>
+                  <p class="text-sm text-ink-500">
+                    {place || <span class="text-ink-300">No city on file</span>}
+                    {s.zip && <span class="ml-1 tabular-nums">{s.zip}</span>}
+                  </p>
+                  {appointment ? (
+                    <p class="mt-1 text-sm tabular-nums">{appointment}</p>
+                  ) : (
+                    <p class="mt-1 text-sm text-ink-300">No appointment window</p>
+                  )}
+                  {s.reference_numbers && (
+                    <p class="mt-1 text-xs tabular-nums text-ink-500">
+                      Ref {s.reference_numbers}
+                    </p>
+                  )}
+                </div>
+
+                {/* Reordering: two ordinary forms, no JavaScript. Each posts
+                    only the stop id and a direction — never a sequence number,
+                    which would be the number this page held when it rendered
+                    rather than the one in the table now. */}
+                <div class="flex shrink-0 gap-1">
+                  <form method="POST">
+                    <input type="hidden" name="stop_id" value={s.id} />
+                    <input type="hidden" name="dir" value="up" />
+                    <button
+                      type="submit"
+                      name="intent"
+                      value="move_stop"
+                      class={arrow}
+                      disabled={index === 0}
+                      aria-label={`Move stop ${position} earlier`}
+                    >
+                      ↑
+                    </button>
+                  </form>
+                  <form method="POST">
+                    <input type="hidden" name="stop_id" value={s.id} />
+                    <input type="hidden" name="dir" value="down" />
+                    <button
+                      type="submit"
+                      name="intent"
+                      value="move_stop"
+                      class={arrow}
+                      disabled={index === stops.length - 1}
+                      aria-label={`Move stop ${position} later`}
+                    >
+                      ↓
+                    </button>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {/* ---------------------------------------------- arrival/departure */}
+            {!isNew && (
+              <div class="mt-4 border-t border-ink-100 pt-4">
+                <form method="POST" class="flex flex-wrap items-end gap-3">
+                  <input type="hidden" name="stop_id" value={s.id} />
+                  <label class="block">
+                    <span class="text-sm font-medium">Arrived</span>
+                    <input
+                      type="datetime-local"
+                      name="arrived_at"
+                      value={isoToLocalInput(s.arrived_at)}
+                      class={`${field} tabular-nums`}
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-sm font-medium">Departed</span>
+                    <input
+                      type="datetime-local"
+                      name="departed_at"
+                      value={isoToLocalInput(s.departed_at)}
+                      class={`${field} tabular-nums`}
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    name="intent"
+                    value="record_times"
+                    class="rounded-lg bg-ink-900 px-4 py-2.5 font-medium text-white transition hover:bg-ink-700"
+                  >
+                    Save times
+                  </button>
+                </form>
+
+                {/* No "arrived now" button on purpose: these times are what the
+                    driver reported, not when the office got round to typing
+                    them, and a one-click now-stamp quietly records the second
+                    thing while looking like the first. */}
+
+                {clock === null ? (
+                  <p class="mt-3 text-sm text-ink-500">
+                    {s.arrived_at
+                      ? 'On the dock now. The wait is measured once a departure is recorded.'
+                      : 'Detention is argued from these two times. Nothing else on the load proves the truck was there.'}
+                  </p>
+                ) : clock.backwards ? (
+                  <p class="mt-3 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+                    This stop departed <span class="tabular-nums">{formatMinutes(clock.minutes)}</span>{' '}
+                    before it arrived. One of the two is mistyped, and a detention claim built on it
+                    will be thrown out.
+                  </p>
+                ) : (
+                  <div class="mt-3 flex flex-wrap items-center gap-2 text-sm">
+                    <span class="font-medium">
+                      On the dock <span class="tabular-nums">{formatMinutes(clock.minutes)}</span>
+                    </span>
+                    {clock.freeMinutes === null ? (
+                      <span class="text-ink-500">
+                        · no free time on file for a {stopTypeLabel(s.stop_type).toLowerCase()}
+                      </span>
+                    ) : clock.over ? (
+                      <span class="rounded-md bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900">
+                        <span class="tabular-nums">{formatMinutes(clock.overMinutes)}</span> past{' '}
+                        <span class="tabular-nums">{freeHours}h</span> free
+                      </span>
+                    ) : (
+                      <span class="text-ink-500">
+                        · inside the <span class="tabular-nums">{freeHours}h</span> free
+                      </span>
+                    )}
+                    {clock.over && clock.billableCents !== null && (
+                      <span class="tabular-nums text-ink-500">
+                        · {formatCents(clock.billableCents)} at the rate on file
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {clock?.over && load.detention_requires_preapproval === true && (
+                  <p class="mt-2 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    This broker requires pre-approval for detention. Unless somebody called before{' '}
+                    {formatStopTime(s.arrived_at)} plus <span class="tabular-nums">{freeHours}h</span>,
+                    this wait is unbillable — put whoever approved it, and when, in the instructions.
+                  </p>
+                )}
+                {clock?.over && clock.billableCents === null && (
+                  <p class="mt-2 text-sm text-ink-500">
+                    No detention rate on this load, so there is nothing to invoice this against.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* ------------------------------------------------- the stop itself */}
+            <details open={isNew ? stops.length === 0 : editOpen === s.id} class="mt-4">
+              <summary class="cursor-pointer text-sm font-medium text-brand-600 hover:underline">
+                {isNew ? 'Stop details' : `Edit stop ${position}`}
+              </summary>
+
+              <form method="POST" class="mt-4 space-y-4">
+                <input type="hidden" name="stop_id" value={s.id} />
+
+                <div class="grid gap-4 sm:grid-cols-2">
+                  <label class="block">
+                    <span class="text-sm font-medium">
+                      Stop type <span class="text-red-600">*</span>
+                    </span>
+                    <select name="stop_type" class={field}>
+                      {STOP_TYPES.map((t) => (
+                        <option value={t.value} selected={s.stop_type === t.value}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label class="block">
+                    <span class="text-sm font-medium">Company</span>
+                    <input
+                      type="text"
+                      name="company_name"
+                      value={s.company_name ?? ''}
+                      class={field}
+                    />
+                  </label>
+                </div>
+
+                <label class="block">
+                  <span class="text-sm font-medium">Street</span>
+                  <input type="text" name="street" value={s.street ?? ''} class={field} />
+                </label>
+
+                <div class="grid gap-4 sm:grid-cols-3">
+                  <label class="block">
+                    <span class="text-sm font-medium">City</span>
+                    <input type="text" name="city" value={s.city ?? ''} class={field} />
+                  </label>
+                  <label class="block">
+                    <span class="text-sm font-medium">State</span>
+                    <input
+                      type="text"
+                      name="state"
+                      value={s.state ?? ''}
+                      maxlength="2"
+                      autocapitalize="characters"
+                      placeholder="CA"
+                      class={`${field} uppercase`}
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-sm font-medium">ZIP</span>
+                    <input
+                      type="text"
+                      name="zip"
+                      value={s.zip ?? ''}
+                      inputmode="numeric"
+                      class={`${field} tabular-nums`}
+                    />
+                  </label>
+                </div>
+
+                <div class="grid gap-4 sm:grid-cols-2">
+                  <label class="block">
+                    <span class="text-sm font-medium">Contact</span>
+                    <input
+                      type="text"
+                      name="contact_name"
+                      value={s.contact_name ?? ''}
+                      class={field}
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-sm font-medium">Phone</span>
+                    <input
+                      type="tel"
+                      name="phone"
+                      value={s.phone ?? ''}
+                      class={`${field} tabular-nums`}
+                    />
+                  </label>
+                </div>
+
+                <label class="block">
+                  <span class="text-sm font-medium">Appointment type</span>
+                  <select name="appointment_type" class={field}>
+                    <option value="" selected={s.appointment_type === null}>
+                      Not known yet
+                    </option>
+                    {APPOINTMENT_TYPES.map((a) => (
+                      <option value={a.value} selected={s.appointment_type === a.value}>
+                        {a.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span class="mt-1 block text-xs text-ink-500">
+                    A hard appointment missed is a refused load or a reschedule two days out. FCFS
+                    is a window: late costs waiting, not the load. Left unknown, nobody can tell the
+                    driver which one he is running against.
+                  </span>
+                </label>
+
+                <div class="grid gap-4 sm:grid-cols-2">
+                  <label class="block">
+                    <span class="text-sm font-medium">Window opens</span>
+                    <input
+                      type="datetime-local"
+                      name="window_start"
+                      value={isoToLocalInput(s.window_start)}
+                      class={`${field} tabular-nums`}
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-sm font-medium">Window closes</span>
+                    <input
+                      type="datetime-local"
+                      name="window_end"
+                      value={isoToLocalInput(s.window_end)}
+                      class={`${field} tabular-nums`}
+                    />
+                    <span class="mt-1 block text-xs text-ink-500">
+                      On a hard appointment both boxes are usually the same minute. Times are in the
+                      carrier's own day, not UTC.
+                    </span>
+                  </label>
+                </div>
+
+                <label class="block">
+                  <span class="text-sm font-medium">Reference numbers</span>
+                  <input
+                    type="text"
+                    name="reference_numbers"
+                    value={s.reference_numbers ?? ''}
+                    placeholder="PO 44821 · BOL 9912 · seal 0087"
+                    class={`${field} tabular-nums`}
+                  />
+                  <span class="mt-1 block text-xs text-ink-500">
+                    One field, because every broker names these differently and a fixed set of boxes
+                    guarantees the number the gate asks for ends up in the wrong one.
+                  </span>
+                </label>
+
+                <label class="block">
+                  <span class="text-sm font-medium">Instructions</span>
+                  <textarea name="instructions" rows="3" class={field}>{s.instructions ?? ''}</textarea>
+                </label>
+
+                <label class="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    name="lumper_required"
+                    checked={s.lumper_required}
+                    class="size-4 rounded border-ink-300"
+                  />
+                  <span class="text-sm font-medium">Lumper required</span>
+                </label>
+
+                <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+                  {isNew ? (
+                    <button
+                      type="submit"
+                      name="intent"
+                      value="add_stop"
+                      class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+                    >
+                      Add stop
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      name="intent"
+                      value="save_stop"
+                      class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+                    >
+                      Save stop {position}
+                    </button>
+                  )}
+
+                  {/* Removal is two steps, and the second one is a POST. A
+                      single button here is a stop deleted by a thumb on a
+                      phone; the confirm state is carried in the URL because
+                      the alternative is a dialog that needs JavaScript. */}
+                  {!isNew &&
+                    (removing ? (
+                      <>
+                        <button
+                          type="submit"
+                          name="intent"
+                          value="remove_stop"
+                          class="ml-auto rounded-lg bg-red-600 px-5 py-2.5 font-medium text-white transition hover:bg-red-700"
+                        >
+                          Remove stop {position}
+                        </button>
+                        <a
+                          href={`/app/loads/${load.id}/stops?edit=${s.id}#stop-${s.id}`}
+                          class="text-sm font-medium text-brand-600 hover:underline"
+                        >
+                          Keep it
+                        </a>
+                      </>
+                    ) : (
+                      <a
+                        href={`/app/loads/${load.id}/stops?edit=${s.id}&confirm=${s.id}#stop-${s.id}`}
+                        class="ml-auto text-sm text-red-600 hover:underline"
+                      >
+                        Remove this stop
+                      </a>
+                    ))}
+                </div>
+
+                {removing && (
+                  <p class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+                    The stops after this one move up by one, so what the driver has been told is
+                    "stop {position + 1}" becomes stop {position}. Tell him before he gets there.
+                  </p>
+                )}
+              </form>
+            </details>
+          </div>
+        )
+      })
+    }
+  </div>
+</App>

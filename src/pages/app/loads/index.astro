@@ -1,0 +1,526 @@
+---
+/**
+ * The load board.
+ *
+ * Two status columns side by side, never merged. A dispatcher reads this screen
+ * for two different jobs on two different days — "where are my trucks" and "who
+ * owes me money" — and the whole point of 0009_loads.sql keeping `status` and
+ * `billing` as separate enums is that one row can answer both at once. A load
+ * showing "Delivered" and "Not ready" is not a broken row, it is the row that
+ * needs a POD scanned, and it is the most common row on this page.
+ *
+ * Search and the status filter are plain GET parameters, so a filtered board is
+ * a URL she can bookmark or text to the owner. Nothing here runs JavaScript.
+ */
+import Columns from '../../../components/charts/Columns.astro'
+import Figure from '../../../components/charts/Figure.astro'
+import Proportion from '../../../components/charts/Proportion.astro'
+import App from '../../../layouts/App.astro'
+import { billingMix, revenueByMonth, sliceOf } from '../../../lib/charts/revenue.ts'
+import { ceilingFor, compactMoney } from '../../../lib/charts/scale.ts'
+import {
+  LOAD_STATUSES,
+  billingPillClass,
+  billingStatusLabel,
+  exceptionLabel,
+  exceptionPillClass,
+  formatCents,
+  isLoadStatus,
+  laneFromStops,
+  loadLabel,
+  loadStatusLabel,
+  referenceSearchFilter,
+  statusPillClass,
+  totalRateCents,
+} from '../../../lib/loads.ts'
+
+const supabase = Astro.locals.supabase!
+
+const params = Astro.url.searchParams
+const q = (params.get('q') ?? '').trim()
+const requested = params.get('status') ?? 'all'
+/**
+ * THE DEFAULT VIEW IS EVERYTHING, and that is a decision rather than laziness.
+ *
+ * The drivers roster defaults to Active because a terminated driver is finished
+ * business. A delivered load is not: it is the load most likely to still owe us
+ * money, and hiding it behind a filter is exactly how a small carrier ends a
+ * month with four uninvoiced deliveries. Anything unrecognised also lands here
+ * rather than being handed to Postgres — `.eq('status', '')` is an enum cast
+ * error, which is a 500 on the page she reaches by clearing the search box.
+ */
+const status = isLoadStatus(requested) ? requested : 'all'
+
+interface StopRow {
+  sequence: number
+  city: string | null
+  state: string | null
+}
+
+interface LoadRow {
+  id: string
+  load_number: string | null
+  broker_reference: string | null
+  status: string
+  exception: string | null
+  billing: string
+  linehaul_cents: number | null
+  fuel_surcharge_cents: number | null
+  accessorials_cents: number | null
+  /**
+   * The only date a load has. 0009_loads.sql records no delivery date and no
+   * payment date, so every chart on this page is keyed off when the load was
+   * ENTERED — which the captions have to say out loud, because a revenue chart
+   * is read as money received unless it insists otherwise.
+   */
+  created_at: string
+  /**
+   * PostgREST returns a to-one embed as an object and a to-many embed as an
+   * array, and which one you get depends on how it reads the foreign key. It has
+   * been both across versions for a nullable FK like `customer_id`, so the shape
+   * is accepted either way below rather than betting the customer column on it.
+   */
+  customers: { name: string | null } | { name: string | null }[] | null
+  load_stops: StopRow[] | null
+}
+
+let query = supabase
+  .from('loads')
+  .select(
+    'id, load_number, broker_reference, status, exception, billing, linehaul_cents, fuel_surcharge_cents, accessorials_cents, created_at, customers ( name ), load_stops ( sequence, city, state )',
+  )
+  // Newest first. A load board is worked from the top, and the load typed
+  // ninety seconds ago is the one she is still holding the paperwork for.
+  .order('created_at', { ascending: false })
+
+// There is no .eq('carrier_id', ...) on this page. RLS already limits every row
+// to the signed-in user's carrier, and repeating it here would read as though
+// the policy might not hold — which is how someone eventually "fixes" a bug by
+// loosening the policy instead of the query.
+if (status !== 'all') query = query.eq('status', status)
+const filter = referenceSearchFilter(q)
+if (filter) query = query.or(filter)
+
+// The unfiltered count exists so the empty state can tell the truth. "No loads
+// yet" on a board of thirty, all of them delivered, sends her to the create form
+// to type a load that is already in here.
+const [{ data, error }, { count: totalCount }] = await Promise.all([
+  query,
+  supabase.from('loads').select('*', { count: 'exact', head: true }),
+])
+
+const rows = (data ?? []) as unknown as LoadRow[]
+const notice = params.get('error') ?? (error ? error.message : null)
+
+/** Survives PostgREST handing back either an object or a one-element array. */
+function customerName(value: LoadRow['customers']): string | null {
+  if (!value) return null
+  const row = Array.isArray(value) ? value[0] : value
+  return row?.name?.trim() || null
+}
+
+/** A link that keeps the other filter intact. */
+function withParam(key: string, value: string): string {
+  const next = new URLSearchParams(params)
+  if (value) next.set(key, value)
+  else next.delete(key)
+  const s = next.toString()
+  return `/app/loads${s ? `?${s}` : ''}`
+}
+
+const tabs = [{ value: 'all', label: 'All' }, ...LOAD_STATUSES]
+const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
+const pill = 'rounded-md px-2 py-0.5 text-xs font-medium'
+
+/**
+ * The two charts, and why they are two rather than one funnel.
+ *
+ * This board answers "what is on it". It cannot answer either of the two
+ * questions the owner asks about money — "is this month better than the last
+ * three" and "where is my cash actually stuck" — because both are shapes, and a
+ * table sorted by date is a shape you can only see by reading forty rows and
+ * holding them in your head.
+ *
+ * They stay SEPARATE because `status` and `billing` are separate enums, and
+ * merging an operational pipeline into a financial one is the documented cause
+ * of "the reports don't match" across this product category. The mix chart
+ * draws `billing` alone — that is the one that is about money, and a load can
+ * be delivered and unbilled without either chart calling it an error.
+ *
+ * Both are built from `rows`, the same array the table below renders, so the
+ * chart and the rows under it cannot drift apart.
+ */
+const unfiltered = status === 'all' && q === ''
+// Never over a filtered view. Pushing the rows somebody just searched for most
+// of a screen further down undoes the reason the search box exists — the same
+// bargain the dashboard's runway makes with its tiles.
+const charted = unfiltered && rows.length > 0
+
+const months = charted ? revenueByMonth(rows, new Date()) : null
+const mix = charted ? billingMix(rows) : null
+
+const loadWord = (n: number) => (n === 1 ? 'load' : 'loads')
+
+/**
+ * Loads the response did not carry.
+ *
+ * PostgREST caps the rows it will return, and this board is ordered newest
+ * first — so a capped response drops the OLDEST loads, which is exactly the
+ * left half of a twelve-month axis. The table shows its own truncation by
+ * simply ending; a chart does not, it draws a quiet start to the year that
+ * never happened. `totalCount` is an exact count taken straight from the
+ * database, so the gap is knowable rather than something to hope about.
+ */
+const missing = charted ? Math.max(0, (totalCount ?? rows.length) - rows.length) : 0
+const missingClause =
+  missing > 0 &&
+  `${missing} older ${loadWord(missing)} did not fit in one request and are on no chart here — the oldest ones, so it is the start of this page's figures that is short.`
+
+/**
+ * What the revenue columns do not cover.
+ *
+ * The first clause is unconditional and it is the most important one on the
+ * page. Nothing in 0009_loads.sql records when a load delivered or when it was
+ * paid, so this is BOOKED work by the day it was entered. A revenue chart is
+ * read as money received unless it says otherwise, and an owner reading a
+ * booked month as a paid one is the most expensive way this app can be wrong.
+ */
+const revenueCoverage = months
+  ? [
+      'Booked rates, by the month the load was entered — not money received. Nothing on a load records when it delivered or when it paid.',
+      months.window.unpricedLoads > 0 &&
+        `${months.window.unpricedLoads} ${loadWord(months.window.unpricedLoads)} here carry no rate yet and are in no column. A load with no rate is not a $0 load.`,
+      months.window.quotedLoads + months.window.cancelledLoads > 0 &&
+        `${months.window.quotedLoads + months.window.cancelledLoads} quoted or cancelled ${loadWord(months.window.quotedLoads + months.window.cancelledLoads)} are left out; neither is money anyone owes.`,
+      months.window.writtenOffCents > 0 &&
+        `${formatCents(months.window.writtenOffCents)} of what is drawn has been written off, so the columns overstate what will be collected.`,
+      months.outside.countedLoads + months.outside.unpricedLoads > 0 &&
+        `${months.outside.countedLoads + months.outside.unpricedLoads} older ${loadWord(months.outside.countedLoads + months.outside.unpricedLoads)} are before this axis starts.`,
+      months.undated > 0 &&
+        `${months.undated} ${loadWord(months.undated)} have no readable booking date and could not be placed at all.`,
+      missingClause,
+    ]
+      .filter(Boolean)
+      .join(' ')
+  : undefined
+
+/**
+ * What the mix bar does not cover.
+ *
+ * A proportion bar flatters whoever reads it, and this one is drawn from LOADS
+ * rather than dollars — twelve small loads waiting on payment make a wider band
+ * than one large one. That is stated rather than fixed, because the alternative
+ * is a bar whose width and whose printed count mean two different things.
+ */
+const mixCoverage = mix
+  ? [
+      'Bands are counts of loads, not dollars — twelve small loads waiting on payment sit wider than one large one.',
+      mix.unpricedLoads > 0 &&
+        `${mix.unpricedLoads} of them carry no rate, so the amounts below are lower than the real figures.`,
+      mix.quotedLoads + mix.cancelledLoads > 0 &&
+        `${mix.quotedLoads + mix.cancelledLoads} quoted or cancelled ${loadWord(mix.quotedLoads + mix.cancelledLoads)} are not on this bar.`,
+      missingClause,
+    ]
+      .filter(Boolean)
+      .join(' ')
+  : undefined
+
+// The one band that is entirely his to fix. Everything downstream of it is
+// waiting on somebody else, which is why it is the sentence under the chart.
+const ready = mix ? sliceOf(mix, 'ready') : undefined
+const awaiting = mix ? sliceOf(mix, 'awaiting') : undefined
+
+// Computed here and passed to Columns as `max` rather than left to the
+// component, so the number printed on the axis and the number the bars are
+// scaled against are provably the same one.
+const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) : 0
+---
+
+<App title="Loads" subtitle="Where each load is, and where its money is. Those are two questions.">
+  {notice && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{notice}</p>}
+
+  <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+    <form method="GET" class="relative flex-1">
+      <svg
+        class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-300"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        aria-hidden="true"
+      >
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-3.5-3.5"></path>
+      </svg>
+      {
+        /* The placeholder says BOTH numbers on purpose. The number she is
+           holding is usually the broker's, and a box that appears to only want
+           ours is a box she does not bother typing into. */
+      }
+      <input
+        type="search"
+        name="q"
+        value={q}
+        placeholder="Search by load number or broker reference…"
+        aria-label="Search loads by load number or broker reference"
+        class="w-full rounded-xl border border-ink-100 bg-white py-3 pr-4 pl-10 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+      />
+      {
+        /* Carries the current tab through the search, so searching from the
+           In transit tab does not quietly drop her back to the whole board. */
+      }
+      {status !== 'all' && <input type="hidden" name="status" value={status} />}
+    </form>
+    <a
+      href="/app/loads/new"
+      class="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-center font-medium text-white transition hover:bg-brand-700"
+    >
+      Add a load
+    </a>
+  </div>
+
+  <div class="-mx-4 mb-4 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
+    {
+      tabs.map((t) => (
+        <a
+          href={withParam('status', t.value === 'all' ? '' : t.value)}
+          class:list={[
+            tab,
+            status === t.value
+              ? 'bg-brand-500/10 text-brand-700'
+              : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
+          ]}
+        >
+          {t.label}
+        </a>
+      ))
+    }
+  </div>
+
+
+  {
+    rows.length === 0 ? (
+      (totalCount ?? 0) === 0 ? (
+        <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+          <p class="font-medium">No loads yet</p>
+          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+            Type in the load you just booked. The broker's reference number off the rate
+            confirmation is enough to start — the rate and the stops can follow.
+          </p>
+          <a
+            href="/app/loads/new"
+            class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+          >
+            Add a load →
+          </a>
+        </div>
+      ) : (
+        <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+          <p class="font-medium">Nothing matches this view</p>
+          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+            You have <span class="tabular-nums">{totalCount}</span> loads on file. This search and
+            tab together match none of them.
+          </p>
+          <a
+            href="/app/loads"
+            class="mt-4 inline-block rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
+          >
+            Show every load
+          </a>
+        </div>
+      )
+    ) : (
+      <>
+        <p class="mb-3 text-sm text-ink-500">
+          <span class="tabular-nums">{rows.length}</span>
+          {rows.length === 1 ? ' load' : ' loads'}
+        </p>
+
+        <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
+          <table class="w-full min-w-[64rem] text-sm">
+            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+              <tr>
+                <th class="px-4 py-3 font-medium">Load</th>
+                <th class="px-4 py-3 font-medium">Broker ref</th>
+                <th class="px-4 py-3 font-medium">Customer</th>
+                <th class="px-4 py-3 font-medium">Status</th>
+                <th class="px-4 py-3 font-medium">Billing</th>
+                <th class="px-4 py-3 text-right font-medium">Total rate</th>
+                <th class="px-4 py-3 font-medium">Lane</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink-100">
+              {rows.map((l) => {
+                const lane = laneFromStops(l.load_stops)
+                const total = totalRateCents(l)
+                const customer = customerName(l.customers)
+                return (
+                  <tr class="hover:bg-ink-50/60">
+                    <td class="px-4 py-3">
+                      <a
+                        href={`/app/loads/${l.id}`}
+                        class="font-medium tabular-nums hover:text-brand-600 hover:underline"
+                      >
+                        {loadLabel(l)}
+                      </a>
+                    </td>
+
+                    {/* Full weight, not a muted sub-line. This is the number
+                        printed on the sheet in her hand, and the column she
+                        scans down when a broker calls asking about "6841102". */}
+                    <td class="px-4 py-3">
+                      {l.broker_reference ? (
+                        <a
+                          href={`/app/loads/${l.id}`}
+                          class="font-medium tabular-nums hover:text-brand-600 hover:underline"
+                        >
+                          {l.broker_reference}
+                        </a>
+                      ) : (
+                        <span class="text-ink-300">—</span>
+                      )}
+                    </td>
+
+                    <td class="px-4 py-3">
+                      {customer ?? <span class="text-ink-300">—</span>}
+                    </td>
+
+                    {/* Status and exception in ONE cell, side by side, because
+                        the exception never replaces the status: a detained truck
+                        is still at the shipper and that is where it has to be
+                        looked for. */}
+                    <td class="px-4 py-3">
+                      <div class="flex flex-wrap items-center gap-1">
+                        <span class:list={[pill, statusPillClass(l.status)]}>
+                          {loadStatusLabel(l.status)}
+                        </span>
+                        {l.exception && (
+                          <span class:list={[pill, exceptionPillClass(l.exception)]}>
+                            {exceptionLabel(l.exception)}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* Its own column, driven by its own enum. Nothing on this
+                        page derives one of these two from the other. */}
+                    <td class="px-4 py-3">
+                      <span class:list={[pill, billingPillClass(l.billing)]}>
+                        {billingStatusLabel(l.billing)}
+                      </span>
+                    </td>
+
+                    <td class="px-4 py-3 text-right whitespace-nowrap tabular-nums">
+                      {total === null ? (
+                        <span class="text-ink-300">—</span>
+                      ) : (
+                        <span class="font-medium">{formatCents(total)}</span>
+                      )}
+                    </td>
+
+                    <td class="px-4 py-3 whitespace-nowrap">
+                      {lane.origin ? (
+                        <span>
+                          {lane.origin}
+                          <span class="mx-1.5 text-ink-300">→</span>
+                          {lane.destination ?? <span class="text-ink-300">no delivery stop</span>}
+                        </span>
+                      ) : (
+                        <span class="text-ink-300">no stops yet</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </>
+    )
+  }
+  {
+    /*
+      BELOW the board, not above it.
+
+      Measured on a phone with these two above the table: the first load sat at
+      1,146px, a screen and a half down, on the page a dispatcher opens twenty
+      times a day with a rate confirmation in her hand. The charts cost 716px of
+      that. The dashboard leads with its chart because the dashboard is a
+      summary; this is a work surface, and on a work surface the rows come
+      first and the shape is the follow-up question.
+
+      On a searched or filtered view they disappear entirely — a chart of the
+      whole book sitting under a three-row search result answers a question
+      nobody asked.
+    */
+  }
+  {
+    months && mix && (
+      <div class="mt-8 space-y-4">
+        <Figure
+          title="Revenue by month"
+          subtitle={`Booked rates over the last ${months.months} months`}
+          coverage={revenueCoverage}
+        >
+          <Columns
+            columns={months.columns.map((c) => ({
+              label: c.label,
+              value: c.value,
+              display: c.display,
+              // The month still running is a short column for a reason that has
+              // nothing to do with the business: eleven full months followed by
+              // a half one reads as revenue falling off a cliff. Toning it down
+              // was the first attempt; `inProgress` is the real treatment —
+              // faded, with an open top edge, and announced as "so far".
+              inProgress: c.isCurrent,
+            }))}
+            max={revenueCeiling}
+            axisLabel={revenueCeiling > 0 ? `Full height ${compactMoney(revenueCeiling)}` : undefined}
+            emptyMessage="No rates have been typed on any load yet, so there is nothing to draw here."
+          />
+          {months.window.countedLoads > 0 && (
+            <p class="mt-3 text-sm text-ink-500">
+              <span class="font-medium text-ink-900 tabular-nums">
+                {formatCents(months.window.totalCents)}
+              </span>{' '}
+              booked across {months.window.countedLoads} priced{' '}
+              {loadWord(months.window.countedLoads)}. The last column is the month still running, so
+              it is a part month.
+            </p>
+          )}
+        </Figure>
+
+        <Figure
+          title="Where the money is"
+          subtitle="Each load by its billing state — which is a different question from where the truck is"
+          coverage={mixCoverage}
+        >
+          <Proportion
+            segments={mix.slices}
+            total={mix.total}
+            emptyMessage="Nothing on the board is past the quote stage yet."
+          />
+          <div class="mt-3 space-y-1 text-sm text-ink-500">
+            {ready && ready.count > 0 && (
+              <p>
+                <span class="font-medium text-ink-900 tabular-nums">
+                  {ready.count} {loadWord(ready.count)}
+                </span>{' '}
+                ready to invoice and not sent —{' '}
+                <span class="tabular-nums">{formatCents(ready.cents)}</span>. That is the only money
+                on this bar you can move today.
+              </p>
+            )}
+            {awaiting && awaiting.count > 0 && (
+              <p>
+                {awaiting.count} invoiced and waiting on somebody else —{' '}
+                <span class="tabular-nums">{formatCents(awaiting.cents)}</span>.
+              </p>
+            )}
+          </div>
+        </Figure>
+      </div>
+    )
+  }
+
+</App>

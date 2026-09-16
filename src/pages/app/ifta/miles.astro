@@ -1,0 +1,620 @@
+---
+/**
+ * Miles by jurisdiction, for one truck, for one quarter.
+ *
+ * This is the half of IFTA that comes off trip sheets or an ELD export rather
+ * than out of a shoebox, and 0015_ifta.sql deliberately stores it as a SUMMARY
+ * row per quarter rather than a trip log: small carriers reconstruct the total
+ * and do not have a per-trip breakdown, and a screen that demanded one would get
+ * nothing entered at all.
+ *
+ * The unique constraint (carrier_id, vehicle_id, period_start, jurisdiction) is
+ * the whole design of this page. Re-entering a jurisdiction is not an error to
+ * be refused, it is the correction anyone makes when a second trip sheet turns
+ * up — so every write here is an upsert onto that constraint, and typing NV
+ * twice fixes NV rather than failing on a unique violation with a sentence
+ * naming an index.
+ *
+ * Two intents, one page, both ending in a 303.
+ */
+import Bars from '../../../components/charts/Bars.astro'
+import Figure from '../../../components/charts/Figure.astro'
+import App from '../../../layouts/App.astro'
+import { truckMilesFigure } from '../../../lib/charts/ifta.ts'
+import { quarterLabel, returnDueOn } from '../../../lib/ifta/compute.ts'
+import {
+  IFTA_JURISDICTIONS,
+  carrierToday,
+  daysUntil,
+  isoDay,
+  jurisdictionName,
+  parseJurisdiction,
+  parseMiles,
+  periodFromParam,
+  recentQuarters,
+} from '../../../lib/ifta/input.ts'
+import { vehicleLabel } from '../../../lib/vehicles.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+
+const today = carrierToday()
+const period = periodFromParam(Astro.url.searchParams.get('q'), today)
+const periodIso = isoDay(period)
+const label = quarterLabel(period)
+
+/** How many blank rows the form offers. A quarter's run is rarely more states than this. */
+const BLANK_ROWS = 5
+
+interface VehicleOption {
+  id: string
+  unit_number: string | null
+  vin: string | null
+}
+
+/**
+ * The carrier's trucks. Loaded before the POST is dispatched, for the same
+ * reason the fuel page does it: RLS on `jurisdiction_miles` checks that
+ * carrier_id is mine, NOT that vehicle_id points at a truck of mine, so a
+ * crafted POST carrying another carrier's vehicle id passes the policy. Proving
+ * the id is in this list is what makes the vehicle_id in the upsert trustworthy.
+ */
+const { data: vehicleData, error: vehicleError } = await supabase
+  .from('vehicles')
+  .select('id, unit_number, vin')
+  .order('unit_number', { ascending: true })
+
+const vehicles = (vehicleData ?? []) as VehicleOption[]
+
+const requestedVehicle = Astro.url.searchParams.get('v') ?? ''
+/**
+ * Which truck the form is for.
+ *
+ * Defaults to the first truck rather than making her choose: most carriers here
+ * run one or two, and a screen that shows nothing until a dropdown is touched
+ * reads as broken. An id in the URL that is not hers falls back to the same
+ * default rather than erroring — RLS already means she cannot see it, and the
+ * selector below always names the truck being written to.
+ */
+const vehicle = vehicles.find((v) => v.id === requestedVehicle) ?? vehicles[0] ?? null
+
+const go = (query: string) =>
+  Astro.redirect(
+    `/app/ifta/miles?q=${periodIso}${vehicle ? `&v=${vehicle.id}` : ''}${query}`,
+    303,
+  )
+const fail = (message: string) => go(`&error=${encodeURIComponent(message)}`)
+
+interface MileRowRecord {
+  id: string
+  jurisdiction: string
+  miles: number
+  vehicle_id: string | null
+}
+
+/**
+ * Every mileage row in this quarter, for every truck.
+ *
+ * The whole quarter rather than just the selected truck, because the summary
+ * below is what tells her which trucks she has not done yet — and a page that
+ * only ever shows one truck is how a fleet files a return with one truck's
+ * miles on it. `.eq('period_start', …)` is a scope, not a tenancy filter; RLS
+ * does the tenancy.
+ */
+const { data: mileData, error: mileError } = await supabase
+  .from('jurisdiction_miles')
+  .select('id, jurisdiction, miles, vehicle_id')
+  .eq('period_start', periodIso)
+  .order('jurisdiction', { ascending: true })
+
+const allRows = (mileData ?? []) as MileRowRecord[]
+const rows = vehicle ? allRows.filter((r) => r.vehicle_id === vehicle.id) : []
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  if (intent === 'save_miles') {
+    if (!vehicle) return fail('Add a truck before entering miles against it.')
+    // The rows already on file could not be read, so this handler cannot tell an
+    // edit of an existing jurisdiction from a new one — it would silently ignore
+    // every corrected line while reporting the new ones as saved. Refusing the
+    // whole save keeps what she typed wrong out of the quarter.
+    if (mileError) {
+      return fail(`The miles already on file could not be read, so nothing was saved: ${mileError.message}`)
+    }
+
+    /**
+     * ONE WRITE PER JURISDICTION, keyed by the jurisdiction itself.
+     *
+     * Two rows on this form naming the same jurisdiction is the failure this Map
+     * exists to catch. They would not be added together: both would upsert onto
+     * the same unique key and the second would REPLACE the first, so 300 miles
+     * typed on one line and 500 on another files as 500 and loses 300 silently.
+     * Sent as one array they do not even get that far — Postgres refuses with
+     * "ON CONFLICT DO UPDATE command cannot affect row a second time", which is
+     * a true sentence about nothing she can see.
+     */
+    const writes = new Map<string, number>()
+    const duplicate = (code: string) =>
+      fail(
+        `${code} is on this form twice. Two lines for one jurisdiction are not added together — the second would replace the first, so put the quarter's total for ${code} on one line.`,
+      )
+
+    // Existing rows first. A BLANK box leaves the stored figure alone; it does
+    // not mean zero and it does not mean delete. Clearing a box by accident —
+    // a thumb on a phone, a tab through the form — must never be the thing that
+    // takes a jurisdiction's miles off the return. Zero is typed on purpose and
+    // Remove is a separate button.
+    for (const row of rows) {
+      const parsed = parseMiles(form.get(`miles_${row.id}`), {
+        label: `Miles in ${row.jurisdiction}`,
+      })
+      if (!parsed.ok) return fail(parsed.message)
+      if (parsed.value === null) continue
+      // Unchanged rows are skipped rather than rewritten: the upsert would
+      // succeed, but it would touch updated_at on rows nobody edited and make
+      // "12 jurisdictions saved" the message for a form she only fixed one line
+      // of.
+      if (parsed.value === row.miles) continue
+      if (writes.has(row.jurisdiction)) return duplicate(row.jurisdiction)
+      writes.set(row.jurisdiction, parsed.value)
+    }
+
+    for (let i = 0; i < BLANK_ROWS; i++) {
+      const rawJurisdiction = String(form.get(`new_jurisdiction_${i}`) ?? '').trim()
+      const rawMiles = String(form.get(`new_miles_${i}`) ?? '').trim()
+      if (rawJurisdiction === '' && rawMiles === '') continue
+
+      // A half-filled line is refused rather than skipped. Skipping it silently
+      // drops a jurisdiction she believes she entered, and the miles reappear
+      // nowhere — the return is then short by exactly one state.
+      if (rawJurisdiction === '') {
+        return fail(`There are miles typed on a line with no jurisdiction picked: ${rawMiles}.`)
+      }
+      const jurisdiction = parseJurisdiction(rawJurisdiction, { label: 'Jurisdiction' })
+      if (!jurisdiction.ok) return fail(jurisdiction.message)
+
+      const parsed = parseMiles(rawMiles, { label: `Miles in ${jurisdiction.value}` })
+      if (!parsed.ok) return fail(parsed.message)
+      if (parsed.value === null) {
+        return fail(`${jurisdiction.value} was picked with no miles beside it.`)
+      }
+
+      if (writes.has(jurisdiction.value)) return duplicate(jurisdiction.value)
+      writes.set(jurisdiction.value, parsed.value)
+    }
+
+    if (writes.size === 0) return go('&saved=0')
+
+    /**
+     * The upsert, onto the constraint the migration created for exactly this.
+     *
+     * `onConflict` names the columns in the unique constraint — all four of
+     * them. Naming fewer would not narrow the match, it would fail to find a
+     * constraint at all and come back as "there is no unique or exclusion
+     * constraint matching the ON CONFLICT specification".
+     *
+     * vehicle_id is never NULL in these rows, and that is load-bearing rather
+     * than incidental: the column is nullable, and in Postgres NULLs are
+     * DISTINCT in a unique constraint, so a row with no truck on it would never
+     * conflict with anything. Every save would insert another copy, and the
+     * quarter's miles would double, then triple, with no error anywhere. That is
+     * why this screen requires a truck and the fuel screen does not — the fuel
+     * table has no unique constraint to be defeated.
+     */
+    const { error } = await supabase.from('jurisdiction_miles').upsert(
+      [...writes].map(([jurisdiction, miles]) => ({
+        // carrier_id is SET on insert and never filtered on: RLS checks it but
+        // does not fill it in, and a row without it fails the WITH CHECK half of
+        // the policy.
+        carrier_id: carrierId,
+        vehicle_id: vehicle.id,
+        period_start: periodIso,
+        jurisdiction,
+        miles,
+      })),
+      { onConflict: 'carrier_id,vehicle_id,period_start,jurisdiction' },
+    )
+    if (error) return fail(error.message)
+    return go(`&saved=${writes.size}`)
+  }
+
+  if (intent === 'remove_miles') {
+    const id = String(form.get('row_id') ?? '')
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      return fail('That jurisdiction is no longer on this quarter.')
+    }
+    // No .eq('carrier_id', …): RLS makes another carrier's row invisible here,
+    // so the worst a crafted id achieves is deleting nothing.
+    const { data, error } = await supabase
+      .from('jurisdiction_miles')
+      .delete()
+      .eq('id', id)
+      .select('id')
+    if (error) return fail(error.message)
+    // A DELETE matching nothing is not an error in Postgres, so without this the
+    // page reports a cheerful "removed" for a row that is still there.
+    if (!data || data.length === 0) return fail('That jurisdiction is no longer on this quarter.')
+    return go('&removed=1')
+  }
+
+  // An unknown intent is a form from an older deploy. Redirecting rather than
+  // falling through is what stops the next refresh replaying the POST.
+  return go('')
+}
+
+/**
+ * Per-truck miles for the quarter, ranked, so the trucks not done yet are
+ * visible AND the ones only half done are.
+ *
+ * The list this replaced answered the first question and not the second: 320
+ * miles and 41,208 miles both read as a truck that has been entered, and a trip
+ * sheet somebody stopped part-way through files a return that is short without
+ * ever looking short. Side by side as bars the half-entered truck is the one
+ * obviously out of line with the rest of the fleet.
+ *
+ * Rows belonging to no truck at all are counted in the coverage note rather
+ * than dropped. Nothing on this screen can create one — the upsert always
+ * carries a vehicle — but a row imported or inserted by hand with a NULL
+ * vehicle_id would otherwise be invisible here while still counting on the
+ * return, and a mile on the return that no screen admits to is the worst kind
+ * there is.
+ */
+const truckChart = truckMilesFigure({
+  trucks: vehicles.map((v) => ({
+    id: v.id,
+    label: vehicleLabel(v),
+    href: `/app/ifta/miles?q=${periodIso}&v=${v.id}`,
+  })),
+  rows: allRows.map((r) => ({ vehicleId: r.vehicle_id, miles: Number(r.miles) })),
+  // A FAILED READ IS NOT AN EMPTY QUARTER. Every truck comes back as an unknown
+  // rather than as a zero, because a zero here is an accusation and on a failed
+  // read the whole fleet would be wearing one.
+  unreadable: mileError !== null,
+})
+
+const vehicleTotal = rows.reduce((n, r) => n + Number(r.miles), 0)
+const quarterTotal = allRows.reduce((n, r) => n + Number(r.miles), 0)
+
+const quarters = recentQuarters(today, 5)
+if (!quarters.some((q) => isoDay(q) === periodIso)) {
+  quarters.push(period)
+  quarters.sort((a, b) => b.getTime() - a.getTime())
+}
+
+const params = Astro.url.searchParams
+const error = params.get('error') ?? mileError?.message ?? vehicleError?.message ?? null
+const removed = params.get('removed') === '1'
+// Number() of a hand-typed ?saved=soon is NaN, which renders as the word NaN
+// inside an otherwise reassuring green banner.
+const savedRaw = Number(params.get('saved'))
+const saved = params.has('saved') && Number.isFinite(savedRaw) ? savedRaw : null
+const confirmRemove = params.get('confirm') ?? ''
+
+const daysLeft = daysUntil(returnDueOn(period), today)
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const field =
+  'w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition'
+const usJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'US')
+const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
+
+/** A quarter link that keeps the truck selection, so switching quarters is one click. */
+const quarterHref = (p: Date) =>
+  `/app/ifta/miles?q=${isoDay(p)}${vehicle ? `&v=${vehicle.id}` : ''}`
+---
+
+<App
+  title={`Jurisdiction miles · ${label}`}
+  subtitle="The miles run in each state and province, per truck. This is what the taxable gallons are derived from."
+>
+  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {
+    saved !== null &&
+      (saved > 0 ? (
+        <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          <span class="tabular-nums">{saved}</span>
+          {saved === 1 ? ' jurisdiction saved.' : ' jurisdictions saved.'}
+        </p>
+      ) : (
+        <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+          Nothing changed, so nothing was written.
+        </p>
+      ))
+  }
+  {
+    removed && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Jurisdiction removed from this quarter.
+      </p>
+    )
+  }
+
+  <div class="-mx-4 mb-5 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
+    {
+      quarters.map((q) => (
+        <a
+          href={quarterHref(q)}
+          class:list={[
+            tab,
+            'tabular-nums',
+            isoDay(q) === periodIso
+              ? 'bg-brand-500/10 text-brand-700'
+              : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
+          ]}
+        >
+          {quarterLabel(q)}
+        </a>
+      ))
+    }
+    <a
+      href={`/app/ifta?q=${periodIso}`}
+      class="ml-auto text-sm font-medium text-brand-600 hover:underline"
+    >
+      The {label} return →
+    </a>
+  </div>
+
+  {
+    vehicles.length === 0 ? (
+      <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+        <p class="font-medium">No trucks on file</p>
+        <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+          Miles are recorded per truck per quarter, because that is the shape the record has to
+          have if a jurisdiction ever asks to see the work behind the return. Add the truck first.
+        </p>
+        <a
+          href="/app/vehicles/new"
+          class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+        >
+          Add a truck →
+        </a>
+      </div>
+    ) : (
+      <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,20rem)]">
+        {/* --------------------------------------------------- the entry form */}
+        <div class="min-w-0">
+          {/* The truck selector is a GET form with its own button rather than a
+              select that navigates on change: no JavaScript runs on this page at
+              all, and a dropdown that only works with script is a dropdown that
+              does nothing on one bar of signal in a yard. */}
+          <form method="GET" class={`mb-4 flex flex-wrap items-end gap-3 ${card}`}>
+            <input type="hidden" name="q" value={periodIso} />
+            <label class="block min-w-0 flex-1">
+              <span class="text-sm font-medium">Truck</span>
+              <select name="v" class={`mt-1 ${field}`}>
+                {vehicles.map((v) => (
+                  <option value={v.id} selected={vehicle?.id === v.id}>
+                    {vehicleLabel(v)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="submit"
+              class="rounded-lg border border-ink-100 px-4 py-2.5 font-medium transition hover:bg-ink-50"
+            >
+              Show
+            </button>
+          </form>
+
+          <form method="POST" class={`space-y-4 ${card}`}>
+            {/* A FAILED READ IS NOT AN EMPTY QUARTER. Without this the form
+                below shows nothing but blank lines, which reads as "this truck
+                has no miles entered" for a truck that may have twelve
+                jurisdictions on file. The upsert would correct them rather than
+                duplicate them, so the damage is bounded — but she would be
+                retyping a quarter she has already done. */}
+            {mileError && (
+              <p class="rounded-lg bg-red-100 px-4 py-3 text-sm text-red-800">
+                The miles already recorded for {label} could not be read, so the lines below are
+                blank whether or not anything is stored. Reload before typing.
+              </p>
+            )}
+
+            <div class="flex flex-wrap items-baseline justify-between gap-3">
+              <h2 class="text-lg font-semibold tracking-tight">
+                {vehicle ? vehicleLabel(vehicle) : 'No truck'} · {label}
+              </h2>
+              <span class="text-sm text-ink-500">
+                <span class="font-medium tabular-nums">{vehicleTotal.toLocaleString('en-US')}</span>{' '}
+                miles on this truck
+              </span>
+            </div>
+
+            <div class="overflow-x-auto">
+              <table class="w-full min-w-[34rem] text-sm">
+                <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+                  <tr>
+                    <th class="py-2 pr-4 font-medium">Jurisdiction</th>
+                    <th class="px-4 py-2 text-right font-medium">Miles this quarter</th>
+                    <th class="py-2 pl-4"></th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-ink-100">
+                  {rows.map((row) => (
+                    <tr class:list={[confirmRemove === row.id ? 'bg-red-50/60' : '']}>
+                      <td class="py-2.5 pr-4">
+                        <span class="font-medium">{row.jurisdiction}</span>
+                        <span class="ml-2 text-xs text-ink-500">
+                          {jurisdictionName(row.jurisdiction)}
+                        </span>
+                      </td>
+                      <td class="px-4 py-2.5 text-right">
+                        <input
+                          type="text"
+                          name={`miles_${row.id}`}
+                          value={row.miles}
+                          inputmode="numeric"
+                          aria-label={`Miles in ${row.jurisdiction}`}
+                          class="ml-auto w-32 rounded-lg border border-ink-100 px-3 py-1.5 text-right text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                        />
+                      </td>
+                      <td class="py-2.5 pl-4 text-right whitespace-nowrap">
+                        {/* Removal is a link then a button, in the URL rather
+                            than in a dialog, because a dialog needs script. It
+                            is a separate intent from Save: clearing the box
+                            above deliberately does NOTHING, so that a box
+                            emptied by accident cannot take a jurisdiction off
+                            the return. */}
+                        {confirmRemove === row.id ? (
+                          <span class="flex items-center justify-end gap-2">
+                            {/* Rendered ONLY inside the confirm branch. One
+                                hidden row_id per row would post as many values
+                                for one name, and `form.get()` returns the first
+                                — which is a different row than the one whose
+                                button was pressed. Only one row can be
+                                confirming at a time, so only one exists. */}
+                            <input type="hidden" name="row_id" value={row.id} />
+                            <button
+                              type="submit"
+                              name="intent"
+                              value="remove_miles"
+                              class="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700"
+                            >
+                              Remove {row.jurisdiction}
+                            </button>
+                            <a
+                              href={quarterHref(period)}
+                              class="text-xs font-medium text-brand-600 hover:underline"
+                            >
+                              Keep
+                            </a>
+                          </span>
+                        ) : (
+                          <a
+                            href={`${quarterHref(period)}&confirm=${row.id}`}
+                            class="text-xs text-red-600 hover:underline"
+                          >
+                            Remove
+                          </a>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+
+                  {/* The blank lines are part of the same table and the same
+                      form. A separate "add a jurisdiction" form below would mean
+                      one page load per state, and a quarter is commonly six. */}
+                  {Array.from({ length: BLANK_ROWS }, (_, i) => (
+                    <tr>
+                      <td class="py-2.5 pr-4">
+                        <select
+                          name={`new_jurisdiction_${i}`}
+                          aria-label="Jurisdiction"
+                          class={field}
+                        >
+                          <option value="">—</option>
+                          <optgroup label="United States">
+                            {usJurisdictions.map((j) => (
+                              <option value={j.code}>
+                                {j.code} — {j.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                          {/* Ten Canadian provinces are IFTA jurisdictions. A
+                              US-only list quietly tells a carrier running into
+                              BC that those miles are not reportable. */}
+                          <optgroup label="Canada">
+                            {caJurisdictions.map((j) => (
+                              <option value={j.code}>
+                                {j.code} — {j.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        </select>
+                      </td>
+                      <td class="px-4 py-2.5 text-right">
+                        <input
+                          type="text"
+                          name={`new_miles_${i}`}
+                          inputmode="numeric"
+                          placeholder="0"
+                          aria-label="Miles"
+                          class="ml-auto w-32 rounded-lg border border-ink-100 px-3 py-1.5 text-right text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                        />
+                      </td>
+                      <td class="py-2.5 pl-4"></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+              <button
+                type="submit"
+                name="intent"
+                value="save_miles"
+                class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+              >
+                Save miles
+              </button>
+              <span class="flex-1 text-sm text-ink-500">
+                Typing a jurisdiction again corrects it rather than adding to it. A box left blank is
+                left alone — type 0 to take a jurisdiction down to nothing.
+              </span>
+            </div>
+          </form>
+        </div>
+
+        {/* ------------------------------------------------------- the quarter */}
+        <div class="space-y-4">
+          <div class={card}>
+            <div class="text-xs tracking-wide text-ink-500 uppercase">{label} fleet miles</div>
+            <div class="mt-1 text-3xl font-semibold tabular-nums">
+              {mileError ? (
+                <span class="text-ink-300">—</span>
+              ) : (
+                quarterTotal.toLocaleString('en-US')
+              )}
+            </div>
+            <p class="mt-2 text-sm text-ink-500">
+              {daysLeft < 0 ? (
+                <span class="font-medium text-red-700">
+                  The {label} return is <span class="tabular-nums">{-daysLeft}</span> days overdue.
+                </span>
+              ) : (
+                <>
+                  <span class="tabular-nums">{daysLeft}</span> days until the {label} return is due.
+                </>
+              )}
+            </p>
+          </div>
+
+          {/*
+            In the rail, never above the form. Below `lg` this column stacks
+            UNDER the entry table, which is where a chart belongs on a screen
+            whose job is typing: a 200px picture between the owner and the boxes
+            he opened the page to fill in is a regression however good it is.
+
+            No `limit` on the bars. The trucks with nothing entered rank last,
+            so collapsing a tail here would hide the exact rows this chart is
+            for behind a link reading "3 more".
+          */}
+          <Figure
+            title="By truck"
+            subtitle={`Miles entered for ${label}, biggest first`}
+            coverage={truckChart.coverage}
+          >
+            <Bars items={truckChart.items} emptyMessage="No trucks on file." />
+            {truckChart.takeaway && (
+              <p class="mt-3 text-sm text-ink-500">{truckChart.takeaway}</p>
+            )}
+          </Figure>
+
+          <div class={card}>
+            <div class="text-xs tracking-wide text-ink-500 uppercase">Where this number goes</div>
+            <p class="mt-2 text-sm text-ink-500">
+              The fleet's average miles per gallon is applied to these miles to work out the gallons
+              burned in each jurisdiction — that is what the tax is charged on. Nobody measures the
+              fuel burned in a state; it is always derived from these two numbers.
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+</App>

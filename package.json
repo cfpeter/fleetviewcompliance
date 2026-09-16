@@ -1,0 +1,42 @@
+{
+  "name": "fleetview-compliance",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "node --test --test-concurrency=1 \"tests/*.test.ts\"",
+    "db:migrate": "node scripts/migrate.mjs",
+    "deploy:dev": "npm run build && node scripts/deploy.mjs dev",
+    "deploy:prod": "npm run build && node scripts/deploy.mjs production",
+    "secrets:dev": "wrangler secret bulk -c wrangler.dev.jsonc",
+    "secrets:prod": "wrangler secret bulk"
+  },
+  "dependencies": {
+    "@astrojs/cloudflare": "^14.2.5",
+    "@supabase/ssr": "^0.12.5",
+    "@supabase/supabase-js": "^2.112.4",
+    "@tailwindcss/vite": "^4.3.3",
+    "astro": "^7.2.9",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "@biomejs/biome": "^2.5.11",
+    "@cloudflare/workers-types": "^5.20260911.1",
+    "@types/node": "^26.4.0",
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.0",
+    "supabase": "^2.116.0",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.127.1"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

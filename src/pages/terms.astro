@@ -1,0 +1,110 @@
+---
+/**
+ * Terms of service. Draft, unreviewed — see the notice at the foot.
+ *
+ * The limitation section matters more than usual here: a deadline tracker that
+ * is mistaken for a guarantee of compliance is a liability, so the page says
+ * outright what the product is not.
+ */
+import Public from '../layouts/Public.astro'
+import { site } from '../lib/site.ts'
+
+const updated = 'September 2026'
+---
+
+<Public title="Terms" description="The terms of using FleetView Compliance.">
+  <section class="mx-auto max-w-3xl px-4 py-14 sm:px-6">
+    <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">Terms</h1>
+    <p class="mt-2 text-sm text-ink-500">Last updated {updated}</p>
+
+    <div class="mt-8 space-y-6 text-ink-700">
+      <div class="rounded-xl border border-amber-300 bg-amber-50 p-5">
+        <h2 class="text-xl font-semibold tracking-tight text-amber-900">
+          What this service is not
+        </h2>
+        <p class="mt-2 text-sm text-amber-900">
+          We are a record-keeping and reminder service. <strong>We are not a law firm, we do not
+          give legal advice, and we do not file anything with any agency on your behalf.</strong>
+          Using this service does not make you compliant, and nothing here is a guarantee that you
+          are. Responsibility for meeting every obligation that applies to your business remains
+          yours.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Accuracy</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          We take considerable care with the rules we encode and we cite them so you can check
+          our work. Regulations change, agencies publish corrections, and public data sources are
+          sometimes wrong or out of date. Where we are unsure, we tell you rather than guess.
+          Verify anything that matters against the rule itself before you rely on it.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Your account</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          You are responsible for what happens under your logins and for the accuracy of what you
+          enter. Do not share credentials. Tell us promptly if you think an account has been
+          compromised.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Your data</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          Your records remain yours. You may export them at any time. We use them to provide the
+          service to you and for nothing else. See the <a href="/privacy" class="text-brand-600 hover:underline">privacy policy</a>.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Payment</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          Billed monthly in advance at the published rate, based on the number of power units on
+          your account. There is no contract and no minimum term — cancel whenever you like, and
+          you will not be billed again. We do not refund part-months, but we will not bill you for
+          a month you did not use.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Availability</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          We aim to keep the service running continuously but do not promise it will never be
+          unavailable. Alerts depend on email and mobile networks we do not control. Do not treat
+          an alert that did not arrive as evidence that a deadline did not exist.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Limitation of liability</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          To the fullest extent the law allows, our total liability arising out of the service is
+          limited to the amount you paid us in the twelve months before the claim. We are not
+          liable for fines, penalties, lost business or consequential losses. Some of these
+          limits may not apply to you where the law does not permit them.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Governing law</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          These terms are governed by the laws of the State of California.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Contact</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          {site.email ? site.email : 'Contact details are on the About page.'}
+        </p>
+      </div>
+    </div>
+
+    <p class="mt-10 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+      <strong>Draft.</strong> Not reviewed by a lawyer, and the operating entity is not yet named.
+      Both must be done before launch.
+    </p>
+  </section>
+</Public>

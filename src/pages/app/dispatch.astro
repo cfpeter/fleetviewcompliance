@@ -1,0 +1,585 @@
+---
+/**
+ * The board. Every load that is on the hook right now, and who is under it.
+ *
+ * This screen answers one question twenty times a day — "what still needs a
+ * truck?" — so the unassigned loads are not a filter you select, they are the
+ * first thing on the page. Everything else is reference.
+ *
+ * It is also where compliance stops being a tab. Each assigned load is run back
+ * through the same `eligibility()` engine the assignment screen uses, because a
+ * driver who was qualified when he was assigned on Monday can be unqualified by
+ * Thursday, and nothing else in the product would ever say so.
+ *
+ * Read-only: no POST, no intents. Every action on this page is a link to the
+ * assignment screen, which owns the writes.
+ */
+import App from '../../layouts/App.astro'
+import { loadDeadlines } from '../../lib/deadlines.ts'
+import { eligibility, isBlocked } from '../../lib/dispatch/eligibility.ts'
+import type { DeadlineItem } from '../../lib/rules/index.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+
+/**
+ * "Booked or later, and not finished."
+ *
+ * Written out as a list rather than as a `gte`/`lt` pair on the enum. PostgREST
+ * WILL order an enum by its declaration position, so `status=gte.booked` parses
+ * and returns rows — which makes it exactly the kind of clever filter that goes
+ * silently wrong the day somebody adds a value to `load_status` in the middle of
+ * the enum to keep it tidy. A list breaks loudly instead: a new status simply
+ * does not appear here until someone decides it belongs on the board.
+ *
+ * `quoted` is out because it is not work yet, `delivered` and `pod_received`
+ * because the truck is off it.
+ */
+const BOARD_STATUSES = [
+  'booked',
+  'assigned',
+  'dispatched',
+  'at_shipper',
+  'loaded',
+  'in_transit',
+  'at_consignee',
+] as const
+
+/** The carrier's own day. Every time on this page is rendered in it. */
+const TZ = 'America/Los_Angeles'
+
+interface LoadRow {
+  id: string
+  load_number: string | null
+  broker_reference: string | null
+  customer_id: string | null
+  status: string
+  exception: string | null
+  created_at: string
+}
+
+interface StopRow {
+  load_id: string
+  sequence: number
+  stop_type: string
+  company_name: string | null
+  city: string | null
+  state: string | null
+  window_start: string | null
+}
+
+interface AssignmentRow {
+  load_id: string
+  driver_id: string | null
+  co_driver_id: string | null
+  tractor_id: string | null
+  trailer_id: string | null
+  assigned_at: string
+}
+
+interface DriverRow {
+  id: string
+  first_name: string
+  last_name: string
+  status: string
+}
+
+interface VehicleRow {
+  id: string
+  kind: string
+  unit_number: string | null
+  vin: string | null
+}
+
+// There is no .eq('carrier_id', ...) on any SELECT in this file. RLS already
+// limits every row to the signed-in user's carrier, and repeating the check here
+// would read as though the policy might not hold — which is how somebody
+// eventually "fixes" a bug by loosening the policy instead of the query.
+const { data: loadData, error: loadError } = await supabase
+  .from('loads')
+  .select('id, load_number, broker_reference, customer_id, status, exception, created_at')
+  .in('status', BOARD_STATUSES)
+  // `.neq('exception', 'cancelled')` looks equivalent and is not: in SQL
+  // `NULL <> 'cancelled'` is NULL, not true, so every load with no exception at
+  // all — which is nearly all of them — would be filtered straight off the
+  // board. The board would come up empty on a carrier with twelve running loads.
+  .or('exception.is.null,exception.neq.cancelled')
+  .order('created_at', { ascending: true })
+
+const loads = (loadData ?? []) as LoadRow[]
+const loadIds = loads.map((l) => l.id)
+
+/**
+ * Everything else the board needs, in parallel.
+ *
+ * The name lookups are fetched whole rather than embedded into the load query.
+ * `load_assignments` has TWO foreign keys into `drivers` and TWO into
+ * `vehicles`, so a PostgREST embed has to be disambiguated with a hint naming
+ * the constraint — a string that is not checked at build time and that renames
+ * itself the next time somebody rewrites the migration. A carrier has tens of
+ * drivers, not thousands; two flat selects and a Map are cheaper to be right
+ * about. They are also fetched WITHOUT a status filter, because a terminated
+ * driver can still be sitting on an open load and rendering him as a blank cell
+ * would hide exactly the row that needs attention.
+ */
+const [{ data: stopData }, { data: assignmentData }, { data: driverData }, { data: vehicleData }, deadlines] =
+  await Promise.all([
+    loadIds.length > 0
+      ? supabase
+          .from('load_stops')
+          .select('load_id, sequence, stop_type, company_name, city, state, window_start')
+          .in('load_id', loadIds)
+          .order('sequence', { ascending: true })
+      : Promise.resolve({ data: [] as StopRow[] }),
+    loadIds.length > 0
+      ? supabase
+          .from('load_assignments')
+          .select('load_id, driver_id, co_driver_id, tractor_id, trailer_id, assigned_at')
+          // The partial index on this table is `where unassigned_at is null`, and
+          // so is the definition of "who is on this load right now". A released
+          // assignment is history, not a current answer.
+          .is('unassigned_at', null)
+          .in('load_id', loadIds)
+          .order('assigned_at', { ascending: false })
+      : Promise.resolve({ data: [] as AssignmentRow[] }),
+    supabase.from('drivers').select('id, first_name, last_name, status'),
+    supabase.from('vehicles').select('id, kind, unit_number, vin'),
+    loadDeadlines(supabase, carrierId),
+  ])
+
+const stops = (stopData ?? []) as StopRow[]
+const assignments = (assignmentData ?? []) as AssignmentRow[]
+const drivers = (driverData ?? []) as DriverRow[]
+const vehicles = (vehicleData ?? []) as VehicleRow[]
+
+const driverById = new Map(drivers.map((d) => [d.id, d]))
+const vehicleById = new Map(vehicles.map((v) => [v.id, v]))
+const customerIds = [...new Set(loads.map((l) => l.customer_id).filter((v): v is string => !!v))]
+const { data: customerData } =
+  customerIds.length > 0
+    ? await supabase.from('customers').select('id, name').in('id', customerIds)
+    : { data: [] as { id: string; name: string }[] }
+const customerById = new Map(
+  ((customerData ?? []) as { id: string; name: string }[]).map((c) => [c.id, c.name]),
+)
+
+/**
+ * The deadline items for one driver, keyed by driver id.
+ *
+ * `loadDeadlines()` returns every subject the carrier has; `eligibility()` wants
+ * one subject's worth. Filtering by BOTH subjectType and subjectId matters: a
+ * driver id and a vehicle id are both uuids out of the same generator, so an id
+ * comparison alone would happily mix a truck's inspection into a driver's
+ * qualification check the first time the two ever collided.
+ */
+const itemsByDriver = new Map<string, DeadlineItem[]>()
+for (const item of deadlines as DeadlineItem[]) {
+  if (item.subjectType !== 'driver' || !item.subjectId) continue
+  const bucket = itemsByDriver.get(item.subjectId)
+  if (bucket) bucket.push(item)
+  else itemsByDriver.set(item.subjectId, [item])
+}
+
+/** The one assignment that counts for each load: the most recent open one. */
+const assignmentByLoad = new Map<string, AssignmentRow>()
+for (const a of assignments) {
+  // Ordered assigned_at DESC above, so the first one seen for a load wins. There
+  // should only ever be one open row per load — the assignment screen closes the
+  // previous one before inserting — but a board that renders two overlapping
+  // answers is worse than one that picks the newest and says so.
+  if (!assignmentByLoad.has(a.load_id)) assignmentByLoad.set(a.load_id, a)
+}
+
+const stopsByLoad = new Map<string, StopRow[]>()
+for (const s of stops) {
+  const bucket = stopsByLoad.get(s.load_id)
+  if (bucket) bucket.push(s)
+  else stopsByLoad.set(s.load_id, [s])
+}
+
+function driverName(id: string | null | undefined): string | null {
+  if (!id) return null
+  const d = driverById.get(id)
+  return d ? `${d.first_name} ${d.last_name}`.trim() : 'Unknown driver'
+}
+
+function unitName(id: string | null | undefined): string | null {
+  if (!id) return null
+  const v = vehicleById.get(id)
+  if (!v) return 'Unknown unit'
+  // A VIN is a terrible thing to read off a screen, but it beats a blank cell on
+  // a trailer nobody has given a number to yet.
+  return v.unit_number || (v.vin ? `VIN ${v.vin.slice(-6)}` : 'Unnumbered unit')
+}
+
+/**
+ * A timestamptz rendered in the carrier's day, never the server's.
+ *
+ * Astro runs this on Cloudflare, where the process timezone is UTC. A 7am
+ * Fontana appointment formatted without a zone comes out as 2pm — the single
+ * number on this row that a dispatcher acts on, wrong by seven hours, on every
+ * load, silently.
+ */
+function formatWhen(ts: string | null): string {
+  if (!ts) return ''
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: TZ,
+  })
+}
+
+function place(s: StopRow | undefined): string {
+  if (!s) return ''
+  const town = [s.city, s.state].filter(Boolean).join(', ')
+  return town || s.company_name || ''
+}
+
+/** Ours if we have it, theirs if we do not — and never a bare uuid. */
+function loadLabel(l: LoadRow): string {
+  return l.load_number || l.broker_reference || `Load ${l.id.slice(0, 8)}`
+}
+
+const STATUS_PILL: Record<string, string> = {
+  // Nothing has happened yet: grey, so it does not compete with the red this
+  // product spends on compliance.
+  booked: 'bg-ink-100 text-ink-500',
+  assigned: 'bg-blue-100 text-blue-800',
+  dispatched: 'bg-blue-100 text-blue-800',
+  at_shipper: 'bg-emerald-100 text-emerald-800',
+  loaded: 'bg-emerald-100 text-emerald-800',
+  in_transit: 'bg-emerald-100 text-emerald-800',
+  at_consignee: 'bg-emerald-100 text-emerald-800',
+}
+
+const EXCEPTION_PILL: Record<string, string> = {
+  detained: 'bg-amber-100 text-amber-800',
+  breakdown: 'bg-red-100 text-red-700',
+  late: 'bg-amber-100 text-amber-800',
+  tonu: 'bg-ink-100 text-ink-500',
+}
+
+const words = (v: string) => v.replace(/_/g, ' ')
+
+interface BoardRow {
+  id: string
+  label: string
+  brokerReference: string | null
+  customer: string | null
+  status: string
+  exception: string | null
+  pickupWhere: string
+  pickupWhen: string
+  deliveryWhere: string
+  deliveryWhen: string
+  driver: string | null
+  coDriver: string | null
+  tractor: string | null
+  trailer: string | null
+  /** The driver on this load is not qualified to be on it, right now. */
+  blocked: boolean
+  /** The engine has never seen this driver — inactive, terminated, or deleted. */
+  driverOffRoster: boolean
+  sortKey: number
+}
+
+const rows: BoardRow[] = loads.map((l) => {
+  const mine = stopsByLoad.get(l.id) ?? []
+  // First PICKUP and last DELIVERY by sequence, not first and last stop. A load
+  // that ends on a drop-and-hook or a fuel stop would otherwise print the fuel
+  // stop as the delivery, which is where the truck is going least.
+  const pickup = mine.find((s) => s.stop_type === 'pickup')
+  const delivery = [...mine].reverse().find((s) => s.stop_type === 'delivery')
+
+  const a = assignmentByLoad.get(l.id)
+  const items = a?.driver_id ? itemsByDriver.get(a.driver_id) : undefined
+  const driver = driverName(a?.driver_id)
+
+  return {
+    id: l.id,
+    label: loadLabel(l),
+    brokerReference: l.broker_reference,
+    customer: l.customer_id ? (customerById.get(l.customer_id) ?? null) : null,
+    status: l.status,
+    exception: l.exception,
+    pickupWhere: place(pickup),
+    pickupWhen: formatWhen(pickup?.window_start ?? null),
+    deliveryWhere: place(delivery),
+    deliveryWhen: formatWhen(delivery?.window_start ?? null),
+    driver,
+    coDriver: driverName(a?.co_driver_id),
+    tractor: unitName(a?.tractor_id),
+    trailer: unitName(a?.trailer_id),
+    // The same engine the assignment screen gates on, asked again about today.
+    // The label is the driver's real name so that the issue messages this
+    // produces stay usable if this row ever grows a tooltip or an expander.
+    blocked: items ? isBlocked(eligibility({ items, label: driver ?? 'This driver' })) : false,
+    // `loadDeadlines()` only evaluates ACTIVE drivers. So a driver who has been
+    // terminated since he was assigned has no items at all, and an absent bucket
+    // reads identically to a spotless file. Distinguishing the two here is what
+    // stops "no issues" being printed next to a man who no longer works here.
+    driverOffRoster: Boolean(a?.driver_id) && !items,
+    sortKey: pickup?.window_start ? Date.parse(pickup.window_start) : Number.POSITIVE_INFINITY,
+  }
+})
+
+// Soonest pickup first, undated loads last. A load with no stops yet is not more
+// urgent than one leaving in an hour, it is less finished.
+rows.sort((a, b) => a.sortKey - b.sortKey || a.label.localeCompare(b.label))
+
+const needsDriver = rows.filter((r) => !r.driver)
+const running = rows.filter((r) => r.driver)
+const notQualified = running.filter((r) => r.blocked || r.driverOffRoster)
+
+const params = Astro.url.searchParams
+const assigned = params.get('assigned')
+const released = params.get('released')
+const error = params.get('error') ?? (loadError ? loadError.message : null)
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const cell = 'px-4 py-3'
+
+const sections = [
+  {
+    key: 'unassigned',
+    title: 'Needs a driver',
+    blurb: 'Nobody is under these yet. This is the list this page exists for.',
+    rows: needsDriver,
+    wrapper: 'overflow-x-auto rounded-xl border border-brand-500/30 bg-brand-500/[0.04]',
+    action: 'Assign',
+  },
+  {
+    key: 'running',
+    title: 'On the board',
+    blurb: 'Assigned and moving. Compliance is re-checked every time this page loads.',
+    rows: running,
+    wrapper: 'overflow-x-auto rounded-xl border border-ink-100 bg-white',
+    action: 'Change',
+  },
+]
+---
+
+<App title="Dispatch" subtitle="Every load on the hook, and who is under it.">
+  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {
+    assigned && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Load {assigned} assigned.
+      </p>
+    )
+  }
+  {
+    released && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Load {released} released. It is back at the top of the board.
+      </p>
+    )
+  }
+
+  <div class="grid gap-4 sm:grid-cols-3">
+    <div
+      class:list={[
+        'rounded-xl border p-5',
+        needsDriver.length > 0 ? 'border-brand-500/40 bg-brand-500/[0.04]' : 'border-ink-100 bg-white',
+      ]}
+    >
+      <div class="text-xs tracking-wide text-ink-500 uppercase">Needs a driver</div>
+      <div class="mt-1 text-3xl font-semibold tabular-nums">{needsDriver.length}</div>
+    </div>
+    <div class={card}>
+      <div class="text-xs tracking-wide text-ink-500 uppercase">On the board</div>
+      <div class="mt-1 text-3xl font-semibold tabular-nums">{running.length}</div>
+    </div>
+    <div
+      class:list={[
+        'rounded-xl border p-5',
+        notQualified.length > 0 ? 'border-red-200 bg-red-50/40' : 'border-ink-100 bg-white',
+      ]}
+    >
+      <div
+        class:list={[
+          'text-xs tracking-wide uppercase',
+          notQualified.length > 0 ? 'text-red-700' : 'text-ink-500',
+        ]}
+      >
+        Driver no longer qualified
+      </div>
+      <div
+        class:list={[
+          'mt-1 text-3xl font-semibold tabular-nums',
+          notQualified.length > 0 ? 'text-red-700' : '',
+        ]}
+      >
+        {notQualified.length}
+      </div>
+    </div>
+  </div>
+
+  {
+    rows.length === 0 && (
+      <div class="mt-6 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+        <p class="font-medium">Nothing on the board</p>
+        <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+          Loads appear here once they are booked, and drop off once they are delivered. Book one and
+          it will be the first thing on this page until it has a driver.
+        </p>
+        <a
+          href="/app/loads/new"
+          class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+        >
+          Book a load →
+        </a>
+      </div>
+    )
+  }
+
+  {
+    sections.map((section) =>
+      section.rows.length === 0 ? null : (
+        <section class="mt-8">
+          <h2 class="text-lg font-semibold tracking-tight">
+            {section.title}
+            <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">
+              {section.rows.length}
+            </span>
+          </h2>
+          <p class="mt-1 mb-3 text-sm text-ink-500">{section.blurb}</p>
+
+          <div class={section.wrapper}>
+            <table class="w-full min-w-[68rem] text-sm">
+              <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+                <tr>
+                  <th class="px-4 py-3 font-medium">Load</th>
+                  <th class="px-4 py-3 font-medium">Customer</th>
+                  <th class="px-4 py-3 font-medium">First pickup</th>
+                  <th class="px-4 py-3 font-medium">Last delivery</th>
+                  <th class="px-4 py-3 font-medium">Driver</th>
+                  <th class="px-4 py-3 font-medium">Tractor</th>
+                  <th class="px-4 py-3 font-medium">Trailer</th>
+                  <th class="px-4 py-3 font-medium">Status</th>
+                  <th class="px-4 py-3" />
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-ink-100">
+                {section.rows.map((r) => (
+                  <tr class="hover:bg-ink-50/60">
+                    <td class={cell}>
+                      <a
+                        href={`/app/loads/${r.id}/assign`}
+                        class="font-medium tabular-nums hover:text-brand-600 hover:underline"
+                      >
+                        {r.label}
+                      </a>
+                      {/* THEIRS, printed under ours. The number on the rate
+                          confirmation lying on the desk is the one the broker
+                          says on the phone, and a board that only shows our own
+                          number makes her open every load to find the right one. */}
+                      {r.brokerReference && r.brokerReference !== r.label && (
+                        <div class="text-xs text-ink-300 tabular-nums">
+                          Broker ref {r.brokerReference}
+                        </div>
+                      )}
+                    </td>
+                    <td class={cell}>
+                      {r.customer ?? <span class="text-ink-300">—</span>}
+                    </td>
+                    <td class={cell}>
+                      {r.pickupWhere || r.pickupWhen ? (
+                        <>
+                          <div>{r.pickupWhere || '—'}</div>
+                          {r.pickupWhen && (
+                            <div class="text-xs text-ink-300 tabular-nums">{r.pickupWhen}</div>
+                          )}
+                        </>
+                      ) : (
+                        <span class="text-ink-300">No stops yet</span>
+                      )}
+                    </td>
+                    <td class={cell}>
+                      {r.deliveryWhere || r.deliveryWhen ? (
+                        <>
+                          <div>{r.deliveryWhere || '—'}</div>
+                          {r.deliveryWhen && (
+                            <div class="text-xs text-ink-300 tabular-nums">{r.deliveryWhen}</div>
+                          )}
+                        </>
+                      ) : (
+                        <span class="text-ink-300">—</span>
+                      )}
+                    </td>
+                    <td class={cell}>
+                      {r.driver ? (
+                        <>
+                          <div class="font-medium">{r.driver}</div>
+                          {r.coDriver && (
+                            <div class="text-xs text-ink-300">with {r.coDriver}</div>
+                          )}
+                          {r.blocked && (
+                            <div class="mt-1">
+                              <span class="rounded-md bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-700">
+                                Not qualified today
+                              </span>
+                            </div>
+                          )}
+                          {r.driverOffRoster && (
+                            <div class="mt-1">
+                              <span class="rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                                Not on the active roster
+                              </span>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <span class="font-medium text-brand-700">Nobody yet</span>
+                      )}
+                    </td>
+                    <td class={cell}>{r.tractor ?? <span class="text-ink-300">—</span>}</td>
+                    <td class={cell}>{r.trailer ?? <span class="text-ink-300">—</span>}</td>
+                    <td class={cell}>
+                      <span
+                        class:list={[
+                          'rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
+                          STATUS_PILL[r.status] ?? 'bg-ink-100 text-ink-500',
+                        ]}
+                      >
+                        {words(r.status)}
+                      </span>
+                      {/* The exception sits ALONGSIDE the status, never
+                          replacing it: a detained load is still at_shipper, and
+                          collapsing the two loses where the truck actually is. */}
+                      {r.exception && (
+                        <div class="mt-1">
+                          <span
+                            class:list={[
+                              'rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
+                              EXCEPTION_PILL[r.exception] ?? 'bg-amber-100 text-amber-800',
+                            ]}
+                          >
+                            {words(r.exception)}
+                          </span>
+                        </div>
+                      )}
+                    </td>
+                    <td class="px-4 py-3 text-right whitespace-nowrap">
+                      <a
+                        href={`/app/loads/${r.id}/assign`}
+                        class="text-sm font-medium text-brand-600 hover:underline"
+                      >
+                        {section.action} →
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ),
+    )
+  }
+</App>

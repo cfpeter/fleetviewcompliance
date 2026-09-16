@@ -1,0 +1,107 @@
+---
+/**
+ * Privacy policy.
+ *
+ * Plain-language and short on purpose. NOT reviewed by a lawyer — see the notice
+ * at the foot of the page, and remove it once it has been.
+ */
+import Public from '../layouts/Public.astro'
+import { site } from '../lib/site.ts'
+
+const updated = 'September 2026'
+---
+
+<Public title="Privacy" description="What FleetView Compliance collects, and what it does not do with it.">
+  <section class="mx-auto max-w-3xl px-4 py-14 sm:px-6">
+    <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">Privacy</h1>
+    <p class="mt-2 text-sm text-ink-500">Last updated {updated}</p>
+
+    <div class="mt-8 space-y-6 text-ink-700">
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">The short version</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          We collect what we need to track your deadlines and run your account. We do not sell it,
+          we do not share it with brokers, insurers or load boards, and we do not use your
+          operational data to build products for anyone else.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">What we hold</h2>
+        <ul class="mt-2 space-y-2 text-sm text-ink-500">
+          <li><strong>Account information</strong> — names, email addresses and phone numbers of the people who sign in.</li>
+          <li><strong>Carrier information</strong> — your USDOT number and what the public federal record says about your business.</li>
+          <li><strong>Driver and vehicle records</strong> — including documents you upload, such as medical certificates and licences. This is sensitive personal information about your employees, and we treat it that way.</li>
+          <li><strong>Operational records</strong> — loads, trips and the documents attached to them.</li>
+          <li><strong>Usage logs</strong> — enough to keep the service running and secure.</li>
+        </ul>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Where it comes from</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          From you, and from public federal and California government records that anyone can
+          look up. We re-check the public record periodically so we can tell you when something
+          changes on it.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Who else sees it</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          Only the service providers we need to operate: hosting and database, file storage, and
+          the services that send our email and text messages. They process data on our
+          instructions and for no other purpose. We disclose data otherwise only if the law
+          requires it — and if that happens and we are permitted to tell you, we will.
+        </p>
+        <p class="mt-2 text-sm text-ink-500">
+          If you generate a proof link and send it to a broker or an underwriter, you are sharing
+          it — that is the point of the feature — and it is your decision who receives it.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Your drivers</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          Drivers do not have accounts here. Where we send a driver a link to supply a document,
+          that link is single-purpose and expires. Some records — such as a return-to-duty
+          follow-up testing schedule — are restricted by federal rule from being shown to the
+          driver, and our system enforces that.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Keeping and deleting</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          Compliance records have legally required retention periods — a driver qualification file,
+          for instance, must be kept for as long as the driver is employed and three years after.
+          We keep records for at least as long as the rule that produced them requires. You can
+          export everything at any time, and on request we will delete what we are not required
+          to retain.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">California rights</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          If you are a California resident you have rights to know what we hold about you, to
+          correct it, to delete it, and not to be discriminated against for exercising them. We do
+          not sell or share personal information as those terms are defined under California law.
+          Write to us to exercise any of this.
+        </p>
+      </div>
+
+      <div>
+        <h2 class="text-xl font-semibold tracking-tight">Contact</h2>
+        <p class="mt-2 text-sm text-ink-500">
+          {site.email ? site.email : 'Contact details are on the About page.'}
+        </p>
+      </div>
+    </div>
+
+    <p class="mt-10 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+      <strong>Draft.</strong> This policy has not yet been reviewed by a lawyer, and the operating
+      entity is not yet named. Both must be done before launch.
+    </p>
+  </section>
+</Public>

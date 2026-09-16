@@ -1,0 +1,349 @@
+---
+/**
+ * Marketing home.
+ *
+ * The hero is a USDOT lookup, not a "Book a demo" button. A carrier can see
+ * their own real deadlines before they give us an email address — which is the
+ * one thing no competitor in this tier lets them do, and it costs us nothing
+ * because the underlying FMCSA data is free and unauthenticated.
+ */
+import Public from '../layouts/Public.astro'
+import { coverage } from '../lib/site.ts'
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+
+const steps = [
+  {
+    n: '1',
+    title: 'Type your DOT number',
+    body: 'We pull your carrier record, your trucks, your drivers and your authority status straight from the federal register. Nothing to upload.',
+  },
+  {
+    n: '2',
+    title: 'We show you what expires next',
+    body: 'One list, soonest first. The federal deadlines, the California ones, and the dates that only exist on paper in your office. You fill in only what the government does not already know.',
+  },
+  {
+    n: '3',
+    title: 'We tell you before it bites',
+    body: 'Email and text, on your schedule, to whoever should get it. Set your own reminders for anything we do not track.',
+  },
+]
+
+const features = [
+  {
+    title: 'Deadlines, in one list',
+    body: 'Medical cards, CDLs, annual MVR reviews, Clearinghouse queries, the annual DOT inspection, MCS-150, UCR, Form 2290 — federal, so they follow you across every state line. Then the California layer on top. Sorted by what hurts first.',
+  },
+  {
+    title: 'Loads and trips',
+    body: 'Book a load, assign a driver and equipment, track the stops. Multi-stop is normal here, not an upgrade. Deadhead is tracked separately, because revenue per loaded mile flatters you.',
+  },
+  {
+    title: 'Dispatch that knows the rules',
+    body: 'If a driver’s medical card expired last week, you cannot assign him a load. The block happens on the dispatch screen, not in a report you read next month.',
+  },
+  {
+    title: 'Alerts you control',
+    body: 'Pick the channel, the lead time, and the person, per deadline type. One daily digest instead of fourteen emails. Quiet hours, so we do not text you at 2am about a renewal due in a month.',
+  },
+  {
+    title: 'Custom reminders',
+    body: 'Your insurance broker wants a call every March. Your best customer audits you every June. Add it, and it lives in the same list as everything else.',
+  },
+  {
+    title: 'Proof you can hand over',
+    body: 'A dated packet for a broker, an insurance underwriter, or an officer at the scale. It states what we observed and when, and links out to the federal record so the reader can check us.',
+  },
+]
+
+const faqs = [
+  // The first question a carrier outside California now asks, answered with the
+  // count rather than with reassurance. Federal rules outnumber Californian ones
+  // better than two to one, so "most of it" is a fact he can go and check, and
+  // the sentence admitting what is missing is what earns the rest of the page.
+  {
+    q: 'I do not run in California. Is this for me?',
+    a: `Most of it is. ${coverage.federal} of the ${coverage.total} rules we track are federal — medical cards, CDLs, the annual MVR review and its signed note, Clearinghouse queries, the annual DOT inspection, MCS-150, UCR, Form 2290 — and none of those change at a state line. The other ${coverage.california} are California’s, and California is the only state layer built so far. If your state adds something on top of the federal rules, we do not track it yet and we are not going to imply otherwise. More states are next, and they arrive as rules rather than as a different product.`,
+  },
+  {
+    q: 'I run in California. What does that add?',
+    a: 'Clean Truck Check testing and its annual fee, the CHP terminal inspection programme, your Motor Carrier Permit on its own staggered clock, and CVRA weight decals. Those are the four that put a hold on your registration, and most national software ignores all four. It is why California was the state we did first.',
+  },
+  {
+    q: 'Do I have to enter all my drivers and trucks?',
+    a: 'No. We read your fleet and driver counts, your address, your authority and your last MCS-150 filing from public federal data using only your DOT number. You confirm and fill the gaps — mostly the dates that only exist on paper in your office, like medical card expiries.',
+  },
+  {
+    q: 'Do you file my paperwork for me?',
+    a: 'No. We track deadlines and hold your records. We will tell you what is due, what form it is, and where it goes. Anything that gets filed, you file — or your existing service does. We are not a law firm and we do not pretend to be one.',
+  },
+  {
+    q: 'Can you check the Drug and Alcohol Clearinghouse for me?',
+    a: 'No, and be careful of anyone who says they can do it by logging in as you. The Clearinghouse rules forbid sharing credentials and specifically prohibit blanket consent. We track when each query is due and keep your proof that you ran it.',
+  },
+  {
+    q: 'What if I already use an ELD?',
+    a: 'Keep it. We are not an ELD and will never be one. We read hours and trip data from Motive, Samsara and others so dispatch knows whether a driver can legally finish a run.',
+  },
+]
+---
+
+<Public
+  title="FleetView Compliance"
+  description="Deadline tracking, loads and trips for small US trucking fleets. Federal rules in every state, plus the California layer. See what expires next from your DOT number."
+>
+  <!-- Hero -->
+  <section class="border-b border-ink-100 bg-ink-50">
+    <div class="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
+      <p class="text-sm font-medium tracking-widest text-brand-600 uppercase">
+        For small US fleets
+      </p>
+      <h1 class="mt-4 max-w-3xl text-4xl font-semibold tracking-tight text-balance sm:text-6xl">
+        Know what expires next, before it costs you a truck.
+      </h1>
+      <p class="mt-5 max-w-2xl text-lg text-ink-500">
+        A twelve-truck fleet carries more than a hundred recurring deadlines a year. Miss one
+        and you are looking at a five-figure fine, a registration hold, or a truck parked at
+        the scale. Type your DOT number and see yours in about ten seconds.
+      </p>
+
+      <form method="GET" action="/check" class="mt-8 max-w-md">
+        <label class="block">
+          <span class="text-sm font-medium">Your USDOT number</span>
+          <div
+            class="mt-1 flex items-center rounded-xl border border-ink-100 bg-white focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20"
+          >
+            <input
+              type="text"
+              name="dot"
+              inputmode="numeric"
+              pattern="[0-9]*"
+              required
+              placeholder="e.g. 1234567"
+              aria-label="Your USDOT number"
+              class="w-full rounded-xl bg-transparent px-4 py-3.5 text-base tabular-nums outline-none"
+            />
+            <button
+              type="submit"
+              class="m-1 shrink-0 rounded-lg bg-brand-600 px-5 py-2.5 font-medium whitespace-nowrap text-white transition hover:bg-brand-700"
+            >
+              Check
+            </button>
+          </div>
+          <span class="mt-2 block text-xs text-ink-500">
+            No account, no email, no card. We read the public federal record.
+          </span>
+        </label>
+      </form>
+    </div>
+  </section>
+
+  <!-- Trust strip -->
+  <section class="border-b border-ink-100">
+    <div
+      class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-8 gap-y-3 px-4 py-6 text-sm text-ink-500 sm:px-6"
+    >
+      <span>Federal deadlines in every state, plus California’s</span>
+      <span aria-hidden="true" class="hidden text-ink-300 sm:inline">·</span>
+      <span>Built in Glendale, California</span>
+      <span aria-hidden="true" class="hidden text-ink-300 sm:inline">·</span>
+      <span>Your data stays yours — we never sell it</span>
+      <span aria-hidden="true" class="hidden text-ink-300 sm:inline">·</span>
+      <span>No contract, cancel any month</span>
+    </div>
+  </section>
+
+  <!-- Problem -->
+  <section class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+    <h2 class="max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">
+      The deadline you forget is never the one you were worried about.
+    </h2>
+    <div class="mt-8 grid gap-4 sm:grid-cols-3">
+      <div class={card}>
+        <p class="font-medium">The owner</p>
+        <p class="mt-2 text-sm text-ink-500">
+          You find out a driver's medical card lapsed when he is already loaded and eighty
+          miles out. Now you are choosing between a late load and an unqualified driver.
+        </p>
+      </div>
+      <div class={card}>
+        <p class="font-medium">The office</p>
+        <p class="mt-2 text-sm text-ink-500">
+          Everything lives in a spreadsheet, a wall calendar and somebody's memory. It works
+          until the person who built it takes a week off.
+        </p>
+      </div>
+      <div class={card}>
+        <p class="font-medium">The audit</p>
+        <p class="mt-2 text-sm text-ink-500">
+          An officer asks for a driver qualification file. If it is not documented, it did not
+          happen — and that is the whole argument.
+        </p>
+      </div>
+    </div>
+
+    <div
+      class="mt-8 rounded-xl border border-amber-300 bg-amber-50 p-5 text-sm text-amber-900"
+    >
+      <p class="font-medium">What it actually costs</p>
+      <p class="mt-2">
+        A Part 382 violation runs to <strong class="tabular-nums">$19,246</strong> for the
+        employer and <strong class="tabular-nums">$4,812</strong> for the driver. A
+        Clearinghouse violation is <strong class="tabular-nums">$7,155</strong>. Recordkeeping
+        is <strong class="tabular-nums">$1,584</strong> a day up to
+        <strong class="tabular-nums">$15,846</strong>.
+      </p>
+      <p class="mt-2 text-xs text-amber-800">
+        49 CFR 386 Appendix B, amounts effective 30 December 2024. We show the citation because
+        you should be able to check us.
+      </p>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="border-y border-ink-100 bg-ink-50">
+    <div class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+      <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">Three steps, one evening.</h2>
+      <div class="mt-8 grid gap-4 sm:grid-cols-3">
+        {
+          steps.map((s) => (
+            <div class="rounded-xl border border-ink-100 bg-white p-5">
+              <div class="flex size-8 items-center justify-center rounded-full bg-brand-500/10 text-sm font-semibold text-brand-700">
+                {s.n}
+              </div>
+              <p class="mt-3 font-medium">{s.title}</p>
+              <p class="mt-2 text-sm text-ink-500">{s.body}</p>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <!--
+    Where it works.
+
+    This exists because the honest answer is a selling point and the vague one
+    is a refund. A carrier outside California gets real value here — the federal
+    catalogue is most of it and it does not stop at a state line — but he has to
+    be told, before he pays, that his own state's extras are not in the product
+    yet. The third card is the one that makes the other two believable.
+  -->
+  <section class="border-b border-ink-100">
+    <div class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+      <h2 class="max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">
+        Where it works, stated exactly.
+      </h2>
+      <p class="mt-3 max-w-2xl text-ink-500">
+        A compliance tool is worth nothing if it is vague about its own edges. Ours are these.
+      </p>
+      <div class="mt-8 grid gap-4 sm:grid-cols-3">
+        <div class={card}>
+          <p class="text-sm font-medium tracking-widest text-brand-600 uppercase">
+            Every US state
+          </p>
+          <p class="mt-3 font-medium">
+            <span class="tabular-nums">{coverage.federal}</span> federal rules
+          </p>
+          <p class="mt-2 text-sm text-ink-500">
+            The FMCSA, IRS and PHMSA obligations that make up most of what any carrier owes —
+            driver qualification, Clearinghouse queries, hours records, the annual inspection,
+            MCS-150, UCR, Form 2290. They do not change at a state line, so wherever you run,
+            you get all of them.
+          </p>
+        </div>
+        <div class={card}>
+          <p class="text-sm font-medium tracking-widest text-brand-600 uppercase">California</p>
+          <p class="mt-3 font-medium">
+            <span class="tabular-nums">{coverage.california}</span> state rules on top
+          </p>
+          <p class="mt-2 text-sm text-ink-500">
+            Clean Truck Check, the CHP terminal inspection programme, the Motor Carrier Permit,
+            CVRA weight decals, the fuel-tax and apportioned-plate filings that run through
+            Sacramento. The layer most national software leaves out, and the reason we started
+            here.
+          </p>
+        </div>
+        <div class={card}>
+          <p class="text-sm font-medium tracking-widest text-ink-500 uppercase">Not yet</p>
+          <p class="mt-3 font-medium">Every other state’s own rules</p>
+          <p class="mt-2 text-sm text-ink-500">
+            California is the only state layer in the product today. If your state adds
+            something of its own, we do not track it yet — and we would rather lose the sale
+            than have you find that out afterwards. More layers are coming: a rule here is data,
+            not code, so a new state costs rule rows rather than a rewrite.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+    <div class="flex items-baseline justify-between gap-4">
+      <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">What you get</h2>
+      <a href="/features" class="text-sm font-medium text-brand-600 hover:underline">
+        All features →
+      </a>
+    </div>
+    <div class="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {
+        features.map((f) => (
+          <div class={card}>
+            <p class="font-medium">{f.title}</p>
+            <p class="mt-2 text-sm text-ink-500">{f.body}</p>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="border-t border-ink-100 bg-ink-50">
+    <div class="mx-auto max-w-3xl px-4 py-16 sm:px-6">
+      <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">Straight answers</h2>
+      <dl class="mt-8 space-y-4">
+        {
+          faqs.map((f) => (
+            <div class="rounded-xl border border-ink-100 bg-white p-5">
+              <dt class="font-medium">{f.q}</dt>
+              <dd class="mt-2 text-sm text-ink-500">{f.a}</dd>
+            </div>
+          ))
+        }
+      </dl>
+    </div>
+  </section>
+
+  <!-- Closing CTA -->
+  <section class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+    <div class="rounded-2xl border border-brand-500/30 bg-brand-500/[0.04] p-8 sm:p-12">
+      <h2 class="max-w-2xl text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
+        See your own deadlines before you decide anything.
+      </h2>
+      <p class="mt-4 max-w-xl text-ink-500">
+        Type your DOT number. If what comes back is not useful, close the tab — you will not
+        have given us anything.
+      </p>
+      <form method="GET" action="/check" class="mt-6 flex max-w-md flex-col gap-3 sm:flex-row">
+        <input
+          type="text"
+          name="dot"
+          inputmode="numeric"
+          pattern="[0-9]*"
+          required
+          placeholder="USDOT number"
+          aria-label="Your USDOT number"
+          class="w-full rounded-xl border border-ink-100 bg-white px-4 py-3.5 text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+        />
+        <button
+          type="submit"
+          class="shrink-0 rounded-xl bg-ink-900 px-7 py-3.5 text-center font-semibold text-white transition hover:bg-ink-700"
+        >
+          Check my fleet
+        </button>
+      </form>
+    </div>
+  </section>
+</Public>

@@ -1,0 +1,183 @@
+---
+/**
+ * The marketing shell.
+ *
+ * Zero client JavaScript by design — every control on the public site is a link
+ * or a plain GET form. A fleet owner checking us out is often on a phone with
+ * bad signal at a truck stop.
+ */
+import '../styles/global.css'
+
+interface Props {
+  title: string
+  description?: string
+  noindex?: boolean
+}
+
+const { title, description, noindex } = Astro.props
+
+const BRAND = 'FleetView Compliance'
+const site = Astro.site ?? new URL('https://fleetviewcompliance.com')
+const canonical = new URL(Astro.url.pathname, site).toString()
+const fullTitle = title === BRAND ? title : `${title} · ${BRAND}`
+const path = Astro.url.pathname
+
+/**
+ * Home is a link, not just the wordmark.
+ *
+ * The wordmark went to `/` all along, but the owner's report was literally "I
+ * don't see a home page" — a mark in the top-left is a convention people who
+ * build websites know, and a fleet owner reading a nav for the word he wants is
+ * not that person. The wordmark keeps its href; this just stops it being the
+ * only way back.
+ *
+ * A fourth item costs about 56px, and the header had nowhere near that spare.
+ * Measured at the three widths where it is tightest, wordmark + links + CTA:
+ *
+ *   375px  331 of 343 usable   short labels, no "Compliance", px-2
+ *   400px  331 of 368          the wordmark used to double here, and 407 > 368
+ *   640px  577 of 592          full labels and About arrive, px-3
+ *
+ * Two things paid for Home. "Compliance" now appears at `sm` rather than at
+ * 400px, so the wordmark cannot double in width while the nav is still using
+ * short labels — that 400px cliff was the actual overflow, not 375px. And the
+ * wordmark grows to `text-lg` at `md` rather than `sm`, which is what keeps the
+ * 640px column from being 2px short at the moment About appears.
+ *
+ * About stays desktop-only for the reason it always was: it does not fit on a
+ * phone, and it is in the footer.
+ */
+const nav = [
+  { href: '/', label: 'Home', short: 'Home' },
+  { href: '/features', label: 'Features', short: 'Features' },
+  { href: '/pricing', label: 'Pricing', short: 'Pricing' },
+  { href: '/about', label: 'About', short: 'About', desktopOnly: true },
+]
+---
+
+<html lang="en" class="scroll-smooth">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{fullTitle}</title>
+    {description && <meta name="description" content={description} />}
+    <link rel="canonical" href={canonical} />
+    {noindex && <meta name="robots" content="noindex, follow" />}
+
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={fullTitle} />
+    {description && <meta property="og:description" content={description} />}
+    <meta property="og:url" content={canonical} />
+    <meta name="twitter:card" content="summary" />
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#171b21" />
+  </head>
+
+  <body class="min-h-dvh bg-white font-sans text-ink-900 antialiased">
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-3 focus:rounded-lg focus:bg-ink-900 focus:px-4 focus:py-2 focus:text-white"
+    >
+      Skip to content
+    </a>
+
+    <header class="sticky top-0 z-40 border-b border-ink-100 bg-white/85 backdrop-blur">
+      <div class="mx-auto flex max-w-6xl items-center gap-2 px-4 py-3.5 sm:gap-4 sm:px-6">
+        <a
+          href="/"
+          class="shrink-0 text-base font-semibold tracking-tight whitespace-nowrap md:text-lg"
+        >
+          FleetView<span class="hidden text-brand-600 sm:inline">Compliance</span>
+        </a>
+
+        <nav class="ml-auto flex items-center gap-0.5 text-sm sm:gap-1">
+          {
+            nav.map((n) => (
+              <a
+                href={n.href}
+                aria-current={path === n.href ? 'page' : undefined}
+                class:list={[
+                  'rounded-lg px-2 py-2 font-medium whitespace-nowrap transition sm:px-3',
+                  n.desktopOnly && 'hidden sm:inline-block',
+                  path === n.href
+                    ? 'text-ink-900'
+                    : 'text-ink-500 hover:bg-ink-50 hover:text-ink-900',
+                ]}
+              >
+                <span class="sm:hidden">{n.short}</span>
+                <span class="hidden sm:inline">{n.label}</span>
+              </a>
+            ))
+          }
+          <!-- Sign in is a plain link, never the button. The button is for the
+               visitor we do not have yet; this is for the customer we do, who
+               knows exactly what he is looking for and will find a text link.
+               It existed nowhere in the site until now: /login was reachable
+               only by being redirected to it, so anybody who signed up and came
+               back the next day had no way in from the marketing pages. -->
+          <a
+            href="/login"
+            class="shrink-0 px-1.5 font-medium whitespace-nowrap text-ink-500 transition hover:text-ink-900 sm:px-2"
+          >
+            Sign in
+          </a>
+          <a
+            href="/check"
+            class="ml-0.5 shrink-0 rounded-lg bg-ink-900 px-2.5 py-2 font-medium whitespace-nowrap text-white transition hover:bg-ink-700 sm:ml-1 sm:px-3.5"
+          >
+            <span class="sm:hidden">Check</span>
+            <span class="hidden sm:inline">Check my fleet</span>
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main"><slot /></main>
+
+    <footer class="mt-20 border-t border-ink-100 bg-ink-50">
+      <div class="mx-auto grid max-w-6xl gap-8 px-4 py-12 sm:grid-cols-3 sm:px-6">
+        <div>
+          <p class="font-semibold tracking-tight">{BRAND}</p>
+          <p class="mt-2 max-w-xs text-sm text-ink-500">
+            Deadline tracking, loads and trips for small US carriers who would rather be
+            driving than filing.
+          </p>
+        </div>
+        <div>
+          <p class="text-xs tracking-wide text-ink-500 uppercase">Product</p>
+          <ul class="mt-3 space-y-2 text-sm">
+            <li><a href="/features" class="hover:text-brand-600 hover:underline">Features</a></li>
+            <li><a href="/pricing" class="hover:text-brand-600 hover:underline">Pricing</a></li>
+            <li><a href="/check" class="hover:text-brand-600 hover:underline">Check your DOT number</a></li>
+            <li><a href="/login" class="hover:text-brand-600 hover:underline">Sign in</a></li>
+            <li>
+              <a href="/login?mode=signup" class="hover:text-brand-600 hover:underline">
+                Create an account
+              </a>
+            </li>
+          </ul>
+        </div>
+        <div>
+          <p class="text-xs tracking-wide text-ink-500 uppercase">Company</p>
+          <ul class="mt-3 space-y-2 text-sm">
+            <li><a href="/about" class="hover:text-brand-600 hover:underline">About</a></li>
+            <li><a href="/privacy" class="hover:text-brand-600 hover:underline">Privacy</a></li>
+            <li><a href="/terms" class="hover:text-brand-600 hover:underline">Terms</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="border-t border-ink-100">
+        <div
+          class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-5 text-xs text-ink-300 sm:px-6"
+        >
+          <span>© {new Date().getFullYear()} {BRAND}</span>
+          <span aria-hidden="true">·</span>
+          <span>
+            Not a law firm. We track deadlines and keep records — we do not file on your behalf.
+          </span>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

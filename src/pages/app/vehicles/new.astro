@@ -1,0 +1,321 @@
+---
+/**
+ * Add a vehicle.
+ *
+ * Only `kind` is required, and that is a deliberate choice rather than laziness
+ * about validation. The owner is standing in a yard with a phone; he knows the
+ * unit number, he may have to walk to the door to read the VIN, and the GVWR is
+ * on a plate inside the frame rail. A form that demands all three now is a form
+ * he fills with plausible guesses, and a guessed GVWR is worse than no GVWR —
+ * NULL keeps every weight rule switched on, while a made-up 26,000 turns some of
+ * them off.
+ *
+ * `kind` is the exception because it is not a fact about the truck so much as a
+ * routing decision: § 396.17 gives a tractor and its trailer separate clocks and
+ * separate paperwork, so the answer decides which deadlines this record ever
+ * gets. There is no safe default for that.
+ */
+import App from '../../../layouts/App.astro'
+import {
+  parseOptionalInt,
+  parseStateCode,
+  textOrNull,
+  upperOrNull,
+  VEHICLE_KINDS,
+} from '../../../lib/vehicles.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+
+/** The fields worth handing back after a rejected save. */
+const CARRY = [
+  'kind',
+  'unit_number',
+  'vin',
+  'model_year',
+  'make',
+  'model',
+  'gvwr_lbs',
+  'plate',
+  'plate_state',
+] as const
+
+const maxYear = new Date().getUTCFullYear() + 2
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  /**
+   * Back to the form with the message AND with what he typed.
+   *
+   * A 303 throws the request body away, so without this every rejected save —
+   * one duplicate VIN, one mistyped year — costs the owner all nine fields
+   * again. They ride in the query string, which is also what makes the error
+   * page survive a refresh.
+   */
+  const reject = (message: string) => {
+    const next = new URLSearchParams({ error: message })
+    for (const key of CARRY) {
+      const v = String(form.get(key) ?? '').trim()
+      if (v) next.set(key, v)
+    }
+    return Astro.redirect(`/app/vehicles/new?${next.toString()}`, 303)
+  }
+
+  if (intent !== 'create') {
+    return reject('That button did not tell us what to do. Try again.')
+  }
+
+  const kind = String(form.get('kind') ?? '')
+  if (kind !== 'power_unit' && kind !== 'trailer') {
+    return reject('Tell us whether this is a power unit or a trailer.')
+  }
+
+  const year = parseOptionalInt(form.get('model_year'), {
+    label: 'Year',
+    min: 1900,
+    max: maxYear,
+  })
+  if (!year.ok) return reject(year.message)
+
+  // min 1, not min 0. A blank box has already come back as NULL by this point,
+  // so a 0 reaching here was typed — and 0 lb sits under every threshold in the
+  // catalogue and would exempt the truck from all of them.
+  const gvwr = parseOptionalInt(form.get('gvwr_lbs'), {
+    label: 'GVWR',
+    min: 1,
+    max: 200_000,
+  })
+  if (!gvwr.ok) return reject(gvwr.message)
+
+  const plateState = parseStateCode(form.get('plate_state'))
+  if (!plateState.ok) return reject(plateState.message)
+
+  const { data, error } = await supabase
+    .from('vehicles')
+    .insert({
+      // Set explicitly, and this is the one column RLS will not fill in for us.
+      // The policy CHECKS carrier_id — it rejects a row belonging to someone
+      // else — but it does not supply one, and the column is NOT NULL with no
+      // default, so leaving it out fails the insert outright.
+      carrier_id: carrierId,
+      kind,
+      unit_number: textOrNull(form.get('unit_number')),
+      vin: upperOrNull(form.get('vin')),
+      make: textOrNull(form.get('make')),
+      model: textOrNull(form.get('model')),
+      model_year: year.value,
+      gvwr_lbs: gvwr.value,
+      plate: upperOrNull(form.get('plate')),
+      plate_state: plateState.value,
+    })
+    .select('id')
+    .single()
+
+  if (error || !data) {
+    // vehicles_vin_unique is a PARTIAL unique index: same carrier, VIN present,
+    // not sold. Postgres reports it as a bare constraint name, which means
+    // nothing to an owner — and the useful thing to say is not "constraint
+    // violated" but "you already have this truck".
+    const raw = error?.message ?? 'The vehicle was not saved.'
+    const message = raw.includes('vehicles_vin_unique')
+      ? 'That VIN is already on a vehicle in your fleet. Search for it from the list rather than adding it twice.'
+      : raw
+    return reject(message)
+  }
+
+  // 303, spelled out. Astro.redirect() defaults to 302, and a 302 lets the
+  // browser repeat the POST when the owner refreshes or presses back — which
+  // here adds the same truck a second time. 303 tells it to GET instead.
+  //
+  // Straight to the new record rather than back to the list: the dates are the
+  // reason he is here, and they live on the next screen.
+  return Astro.redirect(`/app/vehicles/${data.id}?added=1`, 303)
+}
+
+// --- GET: render, prefilled from whatever a rejected save handed back --------
+
+const params = Astro.url.searchParams
+const error = params.get('error')
+const prior = (key: string) => params.get(key) ?? ''
+const priorKind = prior('kind')
+
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+---
+
+<App title="Add a vehicle" subtitle="Put in what you know. Everything except the first question can wait.">
+  <div class="max-w-2xl">
+    {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+
+    <form method="POST" class="rounded-xl border border-ink-100 bg-white p-5">
+      <fieldset>
+        <legend class="text-sm font-medium">
+          What is it? <span class="text-red-600">*</span>
+        </legend>
+        <p class="mt-1 text-xs text-ink-500">
+          This decides which deadlines the record gets. A tractor and the trailer behind it are
+          inspected separately and each keeps its own paperwork, so they go in as two vehicles.
+        </p>
+        <div class="mt-2 grid gap-3 sm:grid-cols-2">
+          {
+            VEHICLE_KINDS.map((k) => (
+              <label class="flex cursor-pointer items-start gap-3 rounded-lg border border-ink-100 p-3 transition hover:bg-ink-50">
+                <input
+                  type="radio"
+                  name="kind"
+                  value={k.value}
+                  required
+                  checked={priorKind === k.value}
+                  class="mt-0.5 size-4 border-ink-300"
+                />
+                <span>
+                  <span class="block text-sm font-medium">{k.label}</span>
+                  <span class="mt-0.5 block text-xs text-ink-500">{k.hint}</span>
+                </span>
+              </label>
+            ))
+          }
+        </div>
+      </fieldset>
+
+      <div class="mt-5 grid gap-4 sm:grid-cols-2">
+        <label class="block">
+          <span class="text-sm font-medium">
+            Unit number <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input
+            type="text"
+            name="unit_number"
+            value={prior('unit_number')}
+            placeholder="e.g. 12"
+            class={`${field} tabular-nums`}
+          />
+          <span class="mt-1 block text-xs text-ink-500">
+            What you call it in the yard. Without it we fall back to the VIN.
+          </span>
+        </label>
+
+        <label class="block">
+          <span class="text-sm font-medium">
+            VIN <span class="font-normal text-ink-300">(optional)</span>
+          </span>
+          <input
+            type="text"
+            name="vin"
+            value={prior('vin')}
+            maxlength="17"
+            autocapitalize="characters"
+            spellcheck="false"
+            placeholder="17 characters"
+            class={`${field} font-mono uppercase`}
+          />
+          <span class="mt-1 block text-xs text-ink-500">
+            CARB reads the VIN to set your Clean Truck Check months, so it is worth a walk to the
+            door.
+          </span>
+        </label>
+      </div>
+
+      <div class="mt-4 grid gap-4 sm:grid-cols-3">
+        <label class="block">
+          <span class="text-sm font-medium">Year</span>
+          <input
+            type="text"
+            name="model_year"
+            value={prior('model_year')}
+            inputmode="numeric"
+            placeholder="e.g. 2018"
+            class={`${field} tabular-nums`}
+          />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Make</span>
+          <input
+            type="text"
+            name="make"
+            value={prior('make')}
+            placeholder="e.g. Freightliner"
+            class={field}
+          />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Model</span>
+          <input
+            type="text"
+            name="model"
+            value={prior('model')}
+            placeholder="e.g. Cascadia"
+            class={field}
+          />
+        </label>
+      </div>
+
+      <div class="mt-4 grid gap-4 sm:grid-cols-3">
+        <label class="block">
+          <span class="text-sm font-medium">Plate</span>
+          <input
+            type="text"
+            name="plate"
+            value={prior('plate')}
+            autocapitalize="characters"
+            class={`${field} uppercase tabular-nums`}
+          />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">Plate state</span>
+          <input
+            type="text"
+            name="plate_state"
+            value={prior('plate_state')}
+            maxlength="2"
+            autocapitalize="characters"
+            placeholder="CA"
+            class={`${field} uppercase`}
+          />
+        </label>
+        <label class="block">
+          <span class="text-sm font-medium">GVWR</span>
+          <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
+            <input
+              type="text"
+              name="gvwr_lbs"
+              value={prior('gvwr_lbs')}
+              inputmode="numeric"
+              placeholder="80,000"
+              class="w-full bg-transparent px-3 py-2 text-base tabular-nums outline-none"
+            />
+            <span class="pr-3 text-ink-300">lb</span>
+          </div>
+        </label>
+      </div>
+
+      {/*
+        Said here, on the way in, and not only on the detail page. The owner who
+        is about to leave this blank is exactly the person who needs to know that
+        blank is not the same as exempt.
+      */}
+      <p class="mt-3 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+        Leave the GVWR blank if you do not know it. Blank means unknown, and we treat an
+        unknown-weight truck as fully regulated — you will see every weight-conditional deadline
+        until you fill it in. Guessing a number is the one thing that can quietly switch a real
+        deadline off.
+      </p>
+
+      <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+        <button
+          type="submit"
+          name="intent"
+          value="create"
+          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+        >
+          Add vehicle
+        </button>
+        <a href="/app/vehicles" class="text-sm font-medium text-brand-600 hover:underline">
+          Back to trucks
+        </a>
+      </div>
+    </form>
+  </div>
+</App>

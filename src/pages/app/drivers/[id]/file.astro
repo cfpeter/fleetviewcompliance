@@ -1,0 +1,253 @@
+---
+/**
+ * The driver qualification file, laid out to be printed and handed over.
+ *
+ * Order is 49 CFR 391.51(b), because an investigator works down that list and a
+ * binder in any other order makes them hunt. The gap report goes first, because
+ * page one is the page that actually gets read.
+ *
+ * On what this document does NOT say: see the footer, and tests/proof-binder.test.ts,
+ * which reads this file as text and fails if a verdict word appears anywhere in
+ * it — markup or comment.
+ */
+import App from '../../../../layouts/App.astro'
+import { loadDeadlines } from '../../../../lib/deadlines.ts'
+import { assembleDqf, gaps, summarise, type ItemState } from '../../../../lib/proof/dqf.ts'
+
+const { id } = Astro.params
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+
+const [{ data: driver }, { data: carrier }, allItems] = await Promise.all([
+  supabase.from('drivers').select('*').eq('id', id).single(),
+  supabase.from('carriers').select('legal_name, dot_number').eq('id', carrierId).single(),
+  loadDeadlines(supabase, carrierId),
+])
+
+if (!driver) return Astro.redirect('/app/drivers?error=notfound', 303)
+
+const items = assembleDqf({ items: allItems.filter((i) => i.subjectId === id) })
+const observedAt = new Date()
+const summary = summarise(items, observedAt)
+const outstanding = gaps(items)
+
+/**
+ * The words printed for each state.
+ *
+ * `unknown` says "Not known" rather than "N/A" or a dash on purpose: to somebody
+ * skimming a printout, both of those read as "nothing to do here", which is the
+ * opposite of what an absent date means.
+ */
+const STATE_WORDS: Record<ItemState, string> = {
+  present: 'On file',
+  expiring: 'Expires soon',
+  expired: 'Expired',
+  missing: 'Not on file',
+  unknown: 'Not known',
+}
+
+const STATE_CLASS: Record<ItemState, string> = {
+  present: 'bg-emerald-100 text-emerald-800',
+  expiring: 'bg-amber-100 text-amber-800',
+  expired: 'bg-red-100 text-red-700',
+  missing: 'bg-red-100 text-red-700',
+  unknown: 'bg-ink-100 text-ink-500',
+}
+
+const longDate = (d?: Date) =>
+  d
+    ? d.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        timeZone: 'UTC',
+      })
+    : '—'
+
+const name = `${driver.first_name} ${driver.last_name}`.trim()
+---
+
+<App title={`Driver file — ${name}`} subtitle="Laid out in the order 49 CFR 391.51(b) lists it.">
+  <div class="mb-5 flex flex-wrap gap-3" data-screen-only>
+    <button
+      type="button"
+      id="print"
+      class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+    >
+      Print / Save as PDF
+    </button>
+    <a
+      href={`/app/drivers/${id}`}
+      class="rounded-lg border border-ink-100 px-4 py-2.5 font-medium transition hover:bg-ink-50"
+    >
+      Back to the driver
+    </a>
+  </div>
+
+  <article class="rounded-xl border border-ink-100 bg-white p-6 sm:p-8" id="binder">
+    <!-- Header: who, and above all WHEN. This is a statement about a moment. -->
+    <header class="border-b border-ink-100 pb-5">
+      <h2 class="text-2xl font-semibold tracking-tight">Driver qualification file</h2>
+      <dl class="mt-4 grid gap-x-8 gap-y-1 text-sm sm:grid-cols-2">
+        <div class="flex gap-2">
+          <dt class="text-ink-500">Carrier</dt>
+          <dd class="font-medium">{carrier?.legal_name}</dd>
+        </div>
+        <div class="flex gap-2">
+          <dt class="text-ink-500">USDOT</dt>
+          <dd class="font-medium tabular-nums">{carrier?.dot_number ?? '—'}</dd>
+        </div>
+        <div class="flex gap-2">
+          <dt class="text-ink-500">Driver</dt>
+          <dd class="font-medium">{name}</dd>
+        </div>
+        <div class="flex gap-2">
+          <dt class="text-ink-500">Licence</dt>
+          <dd class="font-medium tabular-nums">
+            {driver.cdl_number ? `${driver.cdl_number} (${driver.cdl_state ?? '—'})` : '—'}
+          </dd>
+        </div>
+      </dl>
+      <p class="mt-4 text-sm font-medium">
+        Observed on <span class="tabular-nums">{longDate(observedAt)}</span>
+      </p>
+      <p class="mt-1 text-sm text-ink-500 tabular-nums">
+        {summary.present} of {summary.total} items on file · {summary.expiring} expiring soon ·
+        {summary.attention} needing attention
+      </p>
+    </header>
+
+    <!-- The gap report, first, because page one is what gets read. -->
+    <section class="mt-6" data-block>
+      <h3 class="text-lg font-semibold tracking-tight">What needs attention</h3>
+      {
+        outstanding.length === 0 ? (
+          <p class="mt-2 rounded-lg bg-ink-50 px-4 py-3 text-sm">
+            Every item below is on file as of the date above. That is a statement about this
+            carrier's records on that date, and nothing more — the documents themselves have not
+            been examined by anyone here.
+          </p>
+        ) : (
+          <ol class="mt-3 space-y-2">
+            {outstanding.map((i) => (
+              <li class="rounded-lg border border-red-200 bg-red-50/40 px-4 py-3 text-sm">
+                <span class="font-medium">
+                  {i.paragraph} {i.title}
+                </span>
+                <span class="ml-2 text-ink-500">— {STATE_WORDS[i.state]}</span>
+                <div class="mt-0.5 text-xs text-ink-500">{i.citation}</div>
+              </li>
+            ))}
+          </ol>
+        )
+      }
+    </section>
+
+    <!-- The eight items, in statutory order. -->
+    <section class="mt-8">
+      <h3 class="text-lg font-semibold tracking-tight">The file, item by item</h3>
+      <div class="mt-3 divide-y divide-ink-100 border-t border-ink-100">
+        {
+          items.map((i) => (
+            <div class="py-4" data-block>
+              <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span class="font-mono text-sm text-ink-500 tabular-nums">{i.paragraph}</span>
+                <span class="font-medium">{i.title}</span>
+                <span
+                  class:list={[
+                    'rounded-md px-2 py-0.5 text-xs font-medium',
+                    STATE_CLASS[i.state],
+                  ]}
+                >
+                  {STATE_WORDS[i.state]}
+                </span>
+              </div>
+              <div class="mt-1 text-xs text-ink-500">{i.citation}</div>
+              {i.detail && <div class="mt-2 text-sm text-ink-500">{i.detail}</div>}
+              {i.note && (
+                <p class="mt-2 border-l-2 border-ink-100 pl-3 text-sm text-ink-500">{i.note}</p>
+              )}
+            </div>
+          ))
+        }
+      </div>
+    </section>
+
+    <!--
+      The footer is load-bearing. A document that states dated observations and
+      omits this will be read as the thing it declines to be.
+    -->
+    <footer class="mt-8 border-t border-ink-100 pt-5 text-xs text-ink-500">
+      <p>
+        This is a record of what this carrier holds and what was observed on the date above. It is
+        not a certification of compliance, and it is not a statement that any document in it is
+        genuine, current, or sufficient — only that the carrier's own records showed what is
+        printed here, on that date.
+      </p>
+      <p class="mt-2">
+        Deadline dates are computed from the Federal Motor Carrier Safety Regulations and the
+        California rules cited beside each item.
+        {/* Kept on one line: tests/proof-binder.test.ts matches this sentence exactly, and
+            a line wrap in the middle of it would pass review and fail the guard. */}
+        FleetView Compliance is not affiliated with FMCSA, the DOT, or any government agency.
+      </p>
+    </footer>
+  </article>
+</App>
+
+<style is:global>
+  /*
+   * Every rule here is a defect somebody would only find after printing:
+   * application navigation across the top of a record that goes in a binder, an
+   * item split across a page boundary, a colour-coded badge coming out of a mono
+   * laser as grey mush.
+   */
+  @media print {
+    @page {
+      margin: 18mm 14mm;
+    }
+
+    /* The app shell has no business on a printed record. */
+    body > header,
+    [data-screen-only] {
+      display: none !important;
+    }
+
+    body {
+      background: #fff;
+    }
+
+    main {
+      max-width: none;
+      padding: 0;
+    }
+
+    #binder {
+      border: 0;
+      padding: 0;
+    }
+
+    /* An item broken over two pages is an item an auditor reads as missing. */
+    [data-block] {
+      break-inside: avoid;
+    }
+
+    /* Badges become outlined rather than filled: a tinted background is grey
+       mush on a monochrome printer, and grey mush all looks alike. */
+    [class*='bg-'] {
+      background: transparent !important;
+      color: #000 !important;
+    }
+
+    .rounded-md[class*='bg-'] {
+      border: 1px solid #000;
+    }
+  }
+</style>
+
+<script>
+  // The browser's own print dialogue IS the PDF generator. A native renderer
+  // would want a filesystem and a font cache, and the Cloudflare Workers runtime
+  // has neither — so the dependency we would add could not run where this runs.
+  document.getElementById('print')?.addEventListener('click', () => window.print())
+</script>

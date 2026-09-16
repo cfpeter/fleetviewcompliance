@@ -1,0 +1,54 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "fleetview-compliance",
+	"compatibility_date": "2026-09-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	// TOP LEVEL, and it has to be.
+	//
+	// @astrojs/cloudflare generates its own deploy config at
+	// dist/server/wrangler.json during `astro build`, and it reads the TOP LEVEL
+	// of this file to do it — `env.*` blocks are flattened away and lost. Moved
+	// into an environment, these bindings vanished from the build: `wrangler
+	// deploy --dry-run` reported only SESSION and ASSETS, and every document
+	// upload would have failed at runtime with an undefined binding, in
+	// production, on the medical certificates this product exists to hold.
+	//
+	// Verify after ANY change here:
+	//   npm run build && npx wrangler deploy --dry-run
+	// and read the binding table it prints. If DOCUMENTS is not in it, it is not
+	// deployed, whatever this file says.
+	"routes": [
+		{
+			"pattern": "fleetviewcompliance.com",
+			"custom_domain": true
+		},
+		{
+			"pattern": "www.fleetviewcompliance.com",
+			"custom_domain": true
+		}
+	],
+	"vars": {
+		"DEPLOY_ENV": "production"
+	},
+	"r2_buckets": [
+		{
+			"binding": "DOCUMENTS",
+			"bucket_name": "fleetview-documents",
+			"remote": true
+		}
+	],
+	"kv_namespaces": [
+		{
+			"binding": "SESSION",
+			"id": "14d4638ba71e4a6990fe6da7d25cabf4",
+			"remote": true
+		}
+	],
+	// NOTE ON ENVIRONMENTS — do not add an "env" block here.
+	//
+	// Wrangler supports them; this adapter does not carry them through. Dev lives
+	// in wrangler.dev.jsonc, deployed with `-c`, which is the only shape that
+	// actually reaches the Worker. See docs/OPERATIONS.md.
+}
