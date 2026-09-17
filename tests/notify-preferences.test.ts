@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import {
   DEFAULT_LEAD_DAYS,
@@ -169,4 +170,51 @@ test('a time column is trimmed to what a time input round-trips', () => {
   assert.equal(timeForInput('22:00:00'), '22:00')
   assert.equal(timeForInput(null), '')
   assert.equal(timeForInput(''), '')
+})
+
+// ---------------------------------------------------------------- the digest column
+
+/**
+ * The one way the digest column can go wrong, pinned against the page itself.
+ *
+ * "Roll into one daily message" shipped as a live checkbox over a column the
+ * digest job reads nowhere — a control that accepted input and changed nothing,
+ * which teaches an owner that this whole screen is decorative. The fix disables
+ * it, the way the SMS box is disabled.
+ *
+ * That fix has a trapdoor. A disabled checkbox posts NOTHING, exactly as an
+ * unticked one does, and the save is an upsert that replaces the whole row. So
+ * the obvious `digest: form.has('digest_' + category)` would read false for
+ * every category and wipe every stored preference the first time anybody saved
+ * — silently, on the page whose entire promise is that it does not do that.
+ * The column is kept because it is meant to be honoured later; a save that
+ * empties it on the way past makes the keeping worthless.
+ *
+ * Read from source because that is where the mistake would reappear: there is
+ * no unit to call here, only a page whose handler must not ask the form.
+ */
+test('the settings save cannot take the digest preference from the form', () => {
+  const page = readFileSync(new URL('../src/pages/app/settings.astro', import.meta.url), 'utf8')
+
+  // The control is not live, so nothing can arrive for it.
+  assert.match(
+    page,
+    /<input\s+type="checkbox"\s+disabled\s+checked\s+aria-label=\{`Daily digest/,
+    'the digest box must be disabled, not a live control over a column nothing reads',
+  )
+  assert.ok(
+    !/name=\{`digest_/.test(page),
+    'a disabled box with a name still posts nothing — it must not claim to post at all',
+  )
+
+  // And therefore the save must not derive the value from what was posted.
+  assert.ok(
+    !/form\.(has|get)\(`digest_/.test(page),
+    'reading the form for digest turns every save into a silent wipe of the stored value',
+  )
+  assert.match(
+    page,
+    /digest: storedDigest\.get\(category\.value\) \?\? true/,
+    'the saved value must be the one already stored, defaulting to the column default',
+  )
 })

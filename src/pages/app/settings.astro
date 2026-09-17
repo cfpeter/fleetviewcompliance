@@ -1,12 +1,20 @@
 ---
 /**
- * Settings: who gets told what, when we stay quiet, and proof of what we sent.
+ * Settings: the person, the people, and who gets told what.
  *
- * Four forms, four intents, one page, and every branch ends in a 303. That is
- * not boilerplate here: a replayed POST on this page would re-run an upsert
- * (harmless) or a DELETE of a snooze (not harmless — a snooze is the record
- * that somebody looked at an item and decided it could wait, and there is no
- * undo for removing it by pressing F5).
+ * Every form on this page POSTs to the page itself, dispatches on `intent`, and
+ * every branch ends in a 303. That is not boilerplate here: a replayed POST
+ * would re-run an upsert (harmless), DELETE a snooze (not harmless — a snooze
+ * is the record that somebody looked at an item and decided it could wait, and
+ * there is no undo for removing it by pressing F5), or send a second email
+ * change confirmation on a refresh.
+ *
+ * WHAT WAS MISSING UNTIL TODAY, in the owner's words: "there is no place to add
+ * or update emails or phone number or any other information for the owner to
+ * manage." He was right. This page edited a USDOT number and a pile of
+ * notification preferences, and nothing at all about the person reading it — no
+ * name, no phone, no email, and no way to change a password on an account that
+ * still has no password reset anywhere. The first two sections are that gap.
  *
  * The honesty rule on this screen is load-bearing. Everything it offers either
  * works today or says, in words, that it does not. A settings page that quietly
@@ -15,6 +23,13 @@
  * claim is that when it tells you something, it is true. Where a control is
  * stored but not yet acted on, the copy says so next to the control, not in a
  * footnote.
+ *
+ * THE WORDS. This is read by small-fleet owners in Los Angeles, and many of
+ * them do not read English fluently. Labels, buttons, help lines and errors on
+ * this page are short, literal sentences. No wordplay, nothing implied. The
+ * email and password blocks especially say what will happen and what the person
+ * has to do next, because getting either of those half-right locks somebody out
+ * of the account they are paying for.
  */
 import App from '../../layouts/App.astro'
 import { formText, formatDate, todayInCalifornia } from '../../lib/drivers.ts'
@@ -29,7 +44,10 @@ import {
   timeForInput,
   timezoneOptions,
 } from '../../lib/notify/preferences.ts'
+import { formatPhone, parsePhoneEdit, toE164 } from '../../lib/phone.ts'
 import { ruleByCode } from '../../lib/rules/index.ts'
+import { site } from '../../lib/site.ts'
+import { anonClient } from '../../lib/supabase/server.ts'
 
 const supabase = Astro.locals.supabase!
 const carrierId = Astro.locals.carrierId!
@@ -58,9 +76,221 @@ const fail = (code: string) => back(`?error=${code}`)
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/**
+ * Deliberately loose. The address is checked for real by the one thing that can
+ * check it — the confirmation link, which either arrives or does not. A clever
+ * regex here only ever refuses somebody's genuine address.
+ */
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+/** The sign-up form's own minimum, in login.astro. One rule, one number. */
+const MIN_PASSWORD = 8
+
+/**
+ * Does the person holding this session actually know the password on it?
+ *
+ * BOTH sensitive changes below require this, and the reason is specific to this
+ * application: THERE IS NO PASSWORD RESET ANYWHERE IN IT. No link on the login
+ * page, no route, no recovery branch in /auth/callback. So a password changed
+ * by somebody who is not the owner is not an inconvenience he undoes by email —
+ * it is a permanent lockout of the account his compliance record lives in, and
+ * the same is true of an email change, which moves where the next sign-in
+ * happens. A laptop left open on the yard desk must not be enough to do either.
+ *
+ * Supabase does not expose "check this password"; signing in IS the check. So:
+ * a THROWAWAY client, never `Astro.locals.supabase`. The request's own client
+ * writes session cookies, so signing in on it would rewrite the cookies of the
+ * page the person is standing on — and a mistyped password would do it too.
+ * `anonClient` carries no cookies and `persistSession: false` means nothing it
+ * mints is ever written down.
+ *
+ * And NO signOut afterwards. The default scope of `signOut` is GLOBAL: it
+ * revokes every refresh token the user holds, including the phone in the cab.
+ * Checking a password must not sign anybody out of anything. The token minted
+ * here is never stored and expires on its own.
+ */
+async function passwordHolds(email: string, password: string): Promise<boolean> {
+  // A blank box is not a guess worth spending a login attempt on, and letting
+  // it through to Supabase would count against the rate limit that protects
+  // this check from being used to guess.
+  if (email === '' || password === '') return false
+  const { error } = await anonClient().auth.signInWithPassword({ email, password })
+  return !error
+}
+
+/** The address this person actually signs in with. `auth.users`, not `profiles`. */
+async function signInEmailNow(): Promise<string> {
+  const { data } = await supabase.auth.getUser()
+  return data.user?.email ?? ''
+}
+
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData()
   const intent = String(form.get('intent') ?? '')
+
+  // --------------------------------------------------------- your details
+
+  /**
+   * Name, phone and timezone for the SIGNED-IN PERSON. One form, one button.
+   *
+   * Three fields that used to be two screens and one missing screen: the
+   * timezone control lived in the carrier block, where a person looking for
+   * their own details would never find it, and the name and phone did not
+   * exist. They are one form because they are one answer to one question — who
+   * are you and where are you — and three save buttons on a page like this is
+   * three chances to fill a box and walk away without pressing anything.
+   *
+   * THIS MUST NOT BECOME THE DIGEST BUG. `save_alerts` below writes with an
+   * UPSERT, which replaces the whole row, which is why it has to read `digest`
+   * back from the database before writing — a field the form does not render
+   * would otherwise be blanked on every save. This statement is an UPDATE: a
+   * PostgREST update is a PATCH and touches only the columns named in the
+   * object. `email`, `quiet_from`, `quiet_to` and `quiet_allow_critical` are
+   * not named, so they are not written. Anyone changing this to an upsert takes
+   * on the read-back obligation with it.
+   */
+  if (intent === 'save_profile') {
+    // The stored row, read here rather than taken from `profile` further down:
+    // the load section runs only on a GET, so on a POST there is nothing in
+    // scope yet — and `parsePhoneEdit` needs the column to decide whether this
+    // phone was actually changed.
+    const { data: current, error: readError } = await supabase
+      .from('profiles')
+      .select('phone, timezone')
+      .eq('id', userId)
+      .maybeSingle()
+
+    // A read that FAILED is not a person with no row. Carrying on would hand
+    // `parsePhoneEdit` an undefined "stored" value, and a legacy number nobody
+    // touched would be refused as though it had just been typed.
+    if (readError) return fail('save_failed')
+
+    /**
+     * `parsePhoneEdit`, not `parsePhone`, and this is the same rule the driver
+     * and customer forms follow. Refuse only a phone the person actually
+     * CHANGED; a legacy value that was already in the column goes back exactly
+     * as it came out. Nobody must be blocked on a field they did not edit —
+     * here that would mean an owner who cannot save his own NAME because of a
+     * seven-digit number somebody typed in 2019.
+     *
+     * The comparison inside is against `formatPhone(stored)` because that is
+     * what the input below renders, so "unchanged" is measured against what the
+     * form DISPLAYED, never against the raw column.
+     */
+    const phone = parsePhoneEdit(form.get('phone'), current?.phone)
+    // The parser's own message is not forwarded. `?error=` on this page carries
+    // CODES, never text, so that nobody can hand a customer a link to their own
+    // settings page with a sentence of their choosing across the top of it.
+    if (!phone.ok) return fail('phone_bad')
+
+    // A zone we cannot resolve does not raise anywhere — it quietly makes every
+    // "is this overdue yet" answer wrong by up to a day. `current?.timezone` is
+    // passed so that a row already holding a zone this build's list has not got
+    // is not refused for being what it already is.
+    const requestedZone = String(form.get('timezone') ?? '')
+    if (!isKnownTimezone(requestedZone, current?.timezone)) return fail('tz_unknown')
+
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        // Blank stays NULL rather than ''. An empty string is a VALUE: it reads
+        // as answered and sorts as one.
+        full_name: formText(form, 'full_name'),
+        phone: phone.value,
+        timezone: requestedZone,
+      })
+      // `profiles` holds a row per PERSON and the policy scopes it to
+      // `id = auth.uid()`. Naming the id is how this statement says which row it
+      // means, not a second guess at the policy.
+      .eq('id', userId)
+
+    if (error) return fail('save_failed')
+    return back('?saved=profile')
+  }
+
+  // ----------------------------------------------------- sign-in email
+
+  /**
+   * THE TWO EMAILS, and why only one of them is editable.
+   *
+   * `auth.users.email` is what he signs in with. `profiles.email` is a copy the
+   * public schema can join against, and it is what the morning digest actually
+   * sends to. Offering a box for the second one would be a trap with no bottom:
+   * he types the new address, the page shows it, the sign-in page keeps
+   * demanding the old one, and nothing on screen explains why.
+   *
+   * So there is exactly ONE email on this page, it is the sign-in address, and
+   * `profiles.email` is a mirror the application never writes. Migration 0027
+   * puts a trigger on `auth.users` that copies the address across the moment it
+   * changes — in the database, because the confirmation link can be opened on a
+   * phone, in another browser, or next week, and that write may never pass
+   * through a request this app serves.
+   *
+   * Supabase does NOT change the sign-in address here. `updateUser({ email })`
+   * sends a confirmation link to the new address and changes nothing until it
+   * is opened. That is the honest behaviour and the screen says so in those
+   * words rather than reporting a save that has not happened.
+   */
+  if (intent === 'change_email') {
+    const requested = String(form.get('new_email') ?? '')
+      .trim()
+      .toLowerCase()
+    if (!EMAIL_SHAPE.test(requested)) return fail('email_shape')
+
+    const signInEmail = await signInEmailNow()
+    if (signInEmail === '') return fail('save_failed')
+    // Caught here rather than sent to Supabase, which accepts it and emails a
+    // link that changes nothing — a confirmation for a change that is not one.
+    if (requested === signInEmail.toLowerCase()) return fail('email_same')
+
+    if (!(await passwordHolds(signInEmail, String(form.get('current_password') ?? '')))) {
+      return fail('password_wrong')
+    }
+
+    const { error } = await supabase.auth.updateUser({ email: requested })
+    // Every failure is reported the same way, on purpose. Supabase distinguishes
+    // "that address already has an account" from the rest, and repeating that
+    // distinction turns this form into a way of asking whether a given person is
+    // a customer here. login.astro refuses to leak the same fact.
+    if (error) return fail('email_failed')
+    return back('?saved=email_sent')
+  }
+
+  // -------------------------------------------------------- password
+
+  /**
+   * The signed-in person changes their own password.
+   *
+   * HALF A PROBLEM, and the screen says which half. There is no forgot-password
+   * flow in this application at all, so somebody who has forgotten their
+   * password is locked out permanently and this form cannot help them — it needs
+   * the old one. What it does close is the other half: until today a person who
+   * KNEW their password and wanted a different one had no way to change it
+   * either, which is the easy case, and it was missing.
+   */
+  if (intent === 'change_password') {
+    const current = String(form.get('current_password') ?? '')
+    const next = String(form.get('new_password') ?? '')
+    const again = String(form.get('new_password_again') ?? '')
+
+    // Checked before the password is verified, so that a typo in the new boxes
+    // does not cost a sign-in attempt against the rate limit.
+    if (next.length < MIN_PASSWORD) return fail('password_short')
+    // Twice, because there is no reset. A typo repeated into one box is a
+    // password nobody knows, on an account nobody can recover.
+    if (next !== again) return fail('password_mismatch')
+    if (next === current) return fail('password_same')
+
+    const signInEmail = await signInEmailNow()
+    if (signInEmail === '') return fail('save_failed')
+    if (!(await passwordHolds(signInEmail, current))) return fail('password_wrong')
+
+    const { error } = await supabase.auth.updateUser({ password: next })
+    if (error) return fail('password_failed')
+    // The session on this browser stays valid — Supabase refreshes it in place
+    // — so nobody is thrown out of the page they just used.
+    return back('?saved=password')
+  }
 
   // -------------------------------------------------------- USDOT number
 
@@ -109,46 +339,63 @@ if (Astro.request.method === 'POST') {
     return back('?saved=dot')
   }
 
-  // ------------------------------------------------------------- timezone
-
-  if (intent === 'save_timezone') {
-    const requested = String(form.get('timezone') ?? '')
-
-    // Read the stored zone first, because a row can legitimately hold a zone
-    // this build's list has not got, and "not in my list" must not mean
-    // "refuse the value you are already living with".
-    const { data: me } = await supabase
-      .from('profiles')
-      .select('timezone')
-      .eq('id', userId)
-      .maybeSingle()
-
-    // An unresolvable zone does not raise anywhere — it quietly makes every
-    // "is this overdue yet" answer wrong by up to a day, on a product whose
-    // entire job is dates. So it is refused at the door.
-    if (!isKnownTimezone(requested, me?.timezone)) {
-      return fail('tz_unknown')
-    }
-
-    const { error } = await supabase
-      .from('profiles')
-      .update({ timezone: requested })
-      // Not a defensive filter: `profiles` holds a row per PERSON, and the
-      // policy scopes it to `id = auth.uid()`. Naming the id is how this
-      // statement says which row it means, not a second guess at the policy.
-      .eq('id', userId)
-
-    if (error) return fail('save_failed')
-    return back('?saved=timezone')
-  }
-
   // ------------------------------------------------------------- the matrix
 
   if (intent === 'save_alerts') {
     const channelRows: Record<string, unknown>[] = []
     const categoryRows: Record<string, unknown>[] = []
 
+    /**
+     * `digest` is READ BACK, never taken from the form.
+     *
+     * The box is disabled in the markup now, for the same reason the SMS box
+     * is: the job batches into one message unconditionally, so a box you could
+     * untick promised separate messages that no code anywhere sends. But a
+     * disabled checkbox posts NOTHING, and the upsert below replaces the whole
+     * row — so `form.has('digest_…')` would come back false for all three
+     * categories and the first save after that change would quietly rewrite
+     * every stored preference to false. The column is kept precisely because it
+     * is meant to be honoured later; erasing it on the way past would make the
+     * keeping pointless.
+     *
+     * Carrier AND user, not user alone: the row key is (carrier, user,
+     * category) and one person can belong to more than one carrier. Reading
+     * across carriers here would copy a choice made on one account onto another.
+     */
+    const storedCategories = await supabase
+      .from('notification_category_preferences')
+      .select('category, digest')
+      .eq('carrier_id', carrierId)
+      .eq('user_id', userId)
+
+    // A read that FAILED is not an account that has never saved. Treating the
+    // two alike is exactly how a deliberate choice gets overwritten with the
+    // column default and called a successful save. Refuse, and let the person
+    // press the button again.
+    if (storedCategories.error) return fail('save_failed')
+
+    const storedDigest = new Map(
+      (storedCategories.data ?? []).map((r) => [r.category as string, r.digest as boolean]),
+    )
+
     for (const category of NOTIFY_CATEGORIES) {
+      // A category whose lead time lives on each item has no array to save, and
+      // writing one would store a number nothing reads — the failure this
+      // screen's own doctrine calls out. The channel rows below are still
+      // written for it: the on/off switch is real.
+      if (category.perItemLeadDays) {
+        for (const channel of NOTIFY_CHANNELS) {
+          channelRows.push({
+            carrier_id: carrierId,
+            user_id: userId,
+            category: category.value,
+            channel: channel.value,
+            enabled: channel.live && form.has(`on_${category.value}_${channel.value}`),
+          })
+        }
+        continue
+      }
+
       // One array per category, stored once. This used to be parsed once per
       // category and then written to all three channel rows, because the schema
       // hung `lead_days` off (category, CHANNEL) — three copies of one fact,
@@ -159,7 +406,11 @@ if (Astro.request.method === 'POST') {
         user_id: userId,
         category: category.value,
         lead_days: parseLeadDays(form.get(`lead_${category.value}`)),
-        digest: form.has(`digest_${category.value}`),
+        // Carried through untouched. `?? true` is the column default in
+        // 0008_notifications.sql, so a category with no row yet is written with
+        // the value the database would have chosen for it anyway — which is
+        // also what the job actually does.
+        digest: storedDigest.get(category.value) ?? true,
       })
 
       for (const channel of NOTIFY_CHANNELS) {
@@ -312,8 +563,33 @@ interface LogRow {
   delivery_detail: string | null
 }
 
-const [carrierResult, profileResult, prefsResult, catPrefsResult, snoozeResult, logResult] =
-  await Promise.all([
+/**
+ * One person who can sign in to this carrier. See migration 0027.
+ *
+ * `memberships` and `profiles` are both scoped to `auth.uid()` by RLS, so a
+ * signed-in person can see exactly one membership and one profile — their own.
+ * `carrier_members` is a SECURITY DEFINER function that checks membership and
+ * then returns these four fields and nothing else, which is a narrower opening
+ * than widening either policy would have been.
+ */
+interface MemberRow {
+  user_id: string
+  full_name: string | null
+  email: string | null
+  role: 'owner' | 'staff'
+  joined_at: string
+}
+
+const [
+  carrierResult,
+  profileResult,
+  prefsResult,
+  catPrefsResult,
+  snoozeResult,
+  logResult,
+  authResult,
+  membersResult,
+] = await Promise.all([
     // `.eq('id', carrierId)` names WHICH carrier row, which is not the same thing
     // as a defensive `carrier_id` filter on a tenant table. RLS still decides
     // whether that row is visible at all.
@@ -329,9 +605,13 @@ const [carrierResult, profileResult, prefsResult, catPrefsResult, snoozeResult, 
       .eq('id', carrierId)
       .maybeSingle(),
 
+    // `email` is selected but never rendered as this person's address, and that
+    // is deliberate: it is a mirror of `auth.users.email` (0027), and the
+    // address shown on this page comes from the session below so that the page
+    // and the sign-in screen can never disagree.
     supabase
       .from('profiles')
-      .select('email, phone, timezone, quiet_from, quiet_to, quiet_allow_critical')
+      .select('full_name, email, phone, timezone, quiet_from, quiet_to, quiet_allow_critical')
       .eq('id', userId)
       .maybeSingle(),
 
@@ -363,6 +643,13 @@ const [carrierResult, profileResult, prefsResult, catPrefsResult, snoozeResult, 
       .select('sent_at, channel, destination, subject, status, error, delivery_state, delivery_detail')
       .order('sent_at', { ascending: false })
       .limit(20),
+
+    // The sign-in address, from the session rather than from `profiles`. The
+    // whole point of the section below is that it names the address the login
+    // page will accept, and only `auth.users` knows that.
+    supabase.auth.getUser(),
+
+    supabase.rpc('carrier_members', { p_carrier_id: carrierId }),
   ])
 
 const carrier = carrierResult.data
@@ -371,6 +658,21 @@ const prefRows = (prefsResult.data ?? []) as PrefRow[]
 const catPrefRows = (catPrefsResult.data ?? []) as CategoryPrefRow[]
 const snoozes = (snoozeResult.data ?? []) as SnoozeRow[]
 const log = (logResult.data ?? []) as LogRow[]
+
+const signInEmail = authResult.data.user?.email ?? ''
+const members = (membersResult.data ?? []) as MemberRow[]
+// A list that failed to load and a carrier with one person on it look identical
+// once both are empty, and one of those is a lie about who can reach the
+// account. They are told apart here so the page can say which happened.
+const membersFailed = Boolean(membersResult.error)
+
+/**
+ * Advisory, never a refusal — the save grandfathers a number nobody touched,
+ * and this is what asks for it to be fixed. Keyed off what the box SHOWS rather
+ * than off the column, because a warning pointing at a visibly empty field is a
+ * warning nobody can act on.
+ */
+const phoneUndialable = formatPhone(profile?.phone) !== '' && toE164(profile?.phone) === null
 
 /**
  * Theirs, then the carrier's, then Pacific — the same chain the digest job walks.
@@ -442,6 +744,18 @@ function isEnabled(category: string, channel: string): boolean {
   const row = prefByKey.get(`${category}:${channel}`)
   if (row) return row.enabled
   if (!hasSavedPrefs) return category === 'compliance' && channel === 'email'
+
+  // A CATEGORY THAT DID NOT EXIST WHEN HE LAST SAVED IS NOT A CATEGORY HE
+  // TURNED OFF.
+  //
+  // 'reminder' arrived in 0023, after every existing customer had already
+  // written their rows. The rule below would read those rows as "reminders: off"
+  // while the digest job — which applies the same default in
+  // `reminderEmailEnabled` — goes on sending them. The screen and the job must
+  // answer this question the same way, and the answer is yes: he typed the
+  // reminder, he means to be told about it.
+  if (category === 'reminder' && channel === 'email') return true
+
   // A row that is absent while others exist is genuinely off: the save writes
   // all nine every time, so a gap means somebody's row predates a channel.
   return false
@@ -545,6 +859,18 @@ const ERRORS: Record<string, string> = {
   dot_digits: 'A USDOT number is digits only — no letters, spaces or punctuation.',
   dot_present: 'A USDOT number is already on file, so this one was not saved.',
   dot_taken: 'Another account is already using that USDOT number.',
+  // Short, literal sentences. Each one says what is wrong and what to type
+  // instead, because the person reading it may not read English easily and a
+  // refusal they cannot act on is the same as a broken button.
+  phone_bad: 'We could not read that phone number. Type 10 digits, like (818) 334-0168.',
+  email_shape: 'That is not an email address. Type it like name@company.com.',
+  email_same: 'That is the email you use now. Nothing changed.',
+  email_failed: 'We could not change your email. Try again in a moment.',
+  password_wrong: 'That password is not right. Type the password you use now.',
+  password_short: 'Your new password is too short. Use 8 letters or numbers or more.',
+  password_mismatch: 'The two new passwords are not the same. Type the same one in both boxes.',
+  password_same: 'Your new password is the same as your old one. Pick a different one.',
+  password_failed: 'We could not change your password. Try again in a moment.',
   tz_unknown: 'That is not a timezone we recognise.',
   quiet_pair: 'Quiet hours need both a start and an end, or neither.',
   quiet_same: 'Quiet hours that start and end at the same minute do not silence anything.',
@@ -560,7 +886,20 @@ const error = errorCode && Object.hasOwn(ERRORS, errorCode) ? ERRORS[errorCode] 
 const saved = params.get('saved')
 
 const savedMessage: Record<string, string> = {
-  timezone: 'Timezone saved.',
+  profile: 'Your details are saved.',
+  /**
+   * The new address is NOT put in this message, and the reason is the query
+   * string it would have to travel in. An email address in a URL is personal
+   * data in the browser history, in any proxy log, and in the referrer header of
+   * the next request — and `?error=` on this page already carries codes rather
+   * than text precisely so that nobody can choose what appears across the top of
+   * somebody else's settings page. The sentence is written to work without it.
+   */
+  email_sent:
+    'Check your new email. We sent you a link. Open the email and click the link to finish. ' +
+    'Your sign-in email does not change until you click it. Until then, sign in with your old ' +
+    'email. If you do not see it, look in your spam folder.',
+  password: 'Your password is changed. Use the new password next time you sign in.',
   alerts: 'Alert settings saved.',
   quiet: 'Quiet hours saved.',
   unsnoozed: 'Un-snoozed. That item is back in the alerts.',
@@ -572,9 +911,12 @@ const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
 const checkbox = 'size-4 rounded border-ink-300'
 const th = 'px-4 py-3 font-medium'
+const button =
+  'rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-brand-700'
+const help = 'mt-1 block text-xs text-ink-500'
 ---
 
-<App title="Settings" subtitle="Who gets told what, and how loudly.">
+<App title="Settings" subtitle="Your details, your password, and who gets told what.">
   {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
   {
     saved && savedMessage[saved] && (
@@ -584,14 +926,293 @@ const th = 'px-4 py-3 font-medium'
     )
   }
 
+  {/* ======================================================== your account */}
+
+  <section>
+    <h2 class="text-lg font-semibold tracking-tight">Your account</h2>
+    <p class="mt-1 max-w-3xl text-sm text-ink-500">
+      This is you, not the company. Everyone who signs in has their own name, phone, email and
+      password.
+    </p>
+
+    <div class="mt-3 grid items-start gap-4 lg:grid-cols-2">
+      <form method="POST" class={card}>
+        <h3 class="font-medium tracking-tight">Your details</h3>
+
+        <label class="mt-3 block">
+          <span class="text-sm font-medium">Your name</span>
+          <input
+            type="text"
+            name="full_name"
+            value={profile?.full_name ?? ''}
+            autocomplete="name"
+            class={field}
+          />
+          <span class={help}>You can leave this blank.</span>
+        </label>
+
+        <label class="mt-3 block">
+          <span class="text-sm font-medium">Your phone</span>
+          {/*
+            Shown the way a person reads it, stored as E.164. The two are
+            deliberately different, and the save compares what was typed against
+            what this box DISPLAYED — see `parsePhoneEdit` — so an old number
+            nobody touched is never the reason a name will not save.
+          */}
+          <input
+            type="tel"
+            name="phone"
+            value={formatPhone(profile?.phone)}
+            placeholder="(818) 334-0168"
+            autocomplete="tel"
+            class={`${field} tabular-nums`}
+          />
+          <span class={help}>
+            10 digits. You can leave this blank. We do not send text messages yet.
+          </span>
+          {
+            phoneUndialable && (
+              <span class="mt-1.5 inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                We cannot text this number. Please type 10 digits. We saved it anyway.
+              </span>
+            )
+          }
+        </label>
+
+        <label class="mt-3 block">
+          <span class="text-sm font-medium">Your timezone</span>
+          <select name="timezone" class={field}>
+            {
+              timezoneOptions(timezone).map((tz) => (
+                <option value={tz.value} selected={tz.value === timezone}>
+                  {tz.label}
+                </option>
+              ))
+            }
+          </select>
+          {/*
+            This control used to live in the carrier block. It is a setting about
+            the PERSON — it decides what time their own email arrives and what
+            their own quiet hours mean — and a person looking for their own
+            details never found it under the company's federal record.
+          */}
+          <span class={help}>
+            Your clock, not the company's. It sets when your morning email arrives, what your
+            quiet hours mean, and how times are printed on this page. Until you pick one, we use
+            the company's.
+          </span>
+        </label>
+
+        <button type="submit" name="intent" value="save_profile" class={`${button} mt-4`}>
+          Save my details
+        </button>
+      </form>
+
+      <div class="space-y-4">
+        {/* ------------------------------------------------ sign-in email */}
+
+        <div class={card}>
+          <h3 class="font-medium tracking-tight">Your email</h3>
+          <p class="mt-3 text-sm text-ink-500">You sign in with this email:</p>
+          <p class="mt-1 text-base font-medium break-all">
+            {signInEmail || <span class="font-normal text-ink-300">not known</span>}
+          </p>
+          <p class="mt-2 text-sm text-ink-500">
+            Your morning compliance email goes to this address too.
+          </p>
+
+          <form method="POST" class="mt-4 border-t border-ink-100 pt-4">
+            <label class="block">
+              <span class="text-sm font-medium">New email</span>
+              <input type="email" name="new_email" required autocomplete="email" class={field} />
+            </label>
+            <label class="mt-3 block">
+              <span class="text-sm font-medium">Your password</span>
+              <input
+                type="password"
+                name="current_password"
+                required
+                autocomplete="current-password"
+                class={field}
+              />
+              <span class={help}>We ask for it so nobody else can change your email.</span>
+            </label>
+
+            {/*
+              Said BEFORE the button, not after it. `updateUser({ email })` does
+              not change the sign-in address — it sends a link and waits — and a
+              person who presses this expecting an immediate change will try the
+              new address on the login page and conclude the account is broken.
+            */}
+            <div class="mt-3 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <p class="font-medium">What happens next</p>
+              <ol class="mt-1 list-decimal space-y-0.5 pl-5">
+                <li>We send a link to the new email.</li>
+                <li>You open that email and click the link.</li>
+                <li>Then the new email works for signing in.</li>
+              </ol>
+              <p class="mt-2">
+                Your email does not change until you click the link. Until then, keep signing in
+                with your old email. Do not close your account or sign out to wait.
+              </p>
+            </div>
+
+            <button type="submit" name="intent" value="change_email" class={`${button} mt-3`}>
+              Send the link
+            </button>
+          </form>
+        </div>
+
+        {/* ---------------------------------------------------- password */}
+
+        <div class={card}>
+          <h3 class="font-medium tracking-tight">Your password</h3>
+
+          {/*
+            THE MISSING HALF, said out loud. There is no forgot-password link
+            anywhere in this application, so a person who cannot remember their
+            password cannot get back in at all. This form needs the old password,
+            so it does not help that person — and the screen has to say so here
+            rather than let somebody discover it on the morning they are locked
+            out. The page's own doctrine: a control either works or says it does
+            not.
+          */}
+          <div class="mt-3 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <p class="font-medium">Keep your password safe</p>
+            <p class="mt-1">
+              There is no "forgot password" in this app yet. If you forget your password, you
+              cannot sign in and we cannot reset it from here. Write the new one down somewhere
+              safe. If you are locked out, email{' '}
+              <a href={`mailto:${site.email}`} class="font-medium underline">{site.email}</a>.
+            </p>
+          </div>
+
+          <form method="POST" class="mt-4">
+            <label class="block">
+              <span class="text-sm font-medium">Password you use now</span>
+              <input
+                type="password"
+                name="current_password"
+                required
+                autocomplete="current-password"
+                class={field}
+              />
+            </label>
+            <label class="mt-3 block">
+              <span class="text-sm font-medium">New password</span>
+              <input
+                type="password"
+                name="new_password"
+                required
+                minlength={MIN_PASSWORD}
+                autocomplete="new-password"
+                class={field}
+              />
+              <span class={help}>Use 8 letters or numbers or more.</span>
+            </label>
+            <label class="mt-3 block">
+              <span class="text-sm font-medium">New password again</span>
+              <input
+                type="password"
+                name="new_password_again"
+                required
+                minlength={MIN_PASSWORD}
+                autocomplete="new-password"
+                class={field}
+              />
+              <span class={help}>Type the same new password one more time.</span>
+            </label>
+
+            <p class="mt-3 text-sm text-ink-500">
+              You stay signed in on this computer. Use the new password next time you sign in.
+            </p>
+
+            <button type="submit" name="intent" value="change_password" class={`${button} mt-3`}>
+              Change my password
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {/* ==================================================== who can sign in */}
+
+  <section class="mt-10">
+    <h2 class="text-lg font-semibold tracking-tight">Who can sign in</h2>
+    <p class="mt-1 max-w-3xl text-sm text-ink-500">
+      Everyone who can open this account. Each person signs in with their own email and their own
+      password.
+    </p>
+
+    {
+      /* A failed read and an empty list are the same notice, and neither is
+         ever an empty section. The list CANNOT legitimately be empty — the
+         middleware got this carrier id out of the caller's own membership, so
+         the caller is always in it — which means zero rows is another way of
+         saying the read did not work. An empty `<ul>` would draw nothing at all
+         and read as a section that has no answer, on the one question this
+         section exists to answer. */
+      membersFailed || members.length === 0 ? (
+        <p class="mt-3 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+          We could not load this list right now. Reload the page.
+        </p>
+      ) : (
+        <ul class="mt-3 space-y-2">
+          {members.map((m) => (
+            <li class="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-ink-100 bg-white px-4 py-3">
+              <div class="min-w-0 flex-1">
+                <p class="font-medium">
+                  {m.full_name || <span class="font-normal text-ink-300">No name yet</span>}
+                  {/* The signed-in person is marked, because a list of email
+                      addresses with no "you" in it is a list somebody has to
+                      read carefully to place themselves in. */}
+                  {m.user_id === userId && (
+                    <span class="ml-2 rounded-md bg-brand-500/[0.12] px-2 py-0.5 text-xs font-medium text-brand-700">
+                      This is you
+                    </span>
+                  )}
+                </p>
+                <p class="mt-0.5 text-sm break-all text-ink-500">{m.email ?? '—'}</p>
+              </div>
+              <div class="text-sm whitespace-nowrap text-ink-500">
+                {m.role === 'owner' ? 'Owner' : 'Staff'}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )
+    }
+
+    {/*
+      Both sentences are true today and both have to be here. `memberships.role`
+      is stored and read by NO code in this application — not one policy, not one
+      page — so a screen implying that "staff" sees less would be describing a
+      product that does not exist. And there is no invite: `authenticated` has no
+      INSERT on memberships by design (0001), the only way onto a carrier is the
+      USDOT claim, so a second person on one account is a thing we do by hand.
+    */}
+    <div class="mt-3 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+      <p>
+        <span class="font-medium">Adding and removing people is not built yet.</span> To add
+        someone, or to remove someone, email{' '}
+        <a href={`mailto:${site.email}`} class="font-medium underline">{site.email}</a> with the
+        name and email and we will do it.
+      </p>
+      <p class="mt-2">
+        Owner and staff both see everything and can change everything today. The role is stored
+        but it does not limit anyone yet.
+      </p>
+    </div>
+  </section>
+
   {/* ============================================================ carrier */}
 
   <section>
     <h2 class="text-lg font-semibold tracking-tight">Your carrier</h2>
     <p class="mt-1 max-w-3xl text-sm text-ink-500">
-      This comes from your federal record at FMCSA, not from anything typed here, so it cannot be
-      edited on this page. If it is wrong there, it is wrong everywhere that matters — fix it by
-      filing an MCS-150 update, and it will change here too.
+      These come from your federal record at FMCSA. You cannot change them here. If something is
+      wrong, file an MCS-150 update with FMCSA. It changes here after that.
     </p>
 
     {
@@ -641,7 +1262,9 @@ const th = 'px-4 py-3 font-medium'
       )
     }
 
-    <div class="mt-3 grid gap-4 lg:grid-cols-[1fr_minmax(0,22rem)]">
+    {/* One card since the timezone control moved into "Your account", where the
+        person it belongs to is. */}
+    <div class="mt-3 max-w-3xl">
       <div class={card}>
         <dl class="divide-y divide-ink-100 text-sm">
           <div class="flex justify-between gap-4 py-2.5">
@@ -672,35 +1295,6 @@ const th = 'px-4 py-3 font-medium'
           </div>
         </dl>
       </div>
-
-      <form method="POST" class={card}>
-        <h3 class="font-medium tracking-tight">Your timezone</h3>
-        <label class="mt-3 block">
-          <span class="text-sm font-medium">Send my alerts on this clock</span>
-          <select name="timezone" class={field}>
-            {
-              timezoneOptions(timezone).map((tz) => (
-                <option value={tz.value} selected={tz.value === timezone}>
-                  {tz.label}
-                </option>
-              ))
-            }
-          </select>
-          <span class="mt-1 block text-xs text-ink-500">
-            Yours, not the company's — so a morning digest lands in the morning where you actually
-            are, and your quiet hours mean the hours on your own clock. It also decides how the
-            times on this page are printed. Until you save one, we use the carrier's.
-          </span>
-        </label>
-        <button
-          type="submit"
-          name="intent"
-          value="save_timezone"
-          class="mt-4 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-brand-700"
-        >
-          Save timezone
-        </button>
-      </form>
     </div>
   </section>
 
@@ -749,7 +1343,15 @@ const th = 'px-4 py-3 font-medium'
                 ))
               }
               <th class={th}>Warn me this many days out</th>
-              <th class={`${th} text-center`}>Roll into one daily message</th>
+              {/* The caveat rides under the column head, exactly as a channel's
+                  does, because that is where somebody reading the table looks
+                  before they reach for the control. */}
+              <th class={`${th} text-center`}>
+                <div>Roll into one daily message</div>
+                <div class="mt-0.5 text-[11px] normal-case text-amber-700">
+                  always on, not yours to change yet
+                </div>
+              </th>
             </tr>
           </thead>
           <tbody class="divide-y divide-ink-100">
@@ -795,27 +1397,62 @@ const th = 'px-4 py-3 font-medium'
                   ))}
 
                   <td class="px-4 py-3 align-top">
-                    <input
-                      type="text"
-                      name={`lead_${category.value}`}
-                      value={formatLeadDays(leadDaysFor(category.value))}
-                      inputmode="text"
-                      class={`${field} w-44 tabular-nums`}
-                      aria-label={`Lead times for ${category.label}`}
-                    />
-                    <span class="mt-1 block max-w-[14rem] text-xs text-ink-500">
-                      {describeLeadDays(leadDaysFor(category.value))}
-                    </span>
+                    {category.perItemLeadDays ? (
+                      /* No box, because there is nothing here to store. Each
+                         reminder carries its own number — an insurance renewal
+                         wants a month, a callback wants a day — so a box here
+                         would be a control that changed nothing. Say where the
+                         setting actually is instead. */
+                      <span class="block max-w-[14rem] text-xs text-ink-500">
+                        You choose the days on each reminder.{' '}
+                        <a href="/app/reminders" class="font-medium text-brand-600 hover:underline">
+                          My reminders
+                        </a>
+                      </span>
+                    ) : (
+                      <>
+                        <input
+                          type="text"
+                          name={`lead_${category.value}`}
+                          value={formatLeadDays(leadDaysFor(category.value))}
+                          inputmode="text"
+                          class={`${field} w-44 tabular-nums`}
+                          aria-label={`Lead times for ${category.label}`}
+                        />
+                        <span class="mt-1 block max-w-[14rem] text-xs text-ink-500">
+                          {describeLeadDays(leadDaysFor(category.value))}
+                        </span>
+                      </>
+                    )}
                   </td>
 
                   <td class="px-4 py-3 text-center align-top">
+                    {/* Disabled, not absent, and not a live box that does
+                        nothing — the same treatment a channel we cannot deliver
+                        on gets, for the same reason. The digest job batches
+                        every message into one morning email unconditionally and
+                        reads this column nowhere, so an untickable box was a
+                        promise of separate messages that no code sends. It
+                        shows TICKED because ticked is what genuinely happens,
+                        to everybody, today. There is no `name`, so it posts
+                        nothing; the save reads the stored value back instead. */}
                     <input
                       type="checkbox"
-                      name={`digest_${category.value}`}
-                      checked={digestFor(category.value)}
-                      aria-label={`Daily digest for ${category.label}`}
-                      class={checkbox}
+                      disabled
+                      checked
+                      aria-label={`Daily digest for ${category.label} — always on`}
+                      title="Everything already arrives as one message a day. There is no other setting yet."
+                      class={`${checkbox} opacity-40`}
                     />
+                    {!digestFor(category.value) && (
+                      /* Somebody unticked this while the box was still live.
+                         The row survives the save untouched, so say so here
+                         rather than showing a ticked box over a stored `false`
+                         and letting them find out the day the choice is real. */
+                      <div class="mt-1 text-[11px] text-amber-700">
+                        You turned this off before we could honour it. Still on file.
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))
@@ -863,9 +1500,10 @@ const th = 'px-4 py-3 font-medium'
               everything whether or not this is ticked.
             </li>
             <li>
-              <span class="font-medium">One daily message</span> — we already batch into one email
-              a day. This tick is stored, but nothing reads it yet, so leaving it off will not get
-              you separate messages.
+              <span class="font-medium">One daily message</span> — already how it works, for
+              everyone, and there is no way to ask for separate messages instead. That column is
+              greyed out rather than taking a choice we cannot act on. If you turned it off back
+              when it was tickable, that is still on file and saving this page does not erase it.
             </li>
           </ul>
         </div>
@@ -943,6 +1581,14 @@ const th = 'px-4 py-3 font-medium'
             <span class="font-medium text-ink-900">due tomorrow</span>. Nothing else qualifies, and
             nothing else ever will without this line changing. Untick this and we hold even those
             until your quiet hours end.
+          </span>
+          {/* Said here, where somebody decides what may wake him. The job
+              forces `allowCritical: false` for reminders whatever this box
+              says, and a rule the code applies and the screen does not mention
+              is a rule nobody can check. */}
+          <span class="mt-1 block text-sm text-ink-500">
+            Your own reminders never come through quiet hours, even when they are late. They wait
+            for the morning.
           </span>
         </span>
       </label>
