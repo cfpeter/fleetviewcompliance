@@ -1,0 +1,58 @@
+---
+/**
+ * The box a rejected form comes back to, at the top of the form.
+ *
+ * HOW THE FOCUS MOVES WITHOUT A LINE OF SCRIPT. The usual advice is to call
+ * .focus() on this box after a failed submit, and no page in this app runs any
+ * script that could. It does not need one. Every form here POSTs and gets a 303
+ * back, so the server controls the URL the browser lands on: redirect to
+ * `…?error=vin#form-errors` and the browser scrolls to the element with that
+ * id and, because the box is `tabindex="-1"`, hands it the focus as well. The
+ * next Tab goes to the first field, not back to the top of the page.
+ *
+ *   return redirect(`/app/vehicles/new?error=vin#${'form-errors'}`, 303)
+ *
+ * `role="alert"` covers the other route in: a reader who was already on the
+ * page hears the box when it appears.
+ *
+ * Each error is a link to its own field, so the fix is one tap away on a phone
+ * — which needs the field's id to match, and Field.astro defaults that id to
+ * the field's `name`.
+ */
+interface Item {
+  /** What is wrong and what to do about it, in the reader's words. */
+  message: string
+  /** id of the field this belongs to. Omit for a whole-form problem. */
+  field?: string
+}
+
+interface Props {
+  /** Must match the fragment the server redirects to. */
+  id?: string
+  /** The line above the list. Says how many, so the reader knows when to stop. */
+  title?: string
+  errors: readonly (Item | string)[]
+  class?: string
+}
+
+const { id = 'form-errors', title, errors, class: extra } = Astro.props
+
+const items: Item[] = errors.map((e) => (typeof e === 'string' ? { message: e } : e))
+
+const heading = title ?? (items.length === 1 ? 'Fix this before saving' : `Fix these ${items.length} things before saving`)
+---
+
+{
+  items.length > 0 && (
+    <div id={id} role="alert" tabindex="-1" class:list={['error-summary', extra]}>
+      <p class="font-semibold">
+        <span aria-hidden="true">⚠</span> {heading}
+      </p>
+      <ul class="mt-1.5 space-y-1.5">
+        {items.map((e) => (
+          <li>{e.field ? <a href={`#${e.field}`}>{e.message}</a> : e.message}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}

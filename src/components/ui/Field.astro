@@ -1,0 +1,93 @@
+---
+/**
+ * One labelled field: label, control, optional hint, optional error.
+ *
+ * WHY THIS IS A COMPONENT AND THE BUTTON IS NOT. A button is one class on one
+ * tag and plain markup says it better. An error state is four things that have
+ * to agree: the input carries `aria-invalid`, the message carries an id, the
+ * input points at that id through `aria-describedby`, and the id has to be
+ * unique on the page. Written by hand at every field in the app, one of those
+ * four goes missing, and when it does the screen reader reads the box and not
+ * the reason it is red. Written once here, it cannot.
+ *
+ * Styling lives in src/styles/global.css as .field-label / .field-input /
+ * .field-hint / .field-error, so a page that wants plain markup instead of this
+ * component gets exactly the same field out of the same classes.
+ *
+ * NOTHING HERE RUNS IN THE BROWSER. The error text comes from the server on the
+ * GET after the POST, the way every other message in this app does.
+ *
+ *   <Field label="VIN" name="vin" required error={errors.vin} />
+ *
+ * For a <select> or a <textarea>, pass it as the slot and this renders the
+ * label and the message around it:
+ *
+ *   <Field label="State" name="state" error={errors.state}>
+ *     <select id="state" name="state" class="field-input mt-1">…</select>
+ *   </Field>
+ */
+import type { HTMLAttributes } from 'astro/types'
+
+interface Props extends Omit<HTMLAttributes<'input'>, 'class'> {
+  /** The words above the box. Always visible — a placeholder is not a label. */
+  label: string
+  name: string
+  /** Quiet help under the field. Read out with the field, not instead of it. */
+  hint?: string
+  /**
+   * What is wrong AND what to type. "Enter the VIN — 17 characters, no I, O or
+   * Q." is the shape; "Invalid input." is not.
+   */
+  error?: string | null
+  /** Extra classes for the input. Utilities beat .field-input, so they win. */
+  class?: string
+}
+
+const {
+  label,
+  name,
+  id = name,
+  hint,
+  error = null,
+  class: extra,
+  ...rest
+} = Astro.props
+
+const hintId = hint ? `${id}-hint` : null
+const errorId = error ? `${id}-error` : null
+
+// The error comes first: a reader who hears one thing hears the problem.
+const describedBy = [errorId, hintId].filter(Boolean).join(' ') || undefined
+
+const custom = Astro.slots.has('default')
+---
+
+<div>
+  <label class="field-label" for={id}>{label}</label>
+
+  {
+    custom ? (
+      <slot />
+    ) : (
+      <input
+        {...rest}
+        id={id}
+        name={name}
+        class:list={['field-input mt-1', extra]}
+        aria-invalid={error ? 'true' : undefined}
+        aria-describedby={describedBy}
+      />
+    )
+  }
+
+  {hint && <p class="field-hint" id={hintId ?? undefined}>{hint}</p>}
+
+  {
+    error && (
+      <p class="field-error" id={errorId ?? undefined}>
+        <span aria-hidden="true">⚠</span>
+        <span>{error}</span>
+      </p>
+    )
+  }
+</div>

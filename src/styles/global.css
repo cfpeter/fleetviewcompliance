@@ -9,8 +9,14 @@
      in five places without defining it, and Tailwind v4 drops an unknown
      utility silently — those buttons render with no border at all. */
   --color-ink-200: #d4d8de;
+  /* ink-300 is a BORDER AND DIVIDER colour. It is 1.85:1 against white, which
+     is below every readable threshold there is, so it is not a text colour and
+     the rule at the bottom of this file stops it behaving like one. */
   --color-ink-300: #b9bfc7;
+  /* 4.74:1 on white — the lowest ink allowed for text on a white surface. */
   --color-ink-500: #6b7480;
+  /* 10.32:1 on white — the lowest ink allowed for text on a tinted surface
+     (bg-ink-50, bg-blue-100, any card fill) or at 12px and under. */
   --color-ink-700: #39414c;
   --color-ink-900: #171b21;
 
@@ -18,7 +24,334 @@
   --color-brand-600: #1750ac;
   --color-brand-700: #123f88;
 
+  /* The input error state. Written as hex rather than borrowed from the
+     installed red scale, which is OKLCH in Tailwind v4 and does not land on
+     either value: #dc2626 is 4.83:1 on white, #b91c1c is 6.47:1. Both are the
+     darkest reds that still read as red rather than as brown. */
+  --color-error-border: #dc2626;
+  --color-error-text: #b91c1c;
+  --color-error-ring: #dc2626;
+
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* -------------------------------------------------------------------- focus
+
+   One ring, every focusable thing, no exceptions.
+
+   `:focus-visible` and never `:focus`: the browser decides, and it decides the
+   way the reader expects — a keyboard or switch user gets the ring every time,
+   a thumb on a phone never sees it. A ring that fires on mouse-down is noise,
+   and noise is what teaches people to stop looking at the ring.
+
+   2px solid brand-500 is 5.59:1 against white, 5.21:1 against ink-50 and
+   4.72:1 against ink-100 — the three surfaces this app puts controls on. WCAG
+   2.2 asks for 3:1. The 2px offset draws the ring in the page behind the
+   control rather than on the control, so it survives on a solid brand button
+   and on the dark marketing header alike.
+
+   THESE RULES ARE DELIBERATELY OUTSIDE @layer. Unlayered CSS outranks every
+   cascade layer, so a stray `outline-none` left on an input somewhere cannot
+   quietly delete the ring: the ring wins, and the worst case is a focus style
+   that is correct on a page nobody has swept yet. */
+:focus-visible {
+  outline: 2px solid var(--color-brand-500);
+  outline-offset: 2px;
+}
+
+/* A field the server has rejected keeps its red while the reader is fixing it.
+   Swapping the ring colour rather than dropping it means the field is still
+   obviously focused — it is just also still wrong. */
+[aria-invalid="true"]:focus-visible {
+  outline-color: var(--color-error-ring);
+}
+
+@layer base {
+  /*
+    Checkboxes and radios.
+
+    `accent-color` is the whole treatment. The native control already knows how
+    to be a checkbox on every browser and in every screen reader; all it was
+    missing was the brand and a box a thumb can hit. A hand-drawn checkbox out
+    of a div and an SVG needs script to toggle and more script to be announced
+    correctly, and no page in this app runs any.
+
+    20px, not the browser default 13-16px, because the label row around it is
+    44px and a target the reader can see is a target he aims at.
+  */
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--color-brand-600);
+    width: 1.25rem;
+    height: 1.25rem;
+    flex-shrink: 0;
+  }
+}
+
+@layer components {
+  /* ------------------------------------------------------------- form fields
+
+     One input construction for text, select and textarea. py-2.5 on 16px type
+     is 46px tall, which clears the 44px target without any per-field
+     arithmetic and matches the button height, so a field and the button under
+     it share one rhythm.
+
+     text-base is 16px and is not negotiable: iOS zooms the whole page when it
+     focuses an input smaller than that, and the reader then has to pinch his
+     way back out to see the rest of the form. */
+  .field-label {
+    @apply block text-sm font-medium text-ink-700;
+  }
+
+  .field-input {
+    @apply w-full rounded-lg border border-ink-500 bg-white px-3 py-2.5 text-base text-ink-900;
+  }
+
+  .field-input::placeholder {
+    @apply text-ink-500;
+  }
+
+  /* The border changes colour on focus as a second cue beside the ring, for a
+     reader who has the contrast turned up and the animation turned off. */
+  .field-input:focus {
+    border-color: var(--color-brand-500);
+  }
+
+  .field-input[aria-invalid="true"] {
+    border-color: var(--color-error-border);
+  }
+
+  /* The money and unit fields: a bordered box holding a prefix or suffix and a
+     borderless input. The ring belongs on the box, because the box is what the
+     reader sees as the field — so the box borrows the focus treatment and the
+     input inside it gives its own up. This is the only place `outline: none`
+     is allowed, and it is allowed because the ring reappears two lines up. */
+  .field-affix {
+    @apply flex items-center rounded-lg border border-ink-500 bg-white;
+  }
+
+  .field-affix:focus-within {
+    border-color: var(--color-brand-500);
+  }
+
+  .field-affix:has(:focus-visible) {
+    outline: 2px solid var(--color-brand-500);
+    outline-offset: 2px;
+  }
+
+  .field-affix:has([aria-invalid="true"]) {
+    border-color: var(--color-error-border);
+  }
+
+  .field-affix:has([aria-invalid="true"]:focus-visible) {
+    outline-color: var(--color-error-ring);
+  }
+
+  .field-affix-input {
+    @apply w-full bg-transparent px-3 py-2.5 text-base text-ink-900;
+  }
+
+  .field-affix-input:focus-visible {
+    outline: none;
+  }
+
+  .field-hint {
+    @apply mt-1.5 text-sm text-ink-500;
+  }
+
+  /* Icon and words, never colour on its own. The glyph goes in a span marked
+     aria-hidden; the sentence after it says what is wrong AND what to type. */
+  .field-error {
+    @apply mt-1.5 flex items-start gap-1.5 text-sm;
+    color: var(--color-error-text);
+  }
+
+  /* The box a form lands on when the server sends it back. Paired with
+     role="alert" and tabindex="-1" in the markup, a 303 to #form-errors makes
+     the browser scroll to this box and focus it — see
+     src/components/ui/ErrorSummary.astro, which is the whole mechanism. */
+  .error-summary {
+    @apply rounded-lg border bg-red-50 px-4 py-3 text-sm;
+    border-color: var(--color-error-border);
+    color: var(--color-error-text);
+  }
+
+  /* Each line in the summary jumps to the field it is about. The links stay
+     the red of the box rather than turning brand blue, so the box reads as one
+     thing; the underline is what says they are links. */
+  .error-summary a {
+    @apply underline underline-offset-2;
+    color: inherit;
+  }
+
+  /* The whole row toggles, and the row is 44px. The negative margin lets the
+     hover tint reach past the text without the checkbox drifting off the grid
+     the rest of the form sits on. */
+  .check-row {
+    @apply -mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2;
+  }
+
+  /* ----------------------------------------------------------------- buttons
+
+     One shape — 8px radius, 44px tall, 16px medium type — and five variants.
+     Every variant darkens on press rather than moving a shadow around, because
+     a shadow is invisible in daylight on a phone at a truck stop.
+
+     There is no loading variant. A loading button needs script to swap the
+     label and set aria-busy, and the only script in this app is the three
+     print buttons. It does not need one: every form here is a POST and a 303,
+     so the browser's own tab spinner is already the progress indicator, and it
+     appears on a slow phone connection whether we ask it to or not. */
+  .btn {
+    @apply inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-base font-medium whitespace-nowrap transition-colors;
+  }
+
+  .btn:disabled,
+  .btn[aria-disabled="true"] {
+    @apply cursor-not-allowed opacity-60;
+  }
+
+  /* One per screen. White on brand-600 is 7.56:1. */
+  .btn-primary {
+    @apply bg-brand-600 text-white hover:bg-brand-700 active:translate-y-px active:bg-brand-700;
+  }
+
+  /* The action beside the action. brand-700 on white is 10.04:1, and the
+     1px brand-600 border is 7.56:1 against the page. */
+  .btn-secondary {
+    @apply border border-brand-600 bg-white text-brand-700 hover:border-brand-700 hover:bg-blue-50 active:bg-blue-100;
+  }
+
+  /* Repeated and inline actions — "Change", "Edit", a row action. No fill at
+     rest, full 44px target always. */
+  .btn-tertiary {
+    @apply px-3 text-brand-700 hover:bg-blue-50 hover:text-brand-600 hover:underline hover:underline-offset-2 active:bg-blue-100;
+  }
+
+  /* Irreversible only. "Close" and "Cancel" are tertiary, not red. */
+  .btn-danger {
+    @apply bg-red-600 text-white hover:bg-red-700 active:bg-red-700;
+  }
+
+  .btn-danger-text {
+    @apply px-3 text-red-700 hover:bg-red-50 hover:underline hover:underline-offset-2 active:bg-red-100;
+  }
+
+  /* Marketing chrome only. Inside /app the action colour is brand blue, so a
+     dark button there is a second primary competing with the first. */
+  .btn-dark {
+    @apply bg-ink-900 text-white hover:bg-ink-700;
+  }
+
+  /* Dense tables may drop to 14px type. They may not drop below 44px: pad
+     instead of shrinking. */
+  .btn-sm {
+    @apply px-4 text-sm;
+  }
+
+  /* Icon-only. The glyph stays small; the hit area does not. */
+  .btn-icon {
+    @apply size-11 px-0 py-0;
+  }
+
+  /* ------------------------------------------------------------------- links
+
+     Underlined at rest, always. A link that is only a different blue is a link
+     a reader in a hurry does not see, and half this audience is reading a
+     second language on a phone in the sun. */
+  .link {
+    @apply text-brand-600 underline underline-offset-2 decoration-brand-600/60 hover:text-brand-700;
+  }
+
+  /* The record name in a table row is the link, and it is the full row height
+     to tap. The row itself is not a link: wrapping a <tr> breaks the table
+     navigation a screen reader user moves through the list with. */
+  .link-row {
+    @apply inline-flex min-h-11 items-center font-medium text-ink-900 underline-offset-2 hover:text-brand-700 hover:underline;
+  }
+
+  /* "← Back to loads". The arrow is decoration inside the label; the word
+     "Back" is what gets read out. The negative margin pulls the padding box
+     back so the text still lines up with the heading under it — add `ml-0`
+     where the link is not the first thing in its column. */
+  .link-back {
+    @apply -ml-3 inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 font-medium text-brand-700 underline-offset-2 hover:bg-blue-50 hover:underline;
+  }
+
+  /* ------------------------------------------------- navigation and selection
+
+     One selected metaphor for the whole app: a filled tinted pill. Nav current
+     page, filter tabs, segmented controls — all of them. Tint plus semibold
+     survives colour blindness and a bad screen, which underline-only and
+     colour-only did not, and it leaves one code path to keep correct.
+
+     `.is-current` is the pill. Put it on the element that already carries
+     aria-current, aria-selected or aria-pressed; it is never the only signal. */
+  .nav-item {
+    @apply inline-flex min-h-11 items-center rounded-lg px-3 font-medium text-ink-700 hover:bg-ink-50 hover:text-ink-900;
+  }
+
+  .filter-tab {
+    @apply inline-flex min-h-11 items-center rounded-lg px-4 font-medium text-ink-700 hover:bg-ink-50 hover:text-ink-900;
+  }
+
+  /* After .nav-item and .filter-tab on purpose: same specificity, later rule,
+     so the selected pill keeps its colours under the cursor too. */
+  .is-current,
+  .is-current:hover {
+    @apply bg-blue-100 font-semibold text-brand-700;
+  }
+
+  /* ------------------------------------------------------------------ badges
+
+     One construction, five pairs, all at or above 4.5:1. A badge is a label,
+     not a control, so it is not a 44px target — but the padding is the same
+     everywhere so a column of them reads as a column.
+
+     Every badge carries a word. Colour is the second signal, never the first:
+     Overdue → danger, Due soon → warning, On track and Paid → success,
+     Draft and Unknown → neutral. */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold leading-none whitespace-nowrap;
+  }
+
+  .badge-neutral {
+    @apply bg-ink-100 text-ink-700;
+  }
+
+  .badge-info {
+    @apply bg-blue-100 text-brand-700;
+  }
+
+  .badge-success {
+    @apply bg-emerald-100 text-emerald-800;
+  }
+
+  .badge-warning {
+    @apply bg-amber-100 text-amber-800;
+  }
+
+  .badge-danger {
+    @apply bg-red-100 text-red-800;
+  }
+}
+
+/* --------------------------------------------------------------- text floor
+
+   ink-300 stays a token because borders and dividers and chart bars use it.
+   It stops being a text colour here.
+
+   `text-ink-300` was reading at 1.85:1 in the footer, on timestamps and on
+   every "(if it has one)" hint in the app — text that is present, that the
+   reader is meant to read, and that he cannot. Sweeping the pages is the real
+   fix and it is happening; this rule is what makes a missed one harmless
+   instead of unreadable. The floor is ink-500 on white and ink-700 on a tint
+   or at 12px and under, so a swept page should name the colour it wants rather
+   than land here. */
+@layer utilities {
+  .text-ink-300 {
+    color: var(--color-ink-500);
+  }
 }
 
 /* ---------------------------------------------------------------- navigation
