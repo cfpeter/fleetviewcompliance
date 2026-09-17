@@ -127,3 +127,41 @@ export function newProofToken(): string {
 export function isProofToken(value: unknown): value is string {
   return typeof value === 'string' && TOKEN_SHAPE.test(value)
 }
+
+/**
+ * What actually gets stored: sha256(token), lowercase hex.
+ *
+ * THE TOKEN IS NEVER WRITTEN DOWN. 0013 stored it in plain text, which made
+ * every row a working, login-free link into a carrier's compliance file for
+ * anyone who could read the table — a backup, a leaked service-role key, one
+ * SQL injection. 0026_share_token_hash.sql stores this digest instead.
+ *
+ * NO PEPPER, unlike hashClaimCode() in lib/claims.ts, and the difference is not
+ * an oversight:
+ *
+ *   - A six-digit claim code has a million possible values, so a stored digest
+ *     without a secret ingredient is one second of CPU away from the code. A
+ *     token is 32 CSPRNG bytes. There is no dictionary of 2^256 and no rainbow
+ *     table of random base64url strings; the entropy already does what a pepper
+ *     would have been for.
+ *   - More importantly, the LOOKUP hashes in SQL, inside the SECURITY DEFINER
+ *     functions, because the reader is anonymous. If the digest were peppered
+ *     here and passed to resolve_share_token, the stored value would itself be
+ *     the credential and a leak of the table would be exactly as bad as before.
+ *     A secret the database cannot have is a secret the lookup cannot use.
+ *
+ * So this exists for ONE caller — /app/proof, writing the column at creation —
+ * and the matching SQL is share_token_hash(), which computes the identical
+ * digest with pg_catalog.sha256(). tests/share-scope.test.ts asserts the two
+ * agree byte for byte, because a drift between them is every link at once.
+ *
+ * It is NOT for verifying an inbound token. That happens in the database.
+ */
+export async function hashProofToken(token: string): Promise<string> {
+  // Guarded so the hash of something that is not one of our tokens can never
+  // reach the column. The only caller mints its input a line earlier; this is
+  // here for the second caller, whoever they turn out to be.
+  if (!isProofToken(token)) throw new Error('not a proof-link token')
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}

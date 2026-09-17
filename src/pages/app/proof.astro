@@ -6,9 +6,18 @@
  * are non-negotiable here: the token is unguessable (see lib/proof/token.ts),
  * and every link expires. There is no "never" option, because a statement about
  * a moment should not still be answering questions next year.
+ *
+ * SHOWN ONCE. Since 0026 the database holds sha256(token), not the token, so
+ * after the request that creates a link there is nothing on this server that
+ * can produce its address again. That is the point of the change and it is a
+ * real cost to the owner: the list below can no longer print working URLs, only
+ * say what each link is and whether it has been opened. The create path
+ * therefore renders its response instead of redirecting — a redirect could only
+ * carry the token in a URL, which is the leak this was fixing — and the page
+ * says in plain words that the link is shown one time.
  */
 import App from '../../layouts/App.astro'
-import { newProofToken } from '../../lib/proof/token.ts'
+import { hashProofToken, newProofToken } from '../../lib/proof/token.ts'
 
 const supabase = Astro.locals.supabase!
 const carrierId = Astro.locals.carrierId!
@@ -16,6 +25,25 @@ const userId = Astro.locals.userId!
 
 const notice = Astro.url.searchParams.get('created')
 const error = Astro.url.searchParams.get('error')
+
+/**
+ * The origin of THIS request, never PUBLIC_SITE_URL.
+ *
+ * Vite inlines `import.meta.env.*` at build time, so that value is a constant
+ * baked into the bundle: the dev deployment printed a production address under
+ * every link, and the broker who was sent one got a 404 on a link that works
+ * perfectly on the host it was made on. A link whose whole purpose is to be
+ * copied has to resolve where it was copied from, and a build-time constant is
+ * a standing lie the moment there is more than one deployment.
+ *
+ * Both production routes are custom domains on this Worker (apex and www, see
+ * wrangler.jsonc), so the host the owner is looking at is always a host the
+ * recipient can reach. See login.astro, which learned this for auth redirects.
+ */
+const base = Astro.url.origin
+
+/** The one and only place a token is ever readable after it is minted. */
+let createdUrl: string | null = null
 
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData()
@@ -35,9 +63,12 @@ if (Astro.request.method === 'POST') {
     const validDays = Number.isFinite(days) && days > 0 && days <= 365 ? days : 30
     const expires = new Date(Date.now() + validDays * 86_400_000)
 
+    // Minted here, stored as a digest, and held in this variable for the render
+    // below. Nothing writes it anywhere else.
+    const token = newProofToken()
     const { error: e } = await supabase.from('share_links').insert({
       carrier_id: carrierId,
-      token: newProofToken(),
+      token_hash: await hashProofToken(token),
       scope,
       subject_id: scope === 'driver_file' ? subjectId : null,
       label: String(form.get('label') ?? '').trim() || null,
@@ -45,7 +76,13 @@ if (Astro.request.method === 'POST') {
       expires_at: expires.toISOString(),
       created_by: userId,
     })
-    return e ? back('error=' + encodeURIComponent(e.message)) : back('created=1')
+    if (e) return back('error=' + encodeURIComponent(e.message))
+
+    // Falls through to the render rather than redirecting: this response is the
+    // only chance the owner gets to copy the address, and a 303 could only hand
+    // it over in a URL — browser history, access logs, Referer headers.
+    createdUrl = `${base}/proof/${token}`
+    Astro.response.headers.set('Cache-Control', 'no-store')
   }
 
   if (intent === 'revoke') {
@@ -59,11 +96,20 @@ if (Astro.request.method === 'POST') {
     return e ? back('error=' + encodeURIComponent(e.message)) : back('created=revoked')
   }
 
-  return back('error=' + encodeURIComponent('Unrecognised action.'))
+  // Not an `else`: a successful create deliberately falls out of this block
+  // without redirecting, so it must not be mistaken for an unknown intent.
+  if (!createdUrl) return back('error=' + encodeURIComponent('We did not understand that button. Try again.'))
 }
 
 const [{ data: links }, { data: drivers }] = await Promise.all([
-  supabase.from('share_links').select('*').order('created_at', { ascending: false }),
+  // Columns named rather than '*': there is no reason for token_hash to travel
+  // to a browser, and a list that cannot print addresses does not need it.
+  supabase
+    .from('share_links')
+    .select(
+      'id, scope, subject_id, label, recipient, expires_at, revoked_at, view_count, last_viewed_at, created_at',
+    )
+    .order('created_at', { ascending: false }),
   supabase.from('drivers').select('id, first_name, last_name').eq('status', 'active'),
 ])
 
@@ -74,7 +120,6 @@ const isLive = (l: { revoked_at: string | null; expires_at: string }) =>
 const live = (links ?? []).filter(isLive)
 const dead = (links ?? []).filter((l) => !isLive(l))
 
-const base = import.meta.env.PUBLIC_SITE_URL || Astro.url.origin
 const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2.5 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
@@ -86,13 +131,32 @@ const driverName = (id: string | null) => {
 }
 ---
 
-<App title="Proof links" subtitle="Share a dated record with a broker or an underwriter.">
+<App title="Proof links" subtitle="Share a dated record with a broker or an insurance company.">
   {notice && (
     <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-      {notice === 'revoked' ? 'Link revoked. It stops working immediately.' : 'Link created.'}
+      {notice === 'revoked' ? 'Link turned off. It stopped working right away.' : 'Link created.'}
     </p>
   )}
   {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+
+  {/*
+    The only time this address is ever on screen. Short sentences, because the
+    consequence is real: close this page without copying and the link is gone.
+  */}
+  {createdUrl && (
+    <div class="mb-6 rounded-xl border border-emerald-300 bg-emerald-50 p-5">
+      <p class="font-medium text-emerald-900">Your link is ready. Copy it now.</p>
+      <input
+        readonly
+        value={createdUrl}
+        onclick="this.select()"
+        class="mt-3 w-full rounded-lg border border-emerald-300 bg-white px-3 py-2 font-mono text-xs"
+      />
+      <p class="mt-3 text-sm text-emerald-900">
+        We show this link one time. We do not keep a copy of it. If you lose it, make a new link.
+      </p>
+    </div>
+  )}
 
   <div class="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
     <form method="POST" class={card}>
@@ -101,7 +165,7 @@ const driverName = (id: string | null) => {
       <label class="mt-4 block">
         <span class="text-sm font-medium">What it shows</span>
         <select name="scope" class={field}>
-          <option value="carrier_summary">The fleet: authority, size, dated observations</option>
+          <option value="carrier_summary">The whole fleet: authority, size, dated checks</option>
           <option value="driver_file">One driver's qualification file</option>
         </select>
       </label>
@@ -136,7 +200,7 @@ const driverName = (id: string | null) => {
           <option value="90">90 days</option>
         </select>
         <span class="mt-1 block text-xs text-ink-500">
-          Every link expires. A record of one day should not still be answering questions next year.
+          Every link expires. A record from today should not still be answering questions next year.
         </span>
       </label>
 
@@ -154,7 +218,7 @@ const driverName = (id: string | null) => {
       <p class="font-medium">Working links</p>
       {live.length === 0 ? (
         <p class="mt-3 rounded-xl border border-dashed border-ink-100 bg-white p-8 text-center text-sm text-ink-500">
-          No links are active. Anything you create appears here with its address.
+          No links are working right now. A link you create shows here.
         </p>
       ) : (
         <ul class="mt-3 space-y-3">
@@ -175,16 +239,16 @@ const driverName = (id: string | null) => {
                 {l.last_viewed_at && <> · last {when(l.last_viewed_at)}</>}
               </p>
               {/*
-                A selectable input rather than a copy button alone: the clipboard
-                API is unavailable on non-HTTPS origins, which includes local dev,
-                and a button that silently does nothing is worse than no button.
+                There used to be a selectable input with the address in it. It
+                cannot be here any more: the database holds sha256(token), so
+                the server cannot rebuild this link. Saying that plainly is the
+                honest version — a "Copy link" button that produced anything at
+                all would mean the token was still stored somewhere.
               */}
-              <input
-                readonly
-                value={`${base}/proof/${l.token}`}
-                onclick="this.select()"
-                class="mt-3 w-full rounded-lg border border-ink-100 bg-ink-50 px-3 py-2 font-mono text-xs"
-              />
+              <p class="mt-3 rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-500">
+                The link is not shown here. We show a link one time only, when you make it. If you
+                lost it, turn this one off and make a new link.
+              </p>
               <form method="POST" class="mt-3">
                 <input type="hidden" name="id" value={l.id} />
                 <button
@@ -193,7 +257,7 @@ const driverName = (id: string | null) => {
                   value="revoke"
                   class="text-sm text-red-600 hover:underline"
                 >
-                  Revoke this link
+                  Turn off this link
                 </button>
               </form>
             </li>
@@ -211,7 +275,7 @@ const driverName = (id: string | null) => {
                   {l.label || (l.scope === 'driver_file' ? driverName(l.subject_id) : 'Fleet summary')}
                 </span>
                 <span class="text-ink-500">
-                  {' '}— {l.revoked_at ? `revoked ${when(l.revoked_at)}` : `expired ${when(l.expires_at)}`}
+                  {' '}— {l.revoked_at ? `turned off ${when(l.revoked_at)}` : `expired ${when(l.expires_at)}`}
                   {l.recipient && <> · was for {l.recipient}</>}
                 </span>
               </li>

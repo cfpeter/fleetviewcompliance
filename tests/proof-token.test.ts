@@ -8,6 +8,7 @@
  * `Math.random().toString(36)`, which is the bug worth being afraid of.
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { isProofToken, newProofToken, TOKEN_BYTES, TOKEN_LENGTH } from '../src/lib/proof/token.ts'
 
@@ -91,6 +92,48 @@ test('a missing CSPRNG throws instead of quietly degrading', () => {
   }
   // And the restore actually worked, so a later test is not running blind.
   assert.equal(newProofToken().length, TOKEN_LENGTH)
+})
+
+test('the link the owner copies is built from the request origin, not from build-time config', () => {
+  // A perfect token on the wrong host is still a 404, and this is the half of the
+  // link no other test can see: the page renders, the token validates, and the
+  // broker who was sent the address gets nothing.
+  //
+  // FAILURE PINNED: `import.meta.env.PUBLIC_SITE_URL || Astro.url.origin`, which
+  // shipped. Vite inlines that value when the bundle is built, so the dev
+  // deployment printed the production domain under every link it minted — an
+  // address where the same token does not exist. There is no secret or variable
+  // that can correct it afterwards; the string is already in the bundle.
+  //
+  // Asserted against the source because the mistake is a source-level one: any
+  // build made from a file containing that expression is already wrong.
+  const page = readFileSync(new URL('../src/pages/app/proof.astro', import.meta.url), 'utf8')
+
+  assert.match(
+    page,
+    /^const base = Astro\.url\.origin$/m,
+    'the copyable link must start from the origin of the request the owner is looking at',
+  )
+  assert.ok(
+    !page.includes('import.meta.env.PUBLIC_SITE_URL'),
+    'PUBLIC_SITE_URL is inlined at build time; one build serves dev and production both',
+  )
+  assert.match(
+    page,
+    /\$\{base\}\/proof\/\$\{token\}/,
+    'the displayed address no longer uses `base`; check what it is built from instead',
+  )
+
+  // Since 0026_share_token_hash.sql the address is assembled ONCE, in the POST
+  // that mints the token, because the database keeps sha256(token) and the page
+  // cannot rebuild a link afterwards. `${base}/proof/${l.token}` — a row from
+  // the list — is therefore not merely a different spelling of the same thing:
+  // it cannot compile, and if it ever comes back it means the plaintext token
+  // is being stored again.
+  assert.ok(
+    !page.includes('l.token'),
+    'the list is printing a token from the database; the column should only hold a hash',
+  )
 })
 
 test('isProofToken accepts our own output and rejects near-misses', () => {
