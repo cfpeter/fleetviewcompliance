@@ -14,33 +14,49 @@ const path = Astro.url.pathname
 /**
  * Ten flat sections in one row was too many to scan, and the people scanning are
  * Glendale and Sun Valley fleet owners who often read English as a second
- * language. That fact decided both halves of this nav.
+ * language. That fact decided every call below, and it decided them differently
+ * on a desktop and on a phone.
  *
- * GROUPED, NOT HIDDEN — no dropdown, no "More" menu, not even a `<details>` one
- * that would work without JavaScript. A reader hunting for a word he only
- * half-recognises has to be able to SEE the word. A menu he must open first asks
- * him to already know the category name, which is the one thing he does not
- * know. So every section stays on screen at every width, and the grouping is
- * done with spacing — free to read, costs no taps, needs none of the client
- * JavaScript this app deliberately does not ship.
+ * NO CATEGORY MENU, ANYWHERE. A reader hunting for a word he only half
+ * recognises must be able to reach that word without first naming the box it
+ * lives in. "Work", "Fleet", "Money" — the category name is the one piece of
+ * English he does not have. So nothing here is ever filed under a heading, and
+ * the group headings that were tried are still gone for the same reason: the
+ * children are visible, so the heading had no job left to do.
  *
- * The groups, in the order the day runs:
+ * ON A DESKTOP the sections stay on screen, grouped by spacing alone:
  *
- *   Deadlines │ Trucks Drivers │ Dispatch Loads Customers │ Driver pay IFTA │ Proof
+ *   Deadlines Reminders │ Trucks Drivers │ Dispatch Loads Customers │ Driver pay IFTA │ Proof
  *
  * Deadlines first, then the two things deadlines hang off. Then the day's work,
- * then the money, then the page you hand to somebody else.
+ * then the money, then the page you hand to somebody else. Free to read, costs
+ * no taps, needs none of the client JavaScript this app does not ship.
  *
- * The groups are not labelled, and that is deliberate. A heading is one more
- * English word this reader has to decode before he reaches the word he was
- * actually looking for, and the obvious candidates were the worst of it: "Work"
- * means nothing concrete, and "Fleet" and "Money" only repeat what Trucks,
- * Drivers, Driver pay and IFTA already say underneath them. The children are
- * visible, so the heading has no job left to do.
+ * ON A PHONE that row cost 201px of sticky header at 320px and 169px at 375px,
+ * on every single page, and the owner said so: the header was eating the screen
+ * he had come to read. So below `sm` the row folds into one `<details>`.
  *
- * Settings left the row entirely and sits next to Sign out on the right: it is
- * an account control, not a part of the business, and moving it took the row
- * from ten items to nine.
+ * That is not a retreat from the paragraph above, and the difference is the
+ * whole point. A category menu asks the reader for a word before it will show
+ * him anything. This one asks for nothing: one tap anywhere on the bar and all
+ * ten sections are there, in a column, whole words, same order as the desktop
+ * row, no headings between them. There is no category name in it to not know.
+ *
+ * THE CLOSED BAR NAMES THE PAGE HE IS ON — "Deadlines", "Loads" — in the same
+ * brand-tinted pill the row uses to mark the current section, with a chevron
+ * next to it. A bare hamburger would have told him nothing; this way the header
+ * still answers "where am I" at a glance, which is most of what he was reading
+ * it for, and the mark he learns here is the same mark he sees beside the
+ * current row once the list is open. The chevron carries the "this opens" job
+ * because it is not a word in any language and so cannot be the wrong one.
+ *
+ * Billing, Settings and Sign out leave the phone bar and sit at the foot of the
+ * open list, under a hairline, so the closed header is one line and nothing is
+ * stranded. On a desktop they stay where they were, beside the wordmark.
+ *
+ * `<details>` and no script: it opens on touch and from the keyboard on its own,
+ * and because every navigation here is a real page load, the menu is shut again
+ * the moment he lands. The shell still ships zero client JavaScript.
  *
  * LABELS are the words an owner says out loud, not the words a TMS prints.
  * "Dashboard" became "Deadlines" — the page lists deadlines, and "dashboard"
@@ -51,13 +67,12 @@ const path = Astro.url.pathname
  * word he uses: Trucks, Drivers, Dispatch, Loads, Customers, Proof, and IFTA,
  * which is not English at all but the name of the filing itself.
  *
- * `short` is the phone label and is set only where the long one will not fit —
- * one item, "Pay". The old set of stubs, "Disp" / "Drv" / "Trk" / "Cust" /
- * "Set", is exactly the vocabulary this reader cannot decode. They bought the
- * space that ten items needed to survive in one line, and nothing has to survive
- * in one line any more; see the header below.
+ * NO ABBREVIATIONS ARE LEFT. "Disp" / "Drv" / "Trk" / "Cust" / "Set" went when
+ * the row learned to wrap; "Pay" for "Driver pay" was the last one, and it went
+ * here — a list down the page has room for the whole word, so the phone reader
+ * finally sees exactly what the desktop reader sees.
  */
-type Section = { href: string; label: string; short?: string }
+type Section = { href: string; label: string }
 
 const groups: Section[][] = [
   [
@@ -74,7 +89,7 @@ const groups: Section[][] = [
     { href: '/app/customers', label: 'Customers' },
   ],
   [
-    { href: '/app/settlements', label: 'Driver pay', short: 'Pay' },
+    { href: '/app/settlements', label: 'Driver pay' },
     { href: '/app/ifta', label: 'IFTA' },
   ],
   [{ href: '/app/proof', label: 'Proof' }],
@@ -94,8 +109,9 @@ const active = (href: string) =>
  * around the links and nothing about how the current one is marked — a link
  * inside a group is still just a link, and still carries `aria-current`.
  *
- * `px-2.5` below `sm` rather than `px-3` is what buys the phone its second row:
- * at `px-3` the nine labels need a third.
+ * Desktop only now: below `sm` the row is behind the menu, and a link in the
+ * menu is a full-width row rather than a pill. `px-2.5` stays because `sm:px-3`
+ * is written against it.
  */
 const pill = (href: string) => [
   'rounded-lg px-2.5 py-1.5 text-sm font-medium whitespace-nowrap transition sm:px-3',
@@ -103,6 +119,29 @@ const pill = (href: string) => [
     ? 'bg-brand-500/10 text-brand-700'
     : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
 ]
+
+/**
+ * A line in the phone menu. `min-h-12` is 48px — the desktop pills are 24px,
+ * which is half the 44px a thumb needs, and a yard is exactly where that gets
+ * paid for. A list down the page has the room, so it takes it. Same active
+ * colours as `pill`, so "blue means you are here" is one rule, not two.
+ */
+const row = (href: string) => [
+  'flex min-h-12 items-center rounded-lg px-3 text-base font-medium transition',
+  active(href)
+    ? 'bg-brand-500/10 text-brand-700'
+    : 'text-ink-700 hover:bg-ink-100 hover:text-ink-900',
+]
+
+const sections: Section[] = groups.flat()
+const account: Section[] = [billing, settings]
+
+/**
+ * The word in the closed bar. At most one of these can match: no href is a
+ * prefix of another, and '/app' is compared exactly. The fallback covers the
+ * few pages that are not sections — /app/setup is the one that ships today.
+ */
+const current = [...sections, ...account].find((s) => active(s.href))?.label ?? 'Menu'
 ---
 
 <html lang="en">
@@ -114,31 +153,114 @@ const pill = (href: string) => [
     <title>{title} · FleetView</title>
   </head>
   <body class="min-h-dvh bg-ink-50 font-sans text-ink-900 antialiased">
-    {/*
-      Two decks, at every width: the wordmark and the account controls on top,
-      the section row on its own full-width line underneath.
-
-      It was one deck, with the row scrolling sideways inside whatever was left
-      over — about 250px on a phone and about 374px on a tablet. That hid most of
-      the sections on every signed-in page, which is the wrong trade for this
-      reader twice over: he cannot scan for a word he cannot see, and a strip
-      that ends flush looks finished, so he has no reason to suspect six more
-      items sit to the right of it.
-
-      Keeping the row on the top line was tried and does not survive contact with
-      real numbers. Inside `max-w-7xl`, once the wordmark and Sign out have been
-      paid for, the row has 890px to live in and needs 886 — a 4px margin, which
-      any font substitution erases. Its own line has 1232px. So the row gets its
-      own line, permanently, and in exchange it never scrolls and never hides
-      anything at any width. Measured: one row from about 900px up, two rows from
-      375px to 900px, three at 320px. The cost is about 37px of sticky header on
-      a desktop and about 75px on a phone.
-    */}
     <header class="sticky top-0 z-10 border-b border-ink-100 bg-white/85 backdrop-blur">
-      <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:px-6">
-        {/* The wordmark can come back on a phone now: it no longer competes with
-            the row for the same line, which was the whole reason it was hidden.
-            "Compliance" still waits for `sm`, the way the public header does. */}
+      {/*
+        PHONE. One line: the wordmark, and the page you are on. 49px of header
+        against the 201px the wrapped row needed at 320px.
+
+        The whole bar is the control — `summary` fills the width and stands 48px
+        tall — so opening it needs no aim. It is the only interactive thing on
+        the line, which is why the wordmark can be plain text here: a link
+        nested inside a `summary` fights it for the tap, and /app is the first
+        line of the list anyway, under the name the owner uses for it.
+      */}
+      <details class="group sm:hidden">
+        <summary
+          class="flex min-h-12 cursor-pointer list-none items-center gap-3 px-4 py-2 select-none [&::-webkit-details-marker]:hidden"
+        >
+          {/* "Compliance" still waits for `sm`, the way the public header
+              does — on this line the page name has the better claim on the
+              space. */}
+          <span class="font-semibold tracking-tight">FleetView</span>
+          <span
+            class="ml-auto flex items-center gap-1.5 rounded-lg bg-brand-500/10 px-2.5 py-1.5 text-sm font-medium text-brand-700"
+          >
+            {current}
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="size-4 shrink-0 transition-transform group-open:rotate-180"
+            >
+              <path d="M5 8l5 5 5-5"></path>
+            </svg>
+          </span>
+        </summary>
+
+        {/*
+          The list scrolls inside itself rather than growing the sticky header
+          past the screen, which is what strands the last item on a short phone:
+          thirteen 48px lines are 661px and the shortest phone still in the wild
+          is 568px tall. What it has to give back is the closed bar above it,
+          3rem, and the header's own bottom border, 1px.
+        */}
+        <nav
+          aria-label="Menu"
+          class="max-h-[calc(100dvh-3rem-1px)] overflow-y-auto border-t border-ink-100 px-2 pt-2 pb-3"
+        >
+          {
+            sections.map((n) => (
+              <a
+                href={n.href}
+                aria-current={active(n.href) ? 'page' : undefined}
+                class:list={row(n.href)}
+              >
+                {n.label}
+              </a>
+            ))
+          }
+          {/* The account controls, kept apart by a hairline and no heading. */}
+          <div class="mt-2 border-t border-ink-100 pt-2">
+            {
+              account.map((n) => (
+                <a
+                  href={n.href}
+                  aria-current={active(n.href) ? 'page' : undefined}
+                  class:list={row(n.href)}
+                >
+                  {n.label}
+                </a>
+              ))
+            }
+            <form method="POST" action="/logout">
+              <button
+                type="submit"
+                class="flex min-h-12 w-full items-center rounded-lg px-3 text-base font-medium text-ink-700 transition hover:bg-ink-100 hover:text-ink-900"
+              >
+                Sign out
+              </button>
+            </form>
+          </div>
+        </nav>
+      </details>
+
+      {/*
+        DESKTOP, from `sm` up. Two decks: the wordmark and the account controls
+        on top, the section row on its own full-width line underneath.
+
+        It was one deck, with the row scrolling sideways inside whatever was left
+        over — about 374px on a tablet. That hid most of the sections on every
+        signed-in page, which is the wrong trade for this reader twice over: he
+        cannot scan for a word he cannot see, and a strip that ends flush looks
+        finished, so he has no reason to suspect six more items sit to the right
+        of it.
+
+        Keeping the row on the top line was tried and does not survive contact
+        with real numbers. Inside `max-w-7xl`, once the wordmark and Sign out
+        have been paid for, the row has 890px to live in and needs 886 — a 4px
+        margin, which any font substitution erases. Its own line has 1232px. So
+        the row gets its own line, permanently, and in exchange it never scrolls
+        and never hides anything. Measured: one row from about 900px up, two
+        rows from 640px to 900px. The cost is 97px of sticky header on a desktop
+        and 133px on a tablet, unchanged by the phone work above.
+      */}
+      <div
+        class="mx-auto hidden max-w-7xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:flex sm:px-6"
+      >
         <a href="/app" class="shrink-0 font-semibold tracking-tight whitespace-nowrap">
           FleetView<span class="hidden text-brand-600 sm:inline">Compliance</span>
         </a>
@@ -191,22 +313,14 @@ const pill = (href: string) => [
                 {i > 0 && (
                   <span aria-hidden="true" class="hidden h-4 w-px shrink-0 bg-ink-200 lg:block" />
                 )}
-                {/*
-                  `contents` below `sm`: the group stops being a box, its links
-                  become direct children of the row, and the row packs them
-                  greedily. That is what fits nine labels into two lines on a
-                  phone — as boxes they need three. From `sm` up the box comes
-                  back and holds its group together on one line.
-                */}
-                <div class="contents sm:flex sm:items-center sm:gap-1">
+                <div class="flex items-center gap-1">
                   {group.map((n) => (
                     <a
                       href={n.href}
                       aria-current={active(n.href) ? 'page' : undefined}
                       class:list={pill(n.href)}
                     >
-                      <span class="sm:hidden">{n.short ?? n.label}</span>
-                      <span class="hidden sm:inline">{n.label}</span>
+                      {n.label}
                     </a>
                   ))}
                 </div>
@@ -220,8 +334,8 @@ const pill = (href: string) => [
     {/*
       The script that used to live here scrolled the current section into view,
       because the row scrolled sideways and the current section was routinely off
-      screen. The row wraps now and nothing is ever off screen, so it had nothing
-      left to do. Deleting it leaves the signed-in shell with no client
+      screen. The row wraps now and nothing is ever off screen, and the phone
+      menu opens on `<details>` alone. The signed-in shell still has no client
       JavaScript at all, which is what the rest of this app already assumes.
     */}
 
