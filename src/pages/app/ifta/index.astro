@@ -29,7 +29,7 @@ import {
   truckCoverage,
 } from '../../../lib/charts/ifta.ts'
 import { returnReadiness } from '../../../lib/charts/ifta-readiness.ts'
-import { ceilingFor } from '../../../lib/charts/scale.ts'
+import { ceilingFor, compactNumber } from '../../../lib/charts/scale.ts'
 import { TONES } from '../../../lib/charts/tones.ts'
 import { formatDate } from '../../../lib/drivers.ts'
 import {
@@ -329,19 +329,132 @@ const readiness = returnReadiness({
 })
 
 /**
+ * The trucks with no miles, by name, each carrying its own link.
+ *
+ * `returnReadiness` already names up to six of them inside one sentence on the
+ * checklist. A sentence is something to read; this is something to work
+ * through. The miles screen takes a `v=` parameter, so every truck here can
+ * link straight to its own form — which is the difference between being told
+ * "3 trucks still need miles" and three taps.
+ *
+ * The test is the same one src/lib/charts/ifta-readiness.ts applies: at least
+ * one MILE, not merely a row. If the two ever drifted, the count printed above
+ * this list and the names printed in it would contradict each other on one
+ * card. Both are derived from `currentMiles` and `fleet` so they cannot.
+ *
+ * `fleet === null` is a failed read of the truck list, which is not a carrier
+ * with no trucks. Nothing is listed and `readiness` says why.
+ */
+const waitingTrucks =
+  fleet === null
+    ? []
+    : fleet.filter(
+        (t) =>
+          currentMiles.filter((r) => r.vehicleId === t.id).reduce((n, r) => n + r.miles, 0) <= 0,
+      )
+
+/**
+ * How many names are printed before the rest are counted instead.
+ *
+ * The tail is a count with a link rather than a `<details>` the owner has to
+ * open: the miles screen's own per-truck chart lists every truck including the
+ * empty ones, so nothing is lost by sending him there, and a fleet with nothing
+ * entered at all would otherwise put twenty-five rows between the bar and the
+ * checklist under it.
+ */
+const NAMED_WAITING = 8
+const waitingShown = waitingTrucks.slice(0, NAMED_WAITING)
+const waitingRest = waitingTrucks.length - waitingShown.length
+
+/**
  * Fleet MPG over five quarters — far enough back that the same quarter a year
  * ago is on the axis, and the widest span these two reads can cover cheaply.
  *
  * Reversed because `recentQuarters` hands them back newest-first for the picker
  * at the top of the page, and an axis reads oldest to newest.
  */
-const trend = mpgTrend(
-  quarterTotals([...trendQuarters].reverse(), mileRecords, fuelRecords),
-  today,
-)
+const totalsByQuarter = quarterTotals([...trendQuarters].reverse(), mileRecords, fuelRecords)
+
+const trend = mpgTrend(totalsByQuarter, today)
 // The same ceiling `Columns` computes internally, so the label names the line
 // the columns are actually scaled against rather than a number near it.
 const mpgCeiling = ceilingFor(trend.columns.map((c) => c.value))
+
+/**
+ * Total miles per quarter — "are we running more or less than we were".
+ *
+ * FOUR quarters, where the MPG chart under it takes five. The two spans are
+ * different on purpose and neither is a rounding of the other: MPG is compared
+ * against the same quarter a year ago, because fuel economy is seasonal and a
+ * winter quarter is not evidence against a summer one. Miles are compared
+ * against the recent run of quarters, which is the question actually being
+ * asked here.
+ *
+ * NO ARITHMETIC ON THE RETURN HAPPENS HERE. `quarterTotals()` has already added
+ * the mileage rows up per quarter — the same integers the return is built from,
+ * summed once, in the library that is tested.
+ */
+const MILES_TREND_QUARTERS = 4
+const milesTrendQuarters = totalsByQuarter.slice(-MILES_TREND_QUARTERS)
+
+const milesTrendColumns = milesTrendQuarters.map((q) => {
+  const stillOpen = quarterStillOpen(q.periodStart, today)
+  // A quarter with no mileage rows is NOT a quarter in which the trucks stayed
+  // in the yard. Nobody types zero miles for a quarter they did not run; they
+  // type nothing. Drawn at zero this chart would claim a stopped fleet, so it
+  // is `null` and `Columns` draws the dashed empty slot that says we have no
+  // figure.
+  const value = q.totalMiles > 0 ? q.totalMiles : null
+  return {
+    label: quarterLabel(q.periodStart),
+    value,
+    display: value === null ? 'nothing entered' : compactNumber(value),
+    // The quarter still being typed into is drawn grey and with an open dashed
+    // top, the same way the MPG chart greys it: its height is real and its
+    // meaning is not settled, and a solid brand-coloured column beside three
+    // finished ones invites a comparison that cannot be made yet.
+    tone: stillOpen ? ('neutral' as const) : ('brand' as const),
+    inProgress: stillOpen,
+  }
+})
+
+const milesTrendKnown = milesTrendColumns.filter((c) => c.value !== null).length
+const milesTrendCeiling = ceilingFor(milesTrendColumns.map((c) => c.value))
+
+/**
+ * The comparison, between CLOSED quarters only.
+ *
+ * A quarter still being entered holds however many trip sheets somebody has got
+ * to, so reading it against a finished one says the fleet slowed down when what
+ * happened is that the typing is not done. The open quarter stays on the chart
+ * and stays out of this sentence.
+ */
+const closedMileQuarters = milesTrendQuarters.filter(
+  (q) => !quarterStillOpen(q.periodStart, today) && q.totalMiles > 0,
+)
+const milesTrendTakeaway = (() => {
+  if (closedMileQuarters.length < 2) return null
+  const earlier = closedMileQuarters[closedMileQuarters.length - 2]
+  const later = closedMileQuarters[closedMileQuarters.length - 1]
+  // Whole miles, both sides. Integers in and an integer out.
+  const delta = later.totalMiles - earlier.totalMiles
+  if (delta === 0) {
+    return `${quarterLabel(later.periodStart)} has the same miles as ${quarterLabel(earlier.periodStart)}: ${compactNumber(later.totalMiles)}.`
+  }
+  return `${quarterLabel(later.periodStart)} has ${compactNumber(later.totalMiles)} miles on file, ${compactNumber(Math.abs(delta))} ${delta > 0 ? 'more' : 'less'} than ${quarterLabel(earlier.periodStart)}.`
+})()
+
+/**
+ * What this chart does not cover, and it always has something to say.
+ *
+ * Every column is the miles somebody TYPED for that quarter. A quarter two trip
+ * sheets short is a short column, and a short column on a trend chart reads as
+ * a quiet quarter rather than as a quarter nobody finished entering.
+ */
+const milesTrendCoverage = [
+  'Each column is the miles entered for that quarter. It is not a measurement of what the trucks ran.',
+  open ? `${label} is still being entered, so that column will grow.` : null,
+].filter((c): c is string => c !== null)
 
 const quarterHref = (p: Date) => `/app/ifta?q=${isoDay(p)}`
 
@@ -370,7 +483,21 @@ const cell = 'block px-4 py-1 sm:table-cell sm:py-3'
 /** The column name, carried into the block that no longer has a header row. */
 const colName = 'text-ink-500 sm:hidden'
 
-/** The deadline card's colour, and it earns red. A late return is a penalty. */
+/**
+ * The deadline card's colour, and it earns red. A late return is a penalty.
+ *
+ * Thirty days, not the 45 of `SOON_DAYS` in src/lib/rules/index.ts. The filing
+ * window for a quarter is one month wide — the quarter closes and the return is
+ * due the last day of the month after it — so amber at 45 days would light up
+ * about two weeks BEFORE the quarter even ends, on every quarter, at which
+ * point there is nothing to file yet and nothing the owner can do about it.
+ * Amber that is always on is amber nobody looks at. The checklist step in
+ * src/lib/charts/ifta-readiness.ts turns amber on the same 30 days, so the card
+ * and the step under it never disagree.
+ *
+ * Both sides of zero are guarded: a negative `daysLeft` is overdue and is
+ * caught first, so it can never fall through into the due-soon branch.
+ */
 const deadlineTone =
   daysLeft < 0
     ? 'border-red-200 bg-red-50'
@@ -625,6 +752,63 @@ const deadlineTone =
                 : 'No trucks on file yet.'
             }
           />
+
+          {/* The trucks the grey part of the bar is made of, by NAME, each with
+              a link to its own miles form. The bar says how many; this says
+              which, and gives him somewhere to tap for each one. Without it the
+              grey segment is a quantity he then has to go and identify. */}
+          {
+            waitingShown.length > 0 && (
+              <div class="mt-4 border-t border-ink-100 pt-4">
+                <h4 class="text-xs tracking-wide text-ink-500 uppercase">
+                  These trucks have no miles for {label}
+                </h4>
+                <ul class="mt-2 space-y-1.5 text-sm">
+                  {waitingShown.map((truck) => (
+                    <li class="flex flex-wrap items-center justify-between gap-x-3">
+                      <span class="flex min-w-0 items-center gap-2">
+                        {/* Decorative. "no miles yet" beside it carries the same
+                            state in words, because roughly one man in twelve
+                            cannot separate the grey dot from the green one. */}
+                        <span
+                          class:list={[
+                            'h-2 w-2 shrink-0 rounded-full',
+                            TONES.neutral.swatch,
+                          ]}
+                          aria-hidden="true"
+                        />
+                        <span class="truncate font-medium">{truck.label}</span>
+                        <span class="shrink-0 text-ink-500">no miles yet</span>
+                      </span>
+                      {/* A full-height tap on a phone, a plain link from `sm`.
+                          This is read one-handed in a yard. */}
+                      <a
+                        href={`/app/ifta/miles?q=${periodIso}&v=${truck.id}`}
+                        class="inline-flex min-h-11 shrink-0 items-center font-medium whitespace-nowrap text-brand-600 hover:underline sm:min-h-0"
+                      >
+                        Enter miles →
+                      </a>
+                    </li>
+                  ))}
+                  {waitingRest > 0 && (
+                    /* The tail is counted, not hidden behind a control. The
+                       miles screen's own per-truck chart lists every truck
+                       including the empty ones, so the link is where the rest
+                       of the names actually are. */
+                    <li class="pt-1 text-ink-500">
+                      <a
+                        href={`/app/ifta/miles?q=${periodIso}`}
+                        class="font-medium text-brand-600 hover:underline"
+                      >
+                        <span class="tabular-nums">{waitingRest}</span> more{' '}
+                        {waitingRest === 1 ? 'truck has' : 'trucks have'} no miles →
+                      </a>
+                    </li>
+                  )}
+                </ul>
+              </div>
+            )
+          }
 
           {/* The list that stops a full bar reading as permission. The last two
               rows are grey on every quarter that ever renders — nothing here can
@@ -964,14 +1148,17 @@ const deadlineTone =
             ranking of exposure. Unpriced jurisdictions stay HERE, because their
             miles are known — it is only the tax on them that is not.
 
-            The subtitle does NOT say "every truck". The coverage note under this
+            The subtitle does NOT say "every truck". It leads with the fleet
+            total, because that is the number every bar below it is a share of
+            and it otherwise sits four tiles up the page — but it says "on
+            file", not "the fleet ran", because the coverage note under this
             chart may be about to say only six of nine reported, and a subtitle
             claiming the fleet would contradict it two inches higher up. */}
         {result.totalMiles > 0 && (
           <Figure
             class="mt-6"
             title="Miles by jurisdiction"
-            subtitle={`Miles on file for ${label}. The taxable gallons come from these.`}
+            subtitle={`${compactNumber(result.totalMiles)} miles on file for ${label}. The taxable gallons come from these.`}
             coverage={milesChart.coverage}
             action={{ href: `/app/ifta/miles?q=${periodIso}`, label: 'Enter miles →' }}
           >
@@ -980,6 +1167,39 @@ const deadlineTone =
                 collapse the tail over exactly those rows. */}
             <Bars items={milesChart.items} limit={milesChart.limit} moreHref="/app/ifta/miles" />
             {milesChart.takeaway && <p class="mt-3 text-sm text-ink-500">{milesChart.takeaway}</p>}
+          </Figure>
+        )}
+
+        {/*
+          "Are we running more or less than we were." Four quarters of total
+          miles, which is the same question the jurisdiction bars above answer
+          for one quarter, asked across several.
+
+          It sits between the two charts it belongs with: the bars above break
+          this quarter's miles up by state, and the MPG chart below divides them
+          to get the taxable gallons. Same input, three questions, in the order
+          they are asked.
+
+          Two known quarters is the floor, the same floor the MPG chart uses.
+          One real column beside three dashed slots is not a trend.
+        */}
+        {milesTrendKnown >= 2 && (
+          <Figure
+            class="mt-6"
+            title="Miles quarter by quarter"
+            subtitle="Total miles on file for each of the last four quarters"
+            coverage={milesTrendCoverage}
+            action={{ href: `/app/ifta/miles?q=${periodIso}`, label: 'Enter miles →' }}
+          >
+            <Columns
+              columns={milesTrendColumns}
+              axisLabel={`${compactNumber(milesTrendCeiling)} miles`}
+            />
+            {/* Written out, because the shape is read first and one man in
+                twelve reads the colours differently. */}
+            {milesTrendTakeaway && (
+              <p class="mt-3 text-sm text-ink-500">{milesTrendTakeaway}</p>
+            )}
           </Figure>
         )}
 

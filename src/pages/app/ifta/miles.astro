@@ -680,11 +680,15 @@ const quarterHref = (p: Date) =>
             Bars, never a map. Not rendered on a failed read, and the tail
             collapses to the return's own table rather than running the rail down
             past the form on a phone.
+
+            The fleet total leads the subtitle: it is the number every bar below
+            is a share of, and it is taken from `stateChart.total` — the sum of
+            the bars themselves — so the sentence and the shape cannot disagree.
           */}
           {!mileError && stateChart.items.length > 0 && (
             <Figure
               title="By state or province"
-              subtitle={`Every truck added up for ${label}, biggest first`}
+              subtitle={`${stateChart.total.toLocaleString('en-US')} miles on file for ${label}. Every truck added up, biggest first.`}
               coverage={
                 trucksWaiting > 0
                   ? `${trucksWaiting} ${trucksWaiting === 1 ? 'truck has' : 'trucks have'} no miles entered yet. Every bar here is lower than the real total.`
