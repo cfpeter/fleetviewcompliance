@@ -12,32 +12,97 @@ const { title, subtitle } = Astro.props
 const path = Astro.url.pathname
 
 /**
- * `short` is what a phone shows.
+ * Ten flat sections in one row was too many to scan, and the people scanning are
+ * Glendale and Sun Valley fleet owners who often read English as a second
+ * language. That fact decided both halves of this nav.
  *
- * Measured before this existed: at 375px the nav had 80px of visible width
- * holding 809px of links, and ZERO of the ten items were fully on screen — on
- * every signed-in page. The owner who opens his phone because he is worried
- * about one truck could not reach Trucks at all without first discovering that
- * an 80px strip scrolls sideways.
+ * GROUPED, NOT HIDDEN — no dropdown, no "More" menu, not even a `<details>` one
+ * that would work without JavaScript. A reader hunting for a word he only
+ * half-recognises has to be able to SEE the word. A menu he must open first asks
+ * him to already know the category name, which is the one thing he does not
+ * know. So every section stays on screen at every width, and the grouping is
+ * done with spacing — free to read, costs no taps, needs none of the client
+ * JavaScript this app deliberately does not ship.
  *
- * The Public shell already solved this with short/long label pairs "because a
- * phone header has ~120px to spare". That pattern never made it here.
+ * The groups, in the order the day runs:
+ *
+ *   Deadlines │ Trucks Drivers │ Dispatch Loads Customers │ Driver pay IFTA │ Proof
+ *
+ * Deadlines first, then the two things deadlines hang off. Then the day's work,
+ * then the money, then the page you hand to somebody else.
+ *
+ * The groups are not labelled, and that is deliberate. A heading is one more
+ * English word this reader has to decode before he reaches the word he was
+ * actually looking for, and the obvious candidates were the worst of it: "Work"
+ * means nothing concrete, and "Fleet" and "Money" only repeat what Trucks,
+ * Drivers, Driver pay and IFTA already say underneath them. The children are
+ * visible, so the heading has no job left to do.
+ *
+ * Settings left the row entirely and sits next to Sign out on the right: it is
+ * an account control, not a part of the business, and moving it took the row
+ * from ten items to nine.
+ *
+ * LABELS are the words an owner says out loud, not the words a TMS prints.
+ * "Dashboard" became "Deadlines" — the page lists deadlines, and "dashboard"
+ * names a piece of software rather than anything he owns. (Label only; the page
+ * is still /app, and its own H1 is the carrier's legal name.) "Settlements"
+ * became "Driver pay" — three syllables, abstract, and also a legal word, where
+ * the page simply says what each driver is owed. Everything else was already a
+ * word he uses: Trucks, Drivers, Dispatch, Loads, Customers, Proof, and IFTA,
+ * which is not English at all but the name of the filing itself.
+ *
+ * `short` is the phone label and is set only where the long one will not fit —
+ * one item, "Pay". The old set of stubs, "Disp" / "Drv" / "Trk" / "Cust" /
+ * "Set", is exactly the vocabulary this reader cannot decode. They bought the
+ * space that ten items needed to survive in one line, and nothing has to survive
+ * in one line any more; see the header below.
  */
-const nav = [
-  { href: '/app', label: 'Dashboard', short: 'Home' },
-  { href: '/app/dispatch', label: 'Dispatch', short: 'Disp' },
-  { href: '/app/loads', label: 'Loads', short: 'Loads' },
-  { href: '/app/drivers', label: 'Drivers', short: 'Drv' },
-  { href: '/app/settlements', label: 'Settlements', short: 'Pay' },
-  { href: '/app/vehicles', label: 'Trucks', short: 'Trk' },
-  { href: '/app/customers', label: 'Customers', short: 'Cust' },
-  { href: '/app/ifta', label: 'IFTA', short: 'IFTA' },
-  { href: '/app/proof', label: 'Proof', short: 'Proof' },
-  { href: '/app/settings', label: 'Settings', short: 'Set' },
+type Section = { href: string; label: string; short?: string }
+
+const groups: Section[][] = [
+  [
+    { href: '/app', label: 'Deadlines' },
+    { href: '/app/reminders', label: 'Reminders' },
+  ],
+  [
+    { href: '/app/vehicles', label: 'Trucks' },
+    { href: '/app/drivers', label: 'Drivers' },
+  ],
+  [
+    { href: '/app/dispatch', label: 'Dispatch' },
+    { href: '/app/loads', label: 'Loads' },
+    { href: '/app/customers', label: 'Customers' },
+  ],
+  [
+    { href: '/app/settlements', label: 'Driver pay', short: 'Pay' },
+    { href: '/app/ifta', label: 'IFTA' },
+  ],
+  [{ href: '/app/proof', label: 'Proof' }],
 ]
+
+const settings: Section = { href: '/app/settings', label: 'Settings' }
+// Billing sits with Settings, not in the section row: it is about the account
+// rather than about the fleet, and it is not somewhere an owner goes daily.
+const billing: Section = { href: '/app/billing', label: 'Billing' }
 
 const active = (href: string) =>
   path === href || (href !== '/app' && path.startsWith(href))
+
+/**
+ * One pill, shared by the row and by Settings, so the page you are on lights up
+ * the same way wherever its link happens to sit. Grouping changed the layout
+ * around the links and nothing about how the current one is marked — a link
+ * inside a group is still just a link, and still carries `aria-current`.
+ *
+ * `px-2.5` below `sm` rather than `px-3` is what buys the phone its second row:
+ * at `px-3` the nine labels need a third.
+ */
+const pill = (href: string) => [
+  'rounded-lg px-2.5 py-1.5 text-sm font-medium whitespace-nowrap transition sm:px-3',
+  active(href)
+    ? 'bg-brand-500/10 text-brand-700'
+    : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
+]
 ---
 
 <html lang="en">
@@ -49,68 +114,116 @@ const active = (href: string) =>
     <title>{title} · FleetView</title>
   </head>
   <body class="min-h-dvh bg-ink-50 font-sans text-ink-900 antialiased">
+    {/*
+      Two decks, at every width: the wordmark and the account controls on top,
+      the section row on its own full-width line underneath.
+
+      It was one deck, with the row scrolling sideways inside whatever was left
+      over — about 250px on a phone and about 374px on a tablet. That hid most of
+      the sections on every signed-in page, which is the wrong trade for this
+      reader twice over: he cannot scan for a word he cannot see, and a strip
+      that ends flush looks finished, so he has no reason to suspect six more
+      items sit to the right of it.
+
+      Keeping the row on the top line was tried and does not survive contact with
+      real numbers. Inside `max-w-7xl`, once the wordmark and Sign out have been
+      paid for, the row has 890px to live in and needs 886 — a 4px margin, which
+      any font substitution erases. Its own line has 1232px. So the row gets its
+      own line, permanently, and in exchange it never scrolls and never hides
+      anything at any width. Measured: one row from about 900px up, two rows from
+      375px to 900px, three at 320px. The cost is about 37px of sticky header on
+      a desktop and about 75px on a phone.
+    */}
     <header class="sticky top-0 z-10 border-b border-ink-100 bg-white/85 backdrop-blur">
-      <div class="mx-auto flex max-w-7xl items-center gap-4 px-4 py-3 sm:px-6">
-        {/* The wordmark costs 156px on a phone — more than the nav had in
-            total. It earns that space on a desktop and nowhere else. */}
-        <a href="/app" class="hidden shrink-0 font-semibold tracking-tight sm:block">
-          FleetView<span class="text-brand-600">Compliance</span>
+      <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:px-6">
+        {/* The wordmark can come back on a phone now: it no longer competes with
+            the row for the same line, which was the whole reason it was hidden.
+            "Compliance" still waits for `sm`, the way the public header does. */}
+        <a href="/app" class="shrink-0 font-semibold tracking-tight whitespace-nowrap">
+          FleetView<span class="hidden text-brand-600 sm:inline">Compliance</span>
         </a>
-        {/*
-          The negative margin is the point: the row bleeds to both edges of the
-          screen so a half-clipped pill is visible at the right edge, which is
-          the only thing that tells a person the row scrolls at all. A row that
-          ends flush inside the padding looks finished.
-        */}
+
+        {/* Settings and Sign out: the two controls that are about the account
+            rather than about the fleet, so they sit together, away from the row
+            and out of the path anyone scans for a section. */}
+        <div class="ml-auto flex shrink-0 items-center gap-1">
+          <a
+            href={billing.href}
+            aria-current={active(billing.href) ? 'page' : undefined}
+            class:list={pill(billing.href)}
+          >
+            {billing.label}
+          </a>
+          <a
+            href={settings.href}
+            aria-current={active(settings.href) ? 'page' : undefined}
+            class:list={pill(settings.href)}
+          >
+            {settings.label}
+          </a>
+          <form method="POST" action="/logout">
+            <button
+              type="submit"
+              class="rounded-lg px-2.5 py-1.5 text-sm font-medium text-ink-500 transition hover:bg-ink-100 hover:text-ink-900"
+            >
+              Sign out
+            </button>
+          </form>
+        </div>
+
+        {/* `w-full` drops the row onto the second line. It is last in the DOM as
+            well as last on the page, so tab order and reading order agree and no
+            `order-*` class is needed to fake it. */}
         <nav
           id="appnav"
-          class="-mx-4 flex flex-1 gap-1 overflow-x-auto px-4 sm:mx-0 sm:px-0"
+          class="flex w-full flex-wrap items-center gap-1 sm:gap-x-5 lg:gap-x-3"
           aria-label="Sections"
         >
           {
-            nav.map((n) => (
-              <a
-                href={n.href}
-                aria-current={active(n.href) ? 'page' : undefined}
-                class:list={[
-                  'rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition',
-                  active(n.href)
-                    ? 'bg-brand-500/10 text-brand-700'
-                    : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
-                ]}
-              >
-                <span class="sm:hidden">{n.short}</span>
-                <span class="hidden sm:inline">{n.label}</span>
-              </a>
+            groups.map((group, i) => (
+              <Fragment>
+                {/*
+                  The hairline only appears at `lg`, which is the width from which
+                  the row is comfortably one line — so it cannot end up dangling at
+                  the end of a wrapped line. Narrower than that, the grouping is
+                  the gap alone: 4px inside a group against 20px between them.
+                */}
+                {i > 0 && (
+                  <span aria-hidden="true" class="hidden h-4 w-px shrink-0 bg-ink-200 lg:block" />
+                )}
+                {/*
+                  `contents` below `sm`: the group stops being a box, its links
+                  become direct children of the row, and the row packs them
+                  greedily. That is what fits nine labels into two lines on a
+                  phone — as boxes they need three. From `sm` up the box comes
+                  back and holds its group together on one line.
+                */}
+                <div class="contents sm:flex sm:items-center sm:gap-1">
+                  {group.map((n) => (
+                    <a
+                      href={n.href}
+                      aria-current={active(n.href) ? 'page' : undefined}
+                      class:list={pill(n.href)}
+                    >
+                      <span class="sm:hidden">{n.short ?? n.label}</span>
+                      <span class="hidden sm:inline">{n.label}</span>
+                    </a>
+                  ))}
+                </div>
+              </Fragment>
             ))
           }
         </nav>
-        <form method="POST" action="/logout" class="shrink-0">
-          <button
-            type="submit"
-            class="rounded-lg px-2.5 py-1.5 text-sm font-medium text-ink-500 transition hover:bg-ink-100 hover:text-ink-900"
-          >
-            Sign out
-          </button>
-        </form>
       </div>
     </header>
 
-    <script is:inline>
-      // Scroll the section you are actually in into view.
-      //
-      // Progressive enhancement: the nav scrolls by finger without this. But
-      // standing on Loads with the "Loads" pill off-screen to the right reads as
-      // "this page is not in the menu", and the fix costs four lines.
-      ;(() => {
-        const nav = document.getElementById('appnav')
-        const current = nav?.querySelector('[aria-current="page"]')
-        if (nav && current) {
-          const left = current.offsetLeft - (nav.clientWidth - current.clientWidth) / 2
-          nav.scrollLeft = Math.max(0, left)
-        }
-      })()
-    </script>
+    {/*
+      The script that used to live here scrolled the current section into view,
+      because the row scrolled sideways and the current section was routinely off
+      screen. The row wraps now and nothing is ever off screen, so it had nothing
+      left to do. Deleting it leaves the signed-in shell with no client
+      JavaScript at all, which is what the rest of this app already assumes.
+    */}
 
     <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
       <div class="mb-6">
