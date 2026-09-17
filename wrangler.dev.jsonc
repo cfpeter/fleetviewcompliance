@@ -44,7 +44,7 @@
     // the carriers query failed with "Too many subrequests", the error was
     // discarded, and the run reported ok with 0 sent. Reconciling 50 old
     // messages is worthless if it costs every new one.
-    "DIGEST_RECONCILE_LIMIT": "8"
+    "DIGEST_RECONCILE_LIMIT": "2"
   },
 
   // A SEPARATE BUCKET. Sharing production's would mean this deployment reading
