@@ -114,14 +114,18 @@ test('the digest routes the ceiling to held, never to failed', () => {
     assert.match(body, /summary\.held \+=/, 'the ceiling must be counted as held')
     assert.doesNotMatch(body, /summary\.failed/, 'the ceiling must never be counted as failed')
     assert.doesNotMatch(body, /notification_log/, 'the ceiling must not write a log row')
-    assert.match(body, /break carriers/, 'the run must stop rather than hit the same wall again')
+    assert.match(body, /break carrierLoop/, 'the run must stop rather than hit the same wall again')
   }
 })
 
 test('the carrier loop is labelled, so the break reaches it', () => {
   // `break` without the label would leave the member loop and carry on with the
   // next carrier — straight back into the wall, for every carrier remaining.
-  assert.match(digest, /carriers: for \(const carrier of carriers/)
+  //
+  // The label is `carrierLoop` and not `carriers`, which is what it was first
+  // written as: a label sharing a name with the variable it walks reads as the
+  // variable at the `break`, and the linter refuses it for that reason.
+  assert.match(digest, /carrierLoop: for \(const carrier of carriers/)
 })
 
 test('the run reports that it stopped early', () => {

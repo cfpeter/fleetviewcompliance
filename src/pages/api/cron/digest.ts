@@ -356,7 +356,7 @@ export const POST: APIRoute = async ({ request }) => {
     exhausted: false,
   }
 
-  carriers: for (const carrier of carriers ?? []) {
+  carrierLoop: for (const carrier of carriers ?? []) {
     summary.carriers++
 
     const [
@@ -603,7 +603,7 @@ export const POST: APIRoute = async ({ request }) => {
         if (result === CEILING) {
           summary.held += emailItems.length + reminderEmails.length
           summary.exhausted = true
-          break carriers
+          break carrierLoop
         }
 
         // FOLLOWING THE `held` PRECEDENT EXACTLY, and for the identical reason.
@@ -694,7 +694,7 @@ export const POST: APIRoute = async ({ request }) => {
         if (result === CEILING) {
           summary.held += smsItems.length
           summary.exhausted = true
-          break carriers
+          break carrierLoop
         }
         // No `suppressed` branch, because the channel cannot produce one.
         // Twilio refuses a number that replied STOP synchronously — HTTP 400,
