@@ -14,10 +14,14 @@
  * Read-only: no POST, no intents. Every action on this page is a link to the
  * assignment screen, which owns the writes.
  */
+import Columns from '../../components/charts/Columns.astro'
+import Figure from '../../components/charts/Figure.astro'
 import App from '../../layouts/App.astro'
+import { bucketValues, ceilingFor, weekBuckets, weekStart } from '../../lib/charts/scale.ts'
 import { loadDeadlines } from '../../lib/deadlines.ts'
 import { eligibility, isBlocked } from '../../lib/dispatch/eligibility.ts'
 import type { DeadlineItem } from '../../lib/rules/index.ts'
+import { formatCents } from '../../lib/stops.ts'
 
 const supabase = Astro.locals.supabase!
 const carrierId = Astro.locals.carrierId!
@@ -55,6 +59,8 @@ interface LoadRow {
   customer_id: string | null
   status: string
   exception: string | null
+  /** Integer cents, or null when nobody has typed a rate yet. Never a float. */
+  linehaul_cents: number | null
   created_at: string
 }
 
@@ -97,7 +103,9 @@ interface VehicleRow {
 // eventually "fixes" a bug by loosening the policy instead of the query.
 const { data: loadData, error: loadError } = await supabase
   .from('loads')
-  .select('id, load_number, broker_reference, customer_id, status, exception, created_at')
+  .select(
+    'id, load_number, broker_reference, customer_id, status, exception, linehaul_cents, created_at',
+  )
   .in('status', BOARD_STATUSES)
   // `.neq('exception', 'cancelled')` looks equivalent and is not: in SQL
   // `NULL <> 'cancelled'` is NULL, not true, so every load with no exception at
@@ -108,6 +116,46 @@ const { data: loadData, error: loadError } = await supabase
 
 const loads = (loadData ?? []) as LoadRow[]
 const loadIds = loads.map((l) => l.id)
+
+// ---------------------------------------------------------------------------
+// Weekly pace
+// ---------------------------------------------------------------------------
+
+/** How many weeks the pace chart draws. Two months is one season of freight. */
+const PACE_WEEKS = 8
+const MS_DAY = 86_400_000
+
+/**
+ * The carrier's calendar day for an instant, as UTC midnight of that day.
+ *
+ * `weekBuckets` cuts weeks on UTC Mondays, and the rest of this file is careful
+ * that a 7am Fontana time is never rendered as a UTC one. Without this the two
+ * disagree: a load given a driver at 6pm Sunday in Los Angeles is already
+ * Monday in UTC, so it would be counted in the following week — every Sunday
+ * evening, on every column.
+ */
+const LA_DAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: TZ,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+function carrierDay(ms: number): Date {
+  return new Date(`${LA_DAY.format(new Date(ms))}T00:00:00Z`)
+}
+
+/** Eight consecutive weeks ending with the one the carrier is standing in. */
+const paceBuckets = weekBuckets(
+  new Date(weekStart(carrierDay(Date.now())).getTime() - (PACE_WEEKS - 1) * 7 * MS_DAY),
+  PACE_WEEKS,
+)
+
+/**
+ * A ceiling on the rows read for the chart, so one busy carrier cannot turn a
+ * board request into an unbounded read. If it is ever hit the chart says so
+ * rather than quietly drawing short columns.
+ */
+const PACE_ROW_CAP = 2000
 
 /**
  * Everything else the board needs, in parallel.
@@ -122,35 +170,136 @@ const loadIds = loads.map((l) => l.id)
  * driver can still be sitting on an open load and rendering him as a blank cell
  * would hide exactly the row that needs attention.
  */
-const [{ data: stopData }, { data: assignmentData }, { data: driverData }, { data: vehicleData }, deadlines] =
-  await Promise.all([
-    loadIds.length > 0
-      ? supabase
-          .from('load_stops')
-          .select('load_id, sequence, stop_type, company_name, city, state, window_start')
-          .in('load_id', loadIds)
-          .order('sequence', { ascending: true })
-      : Promise.resolve({ data: [] as StopRow[] }),
-    loadIds.length > 0
-      ? supabase
-          .from('load_assignments')
-          .select('load_id, driver_id, co_driver_id, tractor_id, trailer_id, assigned_at')
-          // The partial index on this table is `where unassigned_at is null`, and
-          // so is the definition of "who is on this load right now". A released
-          // assignment is history, not a current answer.
-          .is('unassigned_at', null)
-          .in('load_id', loadIds)
-          .order('assigned_at', { ascending: false })
-      : Promise.resolve({ data: [] as AssignmentRow[] }),
-    supabase.from('drivers').select('id, first_name, last_name, status'),
-    supabase.from('vehicles').select('id, kind, unit_number, vin'),
-    loadDeadlines(supabase, carrierId),
-  ])
+const [
+  { data: stopData },
+  { data: assignmentData },
+  { data: driverData },
+  { data: vehicleData },
+  deadlines,
+  { data: paceData },
+  { data: firstEverData },
+] = await Promise.all([
+  loadIds.length > 0
+    ? supabase
+        .from('load_stops')
+        .select('load_id, sequence, stop_type, company_name, city, state, window_start')
+        .in('load_id', loadIds)
+        .order('sequence', { ascending: true })
+    : Promise.resolve({ data: [] as StopRow[] }),
+  loadIds.length > 0
+    ? supabase
+        .from('load_assignments')
+        .select('load_id, driver_id, co_driver_id, tractor_id, trailer_id, assigned_at')
+        // The partial index on this table is `where unassigned_at is null`, and
+        // so is the definition of "who is on this load right now". A released
+        // assignment is history, not a current answer.
+        .is('unassigned_at', null)
+        .in('load_id', loadIds)
+        .order('assigned_at', { ascending: false })
+    : Promise.resolve({ data: [] as AssignmentRow[] }),
+  supabase.from('drivers').select('id, first_name, last_name, status'),
+  supabase.from('vehicles').select('id, kind, unit_number, vin'),
+  loadDeadlines(supabase, carrierId),
+  // The pace chart, and the ONLY query on this page that is not about what is
+  // happening right now. No `unassigned_at is null` here on purpose: a load
+  // that got a driver five weeks ago and has long since delivered still
+  // happened, and filtering it out would draw a chart of the current board
+  // eight times over instead of eight weeks of work.
+  supabase
+    .from('load_assignments')
+    .select('load_id, assigned_at')
+    .gte('assigned_at', paceBuckets[0].start.toISOString())
+    .order('assigned_at', { ascending: false })
+    .limit(PACE_ROW_CAP),
+  // The oldest assignment this carrier has, ever. It is what separates "you
+  // ran nothing that week" from "you were not here that week" — see below.
+  supabase
+    .from('load_assignments')
+    .select('assigned_at')
+    .order('assigned_at', { ascending: true })
+    .limit(1),
+])
 
 const stops = (stopData ?? []) as StopRow[]
 const assignments = (assignmentData ?? []) as AssignmentRow[]
 const drivers = (driverData ?? []) as DriverRow[]
 const vehicles = (vehicleData ?? []) as VehicleRow[]
+
+/**
+ * Loads given a driver, per week.
+ *
+ * Counted on the FIRST assignment each load got inside the window, so a load
+ * whose driver was swapped twice on Tuesday is one load, not three. A load that
+ * was already running before the window and got a new driver inside it counts
+ * in the week of the change — the earlier row is outside the query and there is
+ * no way to know about it from here, so the chart says so rather than guessing.
+ */
+const paceRows = (paceData ?? []) as { load_id: string; assigned_at: string }[]
+const paceTruncated = paceRows.length >= PACE_ROW_CAP
+
+const firstByLoad = new Map<string, number>()
+for (const r of paceRows) {
+  const t = Date.parse(r.assigned_at)
+  if (Number.isNaN(t)) continue
+  const prev = firstByLoad.get(r.load_id)
+  if (prev === undefined || t < prev) firstByLoad.set(r.load_id, t)
+}
+
+// `emptyIsZero` because this is a count of records we write ourselves: a week
+// with no assignment row really is a week in which no load got a driver. That
+// is only true from the day the carrier started here, which the next block
+// handles.
+const paceCounts = bucketValues(
+  [...firstByLoad.values()],
+  paceBuckets,
+  (t) => carrierDay(t),
+  () => 1,
+  true,
+)
+
+/**
+ * The day this carrier first put a driver under anything, in bucket space.
+ *
+ * Pushed through `carrierDay` for the same reason the counts are: the buckets
+ * are the carrier's weeks, and comparing a raw UTC instant against them puts
+ * anything assigned late on a Sunday evening in the wrong week.
+ */
+const firstEverRow = ((firstEverData ?? []) as { assigned_at: string }[])[0]
+const firstEverParsed = firstEverRow ? Date.parse(firstEverRow.assigned_at) : Number.NaN
+const firstEverMs = Number.isNaN(firstEverParsed) ? null : carrierDay(firstEverParsed).getTime()
+
+const paceColumns = paceBuckets.map((b, i) => {
+  /**
+   * A week that ended before this carrier ever put a driver under a load is not
+   * a quiet week. Zero there is a claim about his business; the dashed slot is
+   * a claim about our records, and ours is the only one we can evidence. A
+   * carrier who signed up on Thursday must not open this page and see seven
+   * weeks of failure.
+   */
+  const beforeUs = firstEverMs === null || b.end.getTime() <= firstEverMs
+  const value = beforeUs ? null : (paceCounts[i] ?? 0)
+  return {
+    label: b.label,
+    value,
+    display: value === null ? 'no records' : String(value),
+    // The week in progress is short for a reason that has nothing to do with
+    // the business. Faded and announced as "so far", never dropped.
+    inProgress: i === paceBuckets.length - 1,
+  }
+})
+
+const paceTotal = paceCounts.reduce((sum: number, v) => sum + (v ?? 0), 0)
+const paceCeiling = ceilingFor(paceColumns.map((c) => c.value))
+const paceMissingWeeks = paceColumns.filter((c) => c.value === null).length
+
+const paceCoverage = [
+  'A load is counted on the day you first put a driver under it, not the day it was booked or the day it delivered.',
+  'A driver change on a load that was already running counts that load again, in the week of the change.',
+  paceMissingWeeks > 0 &&
+    `${paceMissingWeeks} ${paceMissingWeeks === 1 ? 'week is' : 'weeks are'} marked "no records" because they are before your first load here. That is not zero loads.`,
+  paceTruncated &&
+    `Only the newest ${PACE_ROW_CAP.toLocaleString('en-US')} driver assignments were read, so the oldest weeks may be short.`,
+].filter((v): v is string => typeof v === 'string')
 
 const driverById = new Map(drivers.map((d) => [d.id, d]))
 const vehicleById = new Map(vehicles.map((v) => [v.id, v]))
@@ -266,6 +415,26 @@ const EXCEPTION_PILL: Record<string, string> = {
 
 const words = (v: string) => v.replace(/_/g, ' ')
 
+/**
+ * The one state a load is in for the dot on its card.
+ *
+ * It answers one question and only one: can this load roll with the people on
+ * it. The colours are the deadline palette and mean what they always mean here
+ * — red act now, amber check it, grey we do not know, green on track — and
+ * every one of them is printed with its word beside it, never on its own. The
+ * operational exception (detained, breakdown, late) keeps its own pill and is
+ * deliberately NOT folded in: where the truck is and whether the driver is
+ * legal are two different questions, and one dot cannot answer both.
+ */
+type Readiness = 'blocked' | 'off_roster' | 'ready' | 'nobody'
+
+const READINESS: Record<Readiness, { dot: string; text: string; word: string }> = {
+  blocked: { dot: 'bg-red-500', text: 'text-red-700', word: 'Not qualified' },
+  off_roster: { dot: 'bg-amber-500', text: 'text-amber-800', word: 'Not on the roster' },
+  ready: { dot: 'bg-emerald-500', text: 'text-emerald-800', word: 'Driver is good' },
+  nobody: { dot: 'bg-ink-300', text: 'text-ink-500', word: 'No driver yet' },
+}
+
 interface BoardRow {
   id: string
   label: string
@@ -285,6 +454,10 @@ interface BoardRow {
   blocked: boolean
   /** The engine has never seen this driver — inactive, terminated, or deleted. */
   driverOffRoster: boolean
+  /** What the dot on the card says. Derived from the two flags above. */
+  readiness: Readiness
+  /** The linehaul in integer cents, or null when nobody has typed a rate. */
+  linehaulCents: number | null
   sortKey: number
 }
 
@@ -299,6 +472,16 @@ const rows: BoardRow[] = loads.map((l) => {
   const a = assignmentByLoad.get(l.id)
   const items = a?.driver_id ? itemsByDriver.get(a.driver_id) : undefined
   const driver = driverName(a?.driver_id)
+
+  // The same engine the assignment screen gates on, asked again about today.
+  // The label is the driver's real name so that the issue messages this
+  // produces stay usable if this row ever grows a tooltip or an expander.
+  const blocked = items ? isBlocked(eligibility({ items, label: driver ?? 'This driver' })) : false
+  // `loadDeadlines()` only evaluates ACTIVE drivers. So a driver who has been
+  // terminated since he was assigned has no items at all, and an absent bucket
+  // reads identically to a spotless file. Distinguishing the two here is what
+  // stops "no issues" being printed next to a man who no longer works here.
+  const driverOffRoster = Boolean(a?.driver_id) && !items
 
   return {
     id: l.id,
@@ -315,15 +498,20 @@ const rows: BoardRow[] = loads.map((l) => {
     coDriver: driverName(a?.co_driver_id),
     tractor: unitName(a?.tractor_id),
     trailer: unitName(a?.trailer_id),
-    // The same engine the assignment screen gates on, asked again about today.
-    // The label is the driver's real name so that the issue messages this
-    // produces stay usable if this row ever grows a tooltip or an expander.
-    blocked: items ? isBlocked(eligibility({ items, label: driver ?? 'This driver' })) : false,
-    // `loadDeadlines()` only evaluates ACTIVE drivers. So a driver who has been
-    // terminated since he was assigned has no items at all, and an absent bucket
-    // reads identically to a spotless file. Distinguishing the two here is what
-    // stops "no issues" being printed next to a man who no longer works here.
-    driverOffRoster: Boolean(a?.driver_id) && !items,
+    blocked,
+    driverOffRoster,
+    // Worst first. A driver who is off the roster AND fails a date is a red
+    // card, not an amber one.
+    readiness: blocked
+      ? 'blocked'
+      : driverOffRoster
+        ? 'off_roster'
+        : driver
+          ? 'ready'
+          : 'nobody',
+    // Straight through as cents. It is formatted once, at the point it is
+    // printed, and never divided into a float on the way here.
+    linehaulCents: l.linehaul_cents ?? null,
     sortKey: pickup?.window_start ? Date.parse(pickup.window_start) : Number.POSITIVE_INFINITY,
   }
 })
@@ -369,6 +557,23 @@ const action = 'inline-flex min-h-11 items-center text-sm font-medium text-brand
  */
 const rowAction = `${action} flex-1 justify-center rounded-lg border border-ink-100 px-3 sm:flex-none sm:justify-start sm:rounded-none sm:border-0 sm:px-0`
 
+/**
+ * What one column of the board is worth.
+ *
+ * Summed in integer cents and only over the loads that actually carry a rate.
+ * A load nobody has priced is NOT a $0 load, so it is counted separately and
+ * printed beside the total — a figure that quietly swallows four unpriced loads
+ * is the kind of number an owner repeats to a broker and then has to take back.
+ */
+function columnMoney(rowsIn: BoardRow[]) {
+  const priced = rowsIn.filter((r) => r.linehaulCents !== null)
+  return {
+    cents: priced.reduce((sum, r) => sum + (r.linehaulCents ?? 0), 0),
+    priced: priced.length,
+    unpriced: rowsIn.length - priced.length,
+  }
+}
+
 const sections = [
   {
     key: 'unassigned',
@@ -377,6 +582,10 @@ const sections = [
     rows: needsDriver,
     wrapper: 'overflow-x-auto rounded-xl border border-brand-500/30 bg-brand-500/[0.04]',
     action: 'Assign',
+    // Same tint the tile at the top of the page uses for this column, so the
+    // big number up there and the big number down here read as one count.
+    countClass: 'bg-brand-500/10 text-brand-700',
+    money: columnMoney(needsDriver),
   },
   {
     key: 'running',
@@ -385,6 +594,8 @@ const sections = [
     rows: running,
     wrapper: 'overflow-x-auto rounded-xl border border-ink-100 bg-white',
     action: 'Change',
+    countClass: 'bg-ink-100 text-ink-900',
+    money: columnMoney(running),
   },
 ]
 ---
@@ -449,6 +660,39 @@ const sections = [
   </div>
 
   {
+    /*
+      PACE, UNDER THE THREE COUNTS AND ABOVE THE WORK.
+      The counts are today. This is the only thing on the page that is not, and
+      it is here because "am I busier than last month" is a question an owner
+      answers by feel and is usually wrong about. Drawn only when there is
+      something to draw: eight flat columns at zero is not an answer, and a
+      carrier in his first week is not having a bad quarter.
+    */
+  }
+  {
+    paceTotal > 0 && (
+      <Figure
+        class="mt-4"
+        title={`${paceTotal} ${paceTotal === 1 ? 'load' : 'loads'} given a driver in the last ${PACE_WEEKS} weeks`}
+        subtitle="One column per week. The last column is the week you are in now, so it is not a full week."
+        coverage={paceCoverage}
+        action={{ href: '/app/loads', label: 'All loads →' }}
+      >
+        <Columns
+          columns={paceColumns}
+          max={paceCeiling}
+          axisLabel={
+            paceCeiling > 0
+              ? `Full height ${paceCeiling} ${paceCeiling === 1 ? 'load' : 'loads'}`
+              : undefined
+          }
+          emptyMessage="No load has been given a driver yet, so there is nothing to draw here."
+        />
+      </Figure>
+    )
+  }
+
+  {
     rows.length === 0 && (
       <div class="mt-6 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
         <p class="font-medium">Nothing on the board</p>
@@ -470,13 +714,56 @@ const sections = [
     sections.map((section) =>
       section.rows.length === 0 ? null : (
         <section class="mt-8">
-          <h2 class="text-lg font-semibold tracking-tight">
-            {section.title}
-            <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">
-              {section.rows.length}
-            </span>
-          </h2>
-          <p class="mt-1 mb-3 text-sm text-ink-500">{section.blurb}</p>
+          {/*
+            THE COUNT IS THE HEADING, not a footnote after it. The number of
+            loads with nobody under them is the thing this page is opened to
+            find out, and at 14px after the words it was the smallest text in
+            the block that carried the largest fact.
+          */}
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <h2 class="flex items-center gap-2.5 text-lg font-semibold tracking-tight">
+              <span
+                class:list={[
+                  'inline-flex min-w-11 justify-center rounded-lg px-2.5 py-1 text-2xl tabular-nums',
+                  section.countClass,
+                ]}
+              >
+                {section.rows.length}
+              </span>
+              {section.title}
+            </h2>
+            {/*
+              Not a section of its own: every one of these loads is already in
+              the list below, and printing them twice would have a dispatcher
+              chasing the same load two ways. It is a count on the column that
+              holds them, in the colour it always has.
+            */}
+            {section.key === 'running' && notQualified.length > 0 && (
+              <span class="inline-flex items-center gap-1.5 rounded-md bg-red-100 px-2 py-1 text-xs font-medium text-red-700">
+                <span class="size-2 shrink-0 rounded-full bg-red-500" aria-hidden="true" />
+                <span class="tabular-nums">{notQualified.length}</span> not qualified today
+              </span>
+            )}
+            {/*
+              What is sitting in this column, in money. Only the loads that
+              carry a rate, and the ones that do not are counted beside it
+              rather than folded in at zero.
+            */}
+            {section.money.priced > 0 && (
+              <span class="text-sm text-ink-500">
+                <span class="font-semibold text-ink-900 tabular-nums">
+                  {formatCents(section.money.cents)}
+                </span>{' '}
+                on {section.money.priced} {section.money.priced === 1 ? 'load' : 'loads'}
+              </span>
+            )}
+            {section.money.unpriced > 0 && (
+              <span class="text-sm text-ink-300 tabular-nums">
+                {section.money.unpriced} with no rate typed
+              </span>
+            )}
+          </div>
+          <p class="mt-1.5 mb-3 text-sm text-ink-500">{section.blurb}</p>
 
           <div class={section.wrapper}>
             <table class="w-full text-sm sm:min-w-[68rem]">
@@ -519,6 +806,39 @@ const sections = [
                           Broker ref {r.brokerReference}
                         </div>
                       )}
+                      {/*
+                        WHAT IT IS WORTH AND WHETHER IT CAN GO, on one line under
+                        the number. These are the two things that decide which of
+                        four stuck loads gets worked first, and before this they
+                        were on a different screen and in a different cell. The
+                        dot never travels alone: the word beside it says the same
+                        thing, because roughly one man in twelve cannot tell the
+                        red one from the amber one.
+                      */}
+                      <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span class="inline-flex items-center gap-1.5 text-xs">
+                          <span
+                            class:list={[
+                              'size-2 shrink-0 rounded-full',
+                              READINESS[r.readiness].dot,
+                            ]}
+                            aria-hidden="true"
+                          />
+                          <span class={READINESS[r.readiness].text}>
+                            {READINESS[r.readiness].word}
+                          </span>
+                        </span>
+                        {/* A load nobody has priced is not a $0 load, and
+                            printing one as $0.00 is the kind of number that ends
+                            up in a conversation with a broker. */}
+                        {r.linehaulCents === null ? (
+                          <span class="text-xs text-ink-300 italic">No rate typed</span>
+                        ) : (
+                          <span class="text-sm font-semibold tabular-nums">
+                            {formatCents(r.linehaulCents)}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     {/* An empty cell is a blank line on a phone, so it is not
                         rendered there at all. The em dash still holds the

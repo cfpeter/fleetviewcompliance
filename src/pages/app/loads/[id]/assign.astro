@@ -650,6 +650,97 @@ const SEVERITY_PILL = {
   block: 'bg-red-100 text-red-700',
   warn: 'bg-amber-100 text-amber-800',
 } as const
+
+// ---------------------------------------------------------------------------
+// The summary line
+// ---------------------------------------------------------------------------
+
+/**
+ * How one slot came out, in one word.
+ *
+ * A SUMMARY OF WARNINGS IS THE DANGEROUS KIND OF VISUAL. The list below is the
+ * thing a dispatcher has to read, and anything above it that reads as a verdict
+ * invites her to stop there. So this is ordered worst-first, it never says
+ * "clear" about the load as a whole — only about a slot that is genuinely
+ * clear — and it ends by pointing at the box and the sentence she still has to
+ * type. It adds a second, louder place the warnings appear. It replaces none.
+ *
+ * `unknown` is grey and is counted separately from `clear`, because "we have no
+ * rows for this man" is not a clean file and the two must never add up together.
+ */
+type SlotState = 'block' | 'warn' | 'unknown' | 'clear'
+
+const SLOT_STATE: Record<SlotState, { dot: string; text: string; word: string }> = {
+  block: { dot: 'bg-red-500', text: 'text-red-800', word: 'cannot go out' },
+  warn: { dot: 'bg-amber-500', text: 'text-amber-900', word: 'warning' },
+  unknown: { dot: 'bg-ink-300', text: 'text-ink-500', word: 'no records' },
+  clear: { dot: 'bg-emerald-500', text: 'text-emerald-800', word: 'clear' },
+}
+
+function slotState(s: SlotAssessment): SlotState {
+  if (s.issues.some((i) => i.severity === 'block')) return 'block'
+  if (s.issues.some((i) => i.severity === 'warn')) return 'warn'
+  // Checked LAST, not first. A driver the engine has no rows for can still be
+  // double-booked, and that warning outranks the missing paperwork.
+  return s.unknownSubject ? 'unknown' : 'clear'
+}
+
+const slotStates = assessment.slots.map((s) => {
+  const state = slotState(s)
+  const warns = s.issues.filter((i) => i.severity === 'warn').length
+  return {
+    role: s.role,
+    state,
+    // An amber slot says HOW MANY, because two warnings on one driver and one
+    // warning on each of two are the same amber dot and different afternoons.
+    word:
+      state === 'warn' ? `${warns} ${warns === 1 ? 'warning' : 'warnings'}` : SLOT_STATE[state].word,
+  }
+})
+const countOfState = (st: SlotState) => slotStates.filter((r) => r.state === st).length
+
+/**
+ * The counts, worst first.
+ *
+ * Blocks and warnings are counted as ISSUES because that is the number she has
+ * to work through; "clear" and "no records" are counted as SLOTS because there
+ * is no issue to count. The row of slots underneath is what keeps the two
+ * apart on the screen.
+ */
+interface SummaryCount {
+  state: SlotState
+  n: number
+  word: string
+}
+
+const summaryAll: SummaryCount[] = [
+  { state: 'block', n: assessment.blocks.length, word: 'must be fixed' },
+  {
+    state: 'warn',
+    n: assessment.warns.length,
+    word: assessment.warns.length === 1 ? 'warning' : 'warnings',
+  },
+  { state: 'unknown', n: countOfState('unknown'), word: 'with no records' },
+  { state: 'clear', n: countOfState('clear'), word: 'clear' },
+]
+
+const summaryCounts = summaryAll.filter((c) => c.n > 0)
+
+/** The colour of the summary panel itself: the worst thing in it, never better. */
+const summaryTone: SlotState = assessment.blocked
+  ? 'block'
+  : assessment.warns.length > 0
+    ? 'warn'
+    : countOfState('unknown') > 0
+      ? 'unknown'
+      : 'clear'
+
+const SUMMARY_PANEL: Record<SlotState, string> = {
+  block: 'border-red-200 bg-red-50/40',
+  warn: 'border-amber-300 bg-amber-50',
+  unknown: 'border-ink-100 bg-white',
+  clear: 'border-ink-100 bg-white',
+}
 ---
 
 <App
@@ -799,6 +890,63 @@ const SEVERITY_PILL = {
       {
         assessment.slots.length > 0 && (
           <div class="space-y-3">
+            {/*
+              THE SUMMARY IS AN INDEX, NOT A VERDICT.
+              Four cards below, each with its own list, is four scrolls before a
+              dispatcher knows whether this combination is workable at all — and
+              a driver who is fine except for one amber line gets read at the
+              same speed as one who cannot legally leave the yard. This line is
+              the same facts counted, worst first, with the word printed beside
+              every colour. It does not summarise the warnings away: it says how
+              many there are, and then says she still has to read them.
+            */}
+            <div class:list={['rounded-xl border p-4', SUMMARY_PANEL[summaryTone]]}>
+              <h2 class="text-xs tracking-wide text-ink-500 uppercase">What we checked</h2>
+
+              <p class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-base font-medium">
+                {summaryCounts.map((c) => (
+                  <span class="inline-flex items-center gap-1.5">
+                    <span
+                      class:list={['size-2.5 shrink-0 rounded-full', SLOT_STATE[c.state].dot]}
+                      aria-hidden="true"
+                    />
+                    <span class={SLOT_STATE[c.state].text}>
+                      <span class="tabular-nums">{c.n}</span> {c.word}
+                    </span>
+                  </span>
+                ))}
+              </p>
+
+              {/* One dot per slot, named. The counts above say how much; this
+                  says which of the four it is about, so she knows where to look
+                  before she starts scrolling. */}
+              <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs">
+                {slotStates.map((r) => (
+                  <li class="inline-flex items-center gap-1.5">
+                    <span
+                      class:list={['size-2 shrink-0 rounded-full', SLOT_STATE[r.state].dot]}
+                      aria-hidden="true"
+                    />
+                    <span class="text-ink-500">{r.role}</span>
+                    <span class={SLOT_STATE[r.state].text}>{r.word}</span>
+                  </li>
+                ))}
+              </ul>
+
+              {/* The summary ends by pointing AT the work, never instead of it.
+                  Nothing here is a shortcut past the box and the sentence. */}
+              {assessment.blocked ? (
+                <p class="mt-3 text-sm text-red-800">
+                  Read the red box at the top of this page. Nobody can override that one.
+                </p>
+              ) : assessment.warns.length > 0 ? (
+                <p class="mt-3 text-sm text-amber-900">
+                  Read every warning below. To send this load out you still have to tick the box and
+                  type why. We save your name with it.
+                </p>
+              ) : null}
+            </div>
+
             {assessment.slots.map((s) => {
               const blocks = s.issues.filter((i) => i.severity === 'block')
               const warns = s.issues.filter((i) => i.severity === 'warn')
