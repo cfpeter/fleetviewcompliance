@@ -21,6 +21,7 @@
 import type { APIRoute } from 'astro'
 import { safeNext } from '../../lib/redirect.ts'
 import { sessionClient } from '../../lib/supabase/server.ts'
+import { recordTermsAcceptance } from '../../lib/terms.ts'
 
 export const GET: APIRoute = async ({ url, cookies, request, redirect }) => {
   const code = url.searchParams.get('code')
@@ -40,6 +41,39 @@ export const GET: APIRoute = async ({ url, cookies, request, redirect }) => {
   // from one already used, and surfacing that difference tells whoever is
   // holding an intercepted link which one they have.
   if (error) return redirect('/login?notice=link_expired', 303)
+
+  // THE AGREEMENT, and why it is written here at all.
+  //
+  // With email confirmation switched ON, signUp returns no session, so the
+  // signup handler in login.astro has no authenticated identity to write
+  // against and records nothing. The tick is still mandatory and still refused
+  // server-side, so no account can exist without one — but the evidence row
+  // would be missing, which is the whole point of collecting it.
+  //
+  // ONLY WHEN THERE IS NO ROW AT ALL. This route today serves one thing:
+  // confirming a new account. The moment a password reset or a magic link is
+  // added it will come through here too, and writing an acceptance for somebody
+  // who ticked nothing that day is fabricated evidence — worse than no evidence,
+  // because it would be produced in a dispute as though it were real. Checking
+  // first means a returning user writes nothing, whatever brought them here.
+  //
+  // Re-acceptance after the documents change is a separate gate with its own
+  // screen, not this route. A failure is logged and never shown: they are
+  // signed in, and there is nothing useful to abort.
+  const { data: who } = await supabase.auth.getUser()
+  if (who?.user) {
+    const { data: already, error: readError } = await supabase
+      .from('terms_acceptances')
+      .select('user_id')
+      .eq('user_id', who.user.id)
+      .limit(1)
+    // A read that FAILED is not "no row". Treating them alike would write a
+    // second row on every confirmation whenever the select was unhappy.
+    if (!readError && (already ?? []).length === 0) {
+      const accepted = await recordTermsAcceptance(supabase, request.headers)
+      if (accepted.error) console.error('terms acceptance not recorded:', accepted.error)
+    }
+  }
 
   // `next` goes through the same allow-list the login form uses. Without it
   // this route is an open redirect wearing a confirmation link — the most

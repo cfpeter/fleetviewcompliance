@@ -34,6 +34,7 @@ import { normalizeDot } from '../lib/fmcsa.ts'
 import { type AuthMode, notice, parseAuthMode, signupOutcome } from '../lib/onboarding.ts'
 import { safeNext } from '../lib/redirect.ts'
 import { sessionClient } from '../lib/supabase/server.ts'
+import { ASSENT, recordTermsAcceptance, ticked } from '../lib/terms.ts'
 
 const params = Astro.url.searchParams
 const mode = parseAuthMode(params.get('mode'))
@@ -102,6 +103,11 @@ if (Astro.request.method === 'POST') {
   const supabase = sessionClient(Astro.cookies, Astro.request.headers)
 
   if (submitted === 'signup') {
+    // Before the account is created, not after. An account that exists with no
+    // agreement recorded against it is the exact gap this closes, and the only
+    // way to be sure there is never one is to refuse before signUp runs.
+    if (!ticked(form.get('terms'))) return back('terms_required')
+
     const { data, error: e } = await supabase.auth.signUp({
       email,
       password,
@@ -125,7 +131,15 @@ if (Astro.request.method === 'POST') {
     // returns a session and the SSR client has already written the cookies.
     // Telling that person to go and check their inbox sends them looking for an
     // email nobody sent.
-    if (data.session) return Astro.redirect(landing(dot), 303)
+    if (data.session) {
+      // The one moment this can be written with the session that actually ticked
+      // the box. A failure is logged, never shown: the account already exists, so
+      // there is nothing useful to abort, and the call is idempotent per version,
+      // so the confirmation path below repairs a miss.
+      const accepted = await recordTermsAcceptance(supabase, Astro.request.headers)
+      if (accepted.error) console.error('terms acceptance not recorded:', accepted.error)
+      return Astro.redirect(landing(dot), 303)
+    }
 
     return back('check_email', 'signin')
   }
@@ -164,13 +178,14 @@ const field =
         <p class="mt-2 text-sm text-ink-500">
           {carriedDot ? (
             <>
-              Two steps. This one takes an email address and a password; the next one sets up USDOT{' '}
-              <span class="tabular-nums">{carriedDot}</span>, which we have already looked up.
+              Two steps. Step 1 is here: your email and a password. Step 2 sets up USDOT{' '}
+              <span class="tabular-nums">{carriedDot}</span>. We already found it in the federal
+              file.
             </>
           ) : (
             <>
-              Two steps. This one takes an email address and a password; the next one takes your
-              USDOT number and reads your carrier record out of the federal file.
+              Two steps. Step 1 is here: your email and a password. Step 2 asks for your USDOT
+              number. Then we read your carrier record from the federal file.
             </>
           )}
         </p>
@@ -204,8 +219,42 @@ const field =
           minlength={signup ? 8 : undefined}
           class={field}
         />
-        {signup && <span class="mt-1 block text-xs text-ink-500">At least 8 characters.</span>}
+        {signup && <span class="mt-1 block text-xs text-ink-500">Use 8 characters or more.</span>}
       </label>
+
+      {
+        signup && (
+          <label class="flex items-start gap-3">
+            <input
+              type="checkbox"
+              name="terms"
+              value="yes"
+              required
+              class="mt-0.5 h-5 w-5 shrink-0 rounded border-ink-100 text-brand-600 focus:ring-2 focus:ring-brand-500/20"
+            />
+            <span class="text-sm text-ink-700">
+              {ASSENT.lead}{' '}
+              <a
+                href={ASSENT.termsHref}
+                target="_blank"
+                rel="noopener"
+                class="font-medium text-brand-600 hover:underline"
+              >
+                {ASSENT.terms}
+              </a>{' '}
+              {ASSENT.join}{' '}
+              <a
+                href={ASSENT.privacyHref}
+                target="_blank"
+                rel="noopener"
+                class="font-medium text-brand-600 hover:underline"
+              >
+                {ASSENT.privacy}
+              </a>{ASSENT.stop}
+            </span>
+          </label>
+        )
+      }
 
       <button
         type="submit"
@@ -232,7 +281,7 @@ const field =
           </>
         ) : (
           <>
-            New here?{' '}
+            First time here?{' '}
             <a href={loginHref('signup', null, carriedDot)} class="font-medium text-brand-600 hover:underline">
               Create an account
             </a>
@@ -244,9 +293,8 @@ const field =
     {
       signup && (
         <p class="mt-8 border-t border-ink-100 pt-6 text-xs text-ink-500">
-          We ask for the email first on purpose. A USDOT number is public — anyone can read one off
-          the side of a truck — so it is claimed from inside an account rather than being the thing
-          that opens one.
+          We ask for your email first on purpose. A USDOT number is public. Anyone can read it off
+          the side of a truck. So you claim your number after you sign in, not before.
         </p>
       )
     }
