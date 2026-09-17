@@ -1,0 +1,539 @@
+---
+/**
+ * The documents filed on one driver or one truck.
+ *
+ * One component, two pages, because the section is identical on both and a
+ * second copy of an upload form is a second place to forget a rule. The POST
+ * that feeds it lives in each page, under `intent="upload_document"`, and both
+ * hand the work to storeDocument() in src/lib/documents.ts.
+ *
+ * NO CLIENT JAVASCRIPT, like everything else in this app. That shapes the
+ * Replace flow: it cannot open a dialog, so "Replace" is a plain link that
+ * reloads this page with `?replace=<id>`, and the one upload form re-labels
+ * itself and carries the id in a hidden field. Back out with Cancel. The picture
+ * preview is the same pattern with `?preview=<id>` — no lightbox, no script.
+ *
+ * WHY THERE IS NO THUMBNAIL ON EVERY ROW, and it was asked for.
+ *
+ * There is no image processing here. This is a Cloudflare Worker: no `sharp`, no
+ * resize, and adding a dependency was not on the table. So a "thumbnail" is the
+ * WHOLE FILE with a CSS box around it — a 3 MB photo of a medical card costs 3 MB
+ * whether it is drawn at 4000px or at 200px. And `Cache-Control: private,
+ * no-store` on the file route is not negotiable (these are medical certificates),
+ * so nothing is reused: every row would re-download in full on every visit to the
+ * page, including a Back.
+ *
+ * A driver with twenty papers is then ~40 MB of photos, every time the page
+ * opens, on a phone on one bar in a yard. That is the exact situation this
+ * product is used in, so automatic thumbnails are not a nicety with a cost, they
+ * are a page that never finishes loading. Instead:
+ *
+ *   ON THE ROW, free: the kind in words, the file name, the size, and a badge
+ *   saying PDF / Photo / iPhone photo. An owner can see what the paper is
+ *   without fetching a single byte, which is the actual goal.
+ *
+ *   ON DEMAND, one at a time: "Show" puts that one picture in its row, capped by
+ *   CSS. One file, because he asked for it. `loading="lazy"` as well, so a
+ *   preview below the fold costs nothing until it is scrolled to.
+ *
+ * A PDF gets no picture and no "Open", and both are the same reason. Rendering
+ * one needs a PDF engine; embedding one needs `<object>`/`<iframe>`, which
+ * X-Frame-Options: DENY forbids; and opening one in the browser's own viewer is
+ * blocked by the CSP on the file route — measured in Chrome, which downloads it
+ * instead. So a PDF row says "Save" and says why. The alternative was a button
+ * marked "Open" that quietly downloads, which is the bug this change was for.
+ * See INLINE_TYPES in src/lib/documents.ts for the evidence and the real fix.
+ *
+ * WHY THIS SECTION IS SHAPED LIKE A FILE LIST AND NOT LIKE ANOTHER TABLE.
+ *
+ * It was asked to stand out. It does not do that with colour: red, amber and
+ * green mean a deadline on every other screen in this app, and blue is a link.
+ * A section that borrowed one of those would be pulling the eye away from an
+ * overdue medical card, which is the one thing on the page that must win.
+ *
+ * So it stands out by being the only part of the app that is about FILES, and
+ * by looking like it: the count is in the heading, each paper is a block that
+ * starts with what it is and what kind of file it is, and the upload form is
+ * folded away once there is anything to fold it behind. That makes the section
+ * shorter and a different shape from its neighbours, which is the whole of it.
+ *
+ * ON A PHONE the rows are not rows. The table is 42rem wide and the window is
+ * 299px, so better than half of it was behind a sideways scroll — including
+ * both links, which meant the actions were invisible on the device this is used
+ * on. Below `sm` every cell becomes a block; from `sm` the same markup is a
+ * table again. ONE set of cells, not two: a second copy of a row is a second
+ * place to forget a rule, which is the same reason there is one component here
+ * and not one per page.
+ *
+ * Everything printed here is escaped by Astro. That matters more than usual on
+ * this component: `file_name` is a string an uploader chose, and it is the one
+ * piece of attacker-controlled text on the page.
+ */
+import { formatDate } from '../lib/drivers.ts'
+import {
+  ACCEPTED_LABEL,
+  ACCEPT_ATTRIBUTE,
+  type DocumentRow,
+  type DocumentSubject,
+  MAX_UPLOAD_LABEL,
+  formatSize,
+  kindLabel,
+  kindsFor,
+  splitByStanding,
+  typeFacts,
+} from '../lib/documents.ts'
+
+interface Props {
+  subjectType: DocumentSubject
+  subjectId: string
+  documents: readonly DocumentRow[]
+  /** 'this driver' / 'this truck'. Used in the sentences below. */
+  noun: string
+}
+const { subjectType, subjectId, documents, noun } = Astro.props
+
+/**
+ * The same section, in the words of the thing it is on.
+ *
+ * One shared sentence would have to say "the driver or the truck" everywhere,
+ * and the readers here often read English as a second language — a sentence that
+ * covers two cases is a sentence they have to work out which half applies to.
+ * Short, and about the one thing in front of them.
+ */
+const WORDS = {
+  driver: {
+    lead: 'Keep the paper here: the medical card, the licence, the test result.',
+    old: 'An old medical card is the proof the driver was legal for the time it covered. Federal rules say keep it while he works here and three years after.',
+  },
+  vehicle: {
+    lead: 'Keep the paper here: the inspection report, the registration, the 2290.',
+    old: 'An old inspection report is the proof this truck was in order at that time. We keep it, so you can show it later.',
+  },
+} as const
+const words = subjectType === 'vehicle' ? WORDS.vehicle : WORDS.driver
+
+const kinds = kindsFor(subjectType)
+const { current, replaced } = splitByStanding(documents)
+
+const params = Astro.url.searchParams
+const error = params.get('doc_error')
+const saved = params.get('doc_saved') === '1'
+const warning = params.get('doc_warning')
+
+// Which document the owner pressed Replace on, if any. Matched against a row we
+// already hold, so a made-up id in the URL simply shows the normal form.
+const replaceId = params.get('replace')
+const replacing = replaceId ? (current.find((d) => d.id === replaceId) ?? null) : null
+
+// Which picture the owner asked to see. ONE at a time, on purpose — see the note
+// at the top about what a thumbnail costs when there is nothing to resize it
+// with. A made-up id simply matches no row and nothing is shown.
+const previewId = params.get('preview')
+
+const here = Astro.url.pathname
+
+/**
+ * Is the upload form open when the page loads?
+ *
+ * Folded away by default, because it is 600px of a 1,100px section and an owner
+ * whose papers are already filed opens this page to LOOK at them, not to add
+ * one. It opens on its own in the three cases where the next thing he does is
+ * certainly the form: there is nothing on file yet, he pressed Replace, or an
+ * upload was just refused and he has to try again.
+ */
+const formOpen = current.length === 0 || replacing !== null || error !== null
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+/** PDF / Photo / iPhone photo. The cheapest way to know what a paper is. */
+const badge = 'ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs font-normal text-ink-500'
+/**
+ * A link you can hit with a thumb. 44px is the floor, and this is tapped
+ * standing in a yard, so the bare 16px text link it used to be was a miss.
+ */
+const action = 'inline-flex min-h-11 items-center text-sm font-medium text-brand-600 hover:underline'
+/**
+ * The two links on a row. Below `sm` they share the width as a pair of bordered
+ * blocks, because that is where they used to be off the side of the screen
+ * entirely; from `sm` they are plain links at the end of the row again.
+ */
+const rowAction = `${action} flex-1 justify-center rounded-lg border border-ink-100 px-3 sm:flex-none sm:justify-start sm:rounded-none sm:border-0 sm:px-0`
+/** One paper's cell below `sm`, one table cell from `sm` up. */
+const cell = 'block px-4 sm:table-cell sm:py-3'
+const field =
+  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+
+/** 'Mar 3, 2026' from a timestamptz. The clock time is noise in this list. */
+const day = (value: string | null) => (value ? formatDate(String(value).slice(0, 10)) : '')
+---
+
+<section id="documents" class="mt-8 scroll-mt-24">
+  <div class={card}>
+    {/*
+      THE COUNT IS THE HEADING. It is the one number an owner wants from this
+      section at a glance — how many papers are on this man — and it is also
+      what makes the heading read as a list of files rather than as another
+      table of dates. No count on an empty section: the empty state below says
+      it in words instead.
+    */}
+    <h2 class="text-lg font-semibold tracking-tight">
+      Documents{
+        current.length > 0 && (
+          <span class="font-normal text-ink-500">
+            {' · '}
+            <span class="tabular-nums">{current.length}</span>
+            {current.length === 1 ? ' file' : ' files'}
+          </span>
+        )
+      }
+    </h2>
+    <p class="mt-1 max-w-3xl text-sm text-ink-500">{words.lead}</p>
+
+    {error && <p class="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+    {
+      saved && (
+        <p class="mt-4 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          File saved.
+        </p>
+      )
+    }
+    {
+      warning && (
+        <p class="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">{warning}</p>
+      )
+    }
+
+    {/* ------------------------------------------------------------ the list */}
+
+    {
+      current.length === 0 ? (
+        <p class="mt-4 rounded-lg border border-dashed border-ink-100 px-4 py-6 text-center text-sm text-ink-500">
+          No file on {noun} yet.
+        </p>
+      ) : (
+        <div class="mt-4 overflow-x-auto rounded-xl border border-ink-100">
+          <table class="w-full text-sm sm:min-w-[42rem]">
+            {/*
+              No header line on a phone. Three column names above blocks that
+              are not columns is three words that explain nothing — each block
+              says what it is in its own words instead.
+            */}
+            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+              <tr>
+                <th class="px-4 py-3 font-medium">What</th>
+                <th class="px-4 py-3 font-medium">Dates on the paper</th>
+                <th class="px-4 py-3 font-medium">Added</th>
+                <th class="px-4 py-3" />
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink-100">
+              {current.map((doc) => {
+                /*
+                  What the row may promise. `opens` comes from the SAME function
+                  the file route uses to pick the disposition, so a row can never
+                  offer "Open" for a file the server is about to send to the
+                  Downloads folder. That mismatch was the whole bug.
+                */
+                const facts = typeFacts(doc.content_type)
+                const showing = previewId === doc.id && facts.showable
+                return (
+                  <tr class="block py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                    <td class={cell}>
+                      <span class="font-medium">{kindLabel(subjectType, doc.kind)}</span>
+                      <span class={badge}>{facts.label}</span>
+                      <span class="mt-0.5 block text-xs break-all text-ink-500">
+                        {doc.file_name ?? 'File'}
+                        {doc.byte_size !== null && ` · ${formatSize(doc.byte_size)}`}
+                      </span>
+                      {showing && (
+                        <span class="mt-2 block">
+                          {/*
+                            The file itself, held down by CSS. There is nothing
+                            to resize it with, so the cap is what it looks like,
+                            not what it weighs — which is why only the one row
+                            the owner asked for is ever shown.
+                          */}
+                          <img
+                            src={`/app/documents/${doc.id}`}
+                            alt={kindLabel(subjectType, doc.kind)}
+                            loading="lazy"
+                            decoding="async"
+                            class="max-h-72 w-auto max-w-full rounded-lg border border-ink-100"
+                          />
+                          <span class="mt-1 block">
+                            <a
+                              href={`/app/documents/${doc.id}`}
+                              target="_blank"
+                              rel="noopener"
+                              class={action}
+                            >
+                              Open big
+                            </a>
+                            <a
+                              href={`/app/documents/${doc.id}?download=1`}
+                              class={`ml-4 ${action}`}
+                            >
+                              Save
+                            </a>
+                          </span>
+                        </span>
+                      )}
+                      {facts.note !== '' && (
+                        <span class="mt-1 block text-xs text-ink-500">{facts.note}</span>
+                      )}
+                    </td>
+                    {/*
+                      The dates on the paper, on their own line below `sm`. They
+                      carry their own words — Given, Ends — so they still read
+                      without the column name that is hidden on a phone.
+                    */}
+                    <td class={`${cell} mt-0.5 text-ink-500 tabular-nums sm:mt-0`}>
+                      {doc.issued_on && <span class="block">Given {formatDate(doc.issued_on)}</span>}
+                      {doc.expires_on && (
+                        <span class="block">Ends {formatDate(doc.expires_on)}</span>
+                      )}
+                      {!doc.issued_on && !doc.expires_on && <span class="text-ink-300">—</span>}
+                    </td>
+                    <td
+                      class={`${cell} text-xs whitespace-nowrap text-ink-500 tabular-nums sm:text-sm`}
+                    >
+                      <span class="sm:hidden">Added </span>
+                      {day(doc.uploaded_at)}
+                    </td>
+                    <td class={`${cell} mt-2 sm:mt-0 sm:text-right sm:whitespace-nowrap`}>
+                      {/*
+                        Two links, never more. A picture opens in the row;
+                        anything we cannot show says Save instead of pretending,
+                        and the cell above says why in one sentence.
+                      */}
+                      <span class="flex gap-2 sm:block">
+                        {facts.showable ? (
+                          showing ? (
+                            <a href={`${here}#documents`} class={rowAction}>
+                              Hide
+                            </a>
+                          ) : (
+                            <a href={`${here}?preview=${doc.id}#documents`} class={rowAction}>
+                              Show
+                            </a>
+                          )
+                        ) : facts.opens ? (
+                          <a
+                            href={`/app/documents/${doc.id}`}
+                            target="_blank"
+                            rel="noopener"
+                            class={rowAction}
+                          >
+                            Open
+                          </a>
+                        ) : (
+                          <a href={`/app/documents/${doc.id}?download=1`} class={rowAction}>
+                            Save
+                          </a>
+                        )}
+                        <a
+                          href={`${here}?replace=${doc.id}#documents`}
+                          class={`${rowAction} sm:ml-4`}
+                        >
+                          Replace
+                        </a>
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+
+    {/* --------------------------------------------------------- old copies */}
+
+    {
+      replaced.length > 0 && (
+        <div class="mt-5 rounded-xl border border-ink-100 bg-ink-50/40 p-4">
+          <h3 class="text-sm font-semibold tracking-tight text-ink-500">Old files</h3>
+          {/*
+            "We never delete a file" says itself here, standing next to the
+            files we did not delete. At the top of the section it was a policy
+            in front of a man who had come to look at a medical card.
+          */}
+          <p class="mt-1 text-xs text-ink-500">
+            We never delete a file. These were replaced by a newer one. {words.old}
+          </p>
+          <ul class="mt-3 divide-y divide-ink-100">
+            {replaced.map((doc) => {
+              /*
+                No "Show" down here. An old file is opened once in a while, to
+                prove what was true last year, so it gets a link and not a
+                picture — twenty old photos loading behind a heading nobody is
+                reading is exactly the cost the note at the top is about.
+              */
+              const facts = typeFacts(doc.content_type)
+              return (
+                <li class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 opacity-70">
+                  <span class="text-sm">
+                    <span class="font-medium">{kindLabel(subjectType, doc.kind)}</span>
+                    <span class="ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs text-ink-500">
+                      replaced {day(doc.superseded_at)}
+                    </span>
+                    <span class="mt-0.5 block text-xs break-all text-ink-500">
+                      {facts.label} · {doc.file_name ?? 'File'}
+                      {doc.expires_on && ` · ended ${formatDate(doc.expires_on)}`}
+                    </span>
+                  </span>
+                  {facts.opens ? (
+                    <a
+                      href={`/app/documents/${doc.id}`}
+                      target="_blank"
+                      rel="noopener"
+                      class={action}
+                    >
+                      Open
+                    </a>
+                  ) : (
+                    <a href={`/app/documents/${doc.id}?download=1`} class={action}>
+                      Save
+                    </a>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )
+    }
+
+    {/* ------------------------------------------------------------ the form */}
+
+    {/*
+      FOLDED AWAY, ON `details` ALONE. No script runs in this app, and none is
+      needed: `details` opens on a tap and from the keyboard by itself. The same
+      pattern carries the mobile menu in src/layouts/App.astro.
+
+      `open` is decided on the server, so the form is already open on the page
+      that renders when somebody presses Replace — he never has to open it
+      himself to finish what he started.
+    */}
+    <details open={formOpen} class="group mt-6 border-t border-ink-100 pt-5">
+      <summary
+        class="flex min-h-11 cursor-pointer list-none items-center gap-2 font-medium tracking-tight select-none [&::-webkit-details-marker]:hidden"
+      >
+        {replacing ? 'Replace this file' : 'Add a file'}
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          class="size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180"
+        >
+          <path d="M5 8l5 5 5-5"></path>
+        </svg>
+      </summary>
+
+      <form method="POST" enctype="multipart/form-data">
+        {/*
+          The subject is posted so the handler never has to guess which page it is
+          on. It is checked against the page's own id before anything is written,
+          and the database checks it again — the trigger in 0003 refuses a subject
+          that belongs to another carrier.
+        */}
+        <input type="hidden" name="subject_type" value={subjectType} />
+        <input type="hidden" name="subject_id" value={subjectId} />
+        {replacing && <input type="hidden" name="replaces" value={replacing.id} />}
+
+        {
+          replacing && (
+            <p class="mt-3 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+              You are replacing <strong>{kindLabel(subjectType, replacing.kind)}</strong> (
+              {replacing.file_name ?? 'file'}). We keep the old file. It moves to Old files below.
+            </p>
+          )
+        }
+
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <label class="block">
+            <span class="text-sm font-medium">What is it? <span class="text-red-600">*</span></span>
+            <select name="kind" required class={field}>
+              {!replacing && <option value="">Pick one</option>}
+              {
+                kinds.map((k) => (
+                  <option value={k.key} selected={replacing?.kind === k.key}>
+                    {k.label}
+                  </option>
+                ))
+              }
+            </select>
+          </label>
+
+          <label class="block">
+            <span class="text-sm font-medium">File <span class="text-red-600">*</span></span>
+            {/*
+              `accept` only filters the phone's picker. It is a convenience and
+              nothing more: the real check is on the bytes, server side, in
+              checkFile(). A form post is not a file picker.
+            */}
+            <input
+              type="file"
+              name="file"
+              required
+              accept={ACCEPT_ATTRIBUTE}
+              class={`${field} file:mr-3 file:rounded-md file:border-0 file:bg-ink-100 file:px-3 file:py-1.5 file:text-sm`}
+            />
+            {/*
+              Said here and not only on the row. An owner who is told at upload
+              time gets a file he can see; an owner who is told afterwards has
+              already uploaded the one he cannot.
+            */}
+            <span class="mt-1 block text-xs text-ink-500">
+              {ACCEPTED_LABEL}. Up to {MAX_UPLOAD_LABEL}. A photo shows here: JPG, PNG, WEBP. A PDF and
+              an iPhone HEIC file save fine, but they do not show — to see the paper on this page, take
+              a photo of it.
+            </span>
+          </label>
+        </div>
+
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <label class="block">
+            <span class="text-sm font-medium">
+              Date on the paper <span class="font-normal text-ink-300">(if it has one)</span>
+            </span>
+            <input type="date" name="issued_on" class={`${field} tabular-nums`} />
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">
+              End date <span class="font-normal text-ink-300">(if it has one)</span>
+            </span>
+            <input type="date" name="expires_on" class={`${field} tabular-nums`} />
+            <span class="mt-1 block text-xs text-ink-500">
+              We save this date with the file. It does not make a reminder yet. Put your dates in the
+              date boxes on this page.
+            </span>
+          </label>
+        </div>
+
+        <div class="mt-5 flex flex-wrap items-center gap-3">
+          <button
+            type="submit"
+            name="intent"
+            value="upload_document"
+            class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+          >
+            {replacing ? 'Upload the new file' : 'Add the file'}
+          </button>
+          {
+            replacing && (
+              <a href={`${here}#documents`} class="text-sm font-medium text-brand-600 hover:underline">
+                Cancel
+              </a>
+            )
+          }
+          <span class="text-sm text-ink-500">Only you and your office can open these files.</span>
+        </div>
+      </form>
+    </details>
+  </div>
+</section>
