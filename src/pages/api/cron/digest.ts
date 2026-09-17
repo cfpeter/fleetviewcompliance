@@ -28,7 +28,7 @@ import {
   selectForRecipient,
   splitForQuietHours,
 } from '../../../lib/notify/select.ts'
-import { send, smsBody } from '../../../lib/notify/send.ts'
+import { CEILING, sendOrCeiling, smsBody } from '../../../lib/notify/send.ts'
 import { fetchDeliveryEvent, fetchSuppressions } from '../../../lib/notify/suppression.ts'
 import {
   loadReminders,
@@ -328,10 +328,7 @@ export const POST: APIRoute = async ({ request }) => {
   // exists to prevent. Refuse loudly instead: the workflow fails, somebody
   // looks, and the message is still owed rather than quietly written off.
   if (carriersError) {
-    return json(
-      { error: 'could not read the carrier list', detail: carriersError.message },
-      502,
-    )
+    return json({ error: 'could not read the carrier list', detail: carriersError.message }, 502)
   }
   // `held` is its own number, not folded into `skipped`. They are different
   // events with different fixes: skipped means we tried and could not, held
@@ -355,9 +352,11 @@ export const POST: APIRoute = async ({ request }) => {
     suppressed: reconciled.undelivered,
     failed: 0,
     logErrors: 0,
+    /** True when the run stopped early on the Worker's subrequest budget. */
+    exhausted: false,
   }
 
-  for (const carrier of carriers ?? []) {
+  carriers: for (const carrier of carriers ?? []) {
     summary.carriers++
 
     const [
@@ -578,7 +577,7 @@ export const POST: APIRoute = async ({ request }) => {
           ? `${overdueCount} overdue · ${carrier.legal_name}`
           : `${total} coming up · ${carrier.legal_name}`
 
-        const result = await send(
+        const result = await sendOrCeiling(
           {
             channel: 'email',
             to: profile.email,
@@ -597,6 +596,15 @@ export const POST: APIRoute = async ({ request }) => {
           // carrier's.
           { suppressedEmails: suppression.list },
         )
+
+        // Out of budget, so stop the whole run rather than grinding the
+        // remaining carriers into the same wall. Held, not failed: no log row,
+        // so every key here is unspent and the next run sends them.
+        if (result === CEILING) {
+          summary.held += emailItems.length + reminderEmails.length
+          summary.exhausted = true
+          break carriers
+        }
 
         // FOLLOWING THE `held` PRECEDENT EXACTLY, and for the identical reason.
         //
@@ -678,11 +686,16 @@ export const POST: APIRoute = async ({ request }) => {
           ...smsItems.slice(0, 3).map((c) => `${c.item.rule.title} — ${c.item.subjectLabel}`),
           smsItems.length > 3 ? `and ${smsItems.length - 3} more.` : '',
         ])
-        const result = await send(
+        const result = await sendOrCeiling(
           { channel: 'sms', to: profile.phone, body },
           guardConfig,
           providers,
         )
+        if (result === CEILING) {
+          summary.held += smsItems.length
+          summary.exhausted = true
+          break carriers
+        }
         // No `suppressed` branch, because the channel cannot produce one.
         // Twilio refuses a number that replied STOP synchronously — HTTP 400,
         // error 21610 — so its version of a suppression arrives as `failed`,

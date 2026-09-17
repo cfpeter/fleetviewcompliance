@@ -138,6 +138,7 @@ jobs:
           reconciled=$(jq -r '.reconciled // 0' response.json)
           complaints=$(jq -r '.complaints // 0' response.json)
           suppression_list=$(jq -r '.suppressionList // "off"' response.json)
+          exhausted=$(jq -r '.exhausted // false' response.json)
 
           {
             echo "### Digest run"
@@ -164,6 +165,22 @@ jobs:
           # on reconciliation, which catches a dead address one run LATE.
           if [ "$suppression_list" = "unavailable" ]; then
             echo "::warning::Could not read the provider suppression list this run. Bad addresses will only be caught by reconciliation, one run later."
+          fi
+
+          # The run stopped early on the Worker's per-invocation subrequest
+          # budget, so the carriers after the cut-off were not looked at. Not
+          # red, because it heals itself: everything already sent has spent its
+          # dedup key, so the next run skips it and reaches further down the
+          # list. Their messages are held, not lost.
+          #
+          # It is a warning and not a notice because the loop walks carriers in
+          # the same order every time. If this shows up run after run, the tail
+          # of the list is the part that never gets reached, and those carriers
+          # hear nothing at all — which is the failure this product exists to
+          # prevent. Persisting means the job needs splitting across invocations,
+          # not a bigger number.
+          if [ "$exhausted" = "true" ]; then
+            echo "::warning::The digest hit the Worker subrequest limit and stopped early. Remaining carriers were held and go out next run. If this repeats daily, the run must be split — the same carriers are being cut off every time."
           fi
 
           # Both checks below run before either exits, so a run with two problems

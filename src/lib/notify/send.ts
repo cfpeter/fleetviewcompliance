@@ -179,3 +179,50 @@ export function smsBody(lines: readonly string[]): string {
   const text = lines.join(' ')
   return text.length <= 300 ? text : `${text.slice(0, 297)}...`
 }
+
+/**
+ * The run hitting its own ceiling, told apart from a provider saying no.
+ *
+ * A Worker gets a fixed number of subrequests per invocation, and every send,
+ * every lookup and every query spends one. Cross the line and the next `fetch`
+ * THROWS — it does not return a bad response — so it escapes `send()`, escapes
+ * the caller, and Cloudflare answers with an empty 500. For the digest that is
+ * the silent run its own header calls the worse of the two failures: nobody is
+ * emailed, nothing is written down, and the response says nothing at all about
+ * how far it got.
+ *
+ * It must NOT be recorded as `failed`. `failed` means we reached a provider and
+ * it refused, and the digest writes a log row for it — which spends the unique
+ * `dedup_key` and stops that deadline from ever being sent again. Not late.
+ * Never. Burning a carrier's notification because the WORKER ran out of budget
+ * would turn a capacity limit into permanent silence about a truck that cannot
+ * roll tomorrow.
+ *
+ * So callers treat it as `held`, following the quiet-hours precedent exactly: no
+ * log row, key unspent, counted in the response, re-derived from scratch and
+ * sent on the next run. Matched on the message because the runtime gives this
+ * no error code and no distinct class — see the Workers limits documentation.
+ */
+export function atSubrequestCeiling(err: unknown): boolean {
+  return err instanceof Error && /too many subrequests/i.test(err.message)
+}
+
+/** The ceiling as a value, so a caller can branch on it instead of unwinding. */
+export const CEILING = Symbol('subrequest ceiling')
+
+/**
+ * `send()`, with the one throw that is about US rather than about the message.
+ *
+ * Every other failure still throws. A bug in here must not be laundered into a
+ * quiet "we'll try later" — only the budget is.
+ */
+export async function sendOrCeiling(
+  ...args: Parameters<typeof send>
+): Promise<SendResult | typeof CEILING> {
+  try {
+    return await send(...args)
+  } catch (err) {
+    if (atSubrequestCeiling(err)) return CEILING
+    throw err
+  }
+}
