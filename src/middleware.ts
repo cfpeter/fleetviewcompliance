@@ -19,10 +19,17 @@ const API = /^\/api\//
  * morning, which reads exactly like "a quiet week" for a product whose whole
  * promise is telling you before it bites.
  *
- * These carry their own shared-secret check, compared in constant time, and
- * refuse to run when the secret is unset rather than defaulting to open.
+ * A Stripe webhook has no signed-in user either, and behind the session guard it
+ * would answer Stripe with a 401 forever: Stripe retries for three days, gives
+ * up, and disables the endpoint — after which nothing in this application ever
+ * learns that a customer paid, cancelled or lapsed.
+ *
+ * These carry their own check and refuse to run when it cannot be made. The
+ * cron routes compare a shared secret in constant time; /api/stripe verifies an
+ * HMAC signature over the raw body (src/lib/billing/stripe.ts). Neither
+ * defaults to open when its secret is unset.
  */
-const SELF_AUTHENTICATING = /^\/api\/cron\//
+const SELF_AUTHENTICATING = /^\/api\/(cron|stripe)\//
 
 /**
  * Keep every non-production deployment out of search results.

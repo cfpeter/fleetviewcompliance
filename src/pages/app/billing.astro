@@ -1,0 +1,498 @@
+---
+/**
+ * Billing: what you pay, when, and for which trucks.
+ *
+ * ITS OWN PAGE, NOT A SECTION OF SETTINGS, for two reasons. Stripe has to be
+ * given a URL to send people back to, and `/app/settings#billing` would land
+ * them in the middle of the notification matrix with a fragment the browser
+ * jumps to after paint. And settings is already a long page about who gets told
+ * what; money is the thing an owner comes looking for by name, usually in a
+ * hurry, usually because something looks wrong.
+ *
+ * IT WORKS WITH NO STRIPE CONFIGURED, which is the state it ships in. Every
+ * number on it — the fleet count, the price, the free days, the date the trial
+ * ends — comes from this database and `monthlyPrice()`, so the screen is useful
+ * on day one. What it does NOT do is pretend: with no keys set it says card
+ * payment is not switched on and that nothing is being charged, rather than
+ * showing a button that fails.
+ *
+ * THE COPY RULE ON THIS PAGE. Most customers here read English as a second
+ * language, and this is the screen about their money. Short sentences, one fact
+ * each, every amount and every date said plainly. No jokes, no hedging, nothing
+ * clever.
+ */
+import App from '../../layouts/App.astro'
+import { canCheckout, readStripeConfig, runtimeEnv } from '../../lib/billing/config.ts'
+import { type BillingRow, planState, trialEndsAt } from '../../lib/billing/plan.ts'
+import { formatMoney, monthlyCents } from '../../lib/billing/price.ts'
+import { type BillableVehicle, billingBreakdown } from '../../lib/billing/trucks.ts'
+import {
+  createCheckoutSession,
+  createPortalSession,
+  retrieveSubscription,
+  setSubscriptionQuantity,
+  subscriptionFacts,
+} from '../../lib/billing/stripe.ts'
+import { site } from '../../lib/site.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+const userId = Astro.locals.userId!
+
+const get = await runtimeEnv()
+const stripe = readStripeConfig(get)
+
+/** Every POST branch leaves through here, 303 so a refresh cannot re-post it. */
+const back = (query = '') => Astro.redirect(`/app/billing${query}`, 303)
+/**
+ * Failures travel as CODES and are turned into sentences below, never rendered
+ * from the query string. The same rule settings.astro documents: `?error=` text
+ * printed verbatim lets anyone hand a customer a link to their own billing page
+ * reading whatever they like, in our styling, on our domain.
+ */
+const fail = (code: string) => back(`?error=${code}`)
+
+/** The columns every branch of this page reads. One list, one shape. */
+const BILLING_COLUMNS =
+  'stripe_customer_id, stripe_subscription_id, status, current_period_end, cancel_at_period_end, billable_trucks, trial_ends_at'
+
+/**
+ * Count the trucks, using the same pure function the tests cover.
+ *
+ * Rows rather than three `count` queries on purpose: the SQL filters would be a
+ * second definition of "billable truck", free to drift from
+ * src/lib/billing/trucks.ts, and the drift would show up as a wrong invoice.
+ * Two columns over a fleet is a small read.
+ */
+async function loadFleet() {
+  const { data, error } = await supabase.from('vehicles').select('kind, status').limit(5000)
+  return { rows: ((data ?? []) as BillableVehicle[]) ?? [], error }
+}
+
+async function loadBilling() {
+  const { data } = await supabase
+    .from('billing_subscriptions')
+    .select(BILLING_COLUMNS)
+    .eq('carrier_id', carrierId)
+    .maybeSingle()
+  return (data as BillingRow | null) ?? null
+}
+
+/**
+ * The address Stripe sends the customer back to.
+ *
+ * FROM THE REQUEST, NEVER FROM THE BUILD-TIME SITE URL. The same mistake is
+ * already pinned by tests/proof-token.test.ts against the proof page: Vite
+ * inlines that value when the bundle is built, so one bundle carries one host —
+ * and the dev Worker would send a customer who just paid on dev back to the
+ * production domain, where his session does not exist. Here it would also be
+ * the `return_url` a Stripe billing portal bounces off.
+ *
+ * `Astro.url.origin` is whatever host actually served this request, which is
+ * right on both deployments and on localhost, with nothing to configure.
+ */
+const siteUrl = Astro.url.origin.replace(/\/$/, '')
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  // ------------------------------------------------------------- checkout
+
+  if (intent === 'start_checkout') {
+    if (!canCheckout(stripe)) return fail('stripe_off')
+
+    const [{ rows, error: fleetError }, row, carrier, profile] = await Promise.all([
+      loadFleet(),
+      loadBilling(),
+      supabase.from('carriers').select('created_at').eq('id', carrierId).maybeSingle(),
+      supabase.from('profiles').select('email').eq('id', userId).maybeSingle(),
+    ])
+    // A checkout started on a fleet we could not read would bill the wrong
+    // number of trucks. Refuse instead of guessing.
+    if (fleetError) return fail('load_failed')
+
+    const createdAt = carrier.data?.created_at ? new Date(carrier.data.created_at) : new Date()
+    const session = await createCheckoutSession({
+      secretKey: stripe.secretKey,
+      priceId: stripe.priceId,
+      quantity: billingBreakdown(rows).billable,
+      carrierId,
+      // Reuse the customer Stripe already made for this carrier, so a second
+      // attempt does not become a second customer with its own card on file.
+      customerId: row?.stripe_customer_id ?? null,
+      customerEmail: (profile.data?.email as string | undefined) ?? null,
+      successUrl: `${siteUrl}/app/billing?checkout=done`,
+      cancelUrl: `${siteUrl}/app/billing?checkout=stopped`,
+      trialEnd: trialEndsAt(createdAt),
+      now: new Date(),
+    })
+    if (!session.ok || !session.data.url) return fail('stripe_error')
+    return Astro.redirect(session.data.url, 303)
+  }
+
+  // --------------------------------------------------------------- portal
+
+  if (intent === 'open_portal') {
+    if (!stripe.secretKey) return fail('stripe_off')
+    const row = await loadBilling()
+    if (!row?.stripe_customer_id) return fail('no_account')
+
+    const portal = await createPortalSession({
+      secretKey: stripe.secretKey,
+      customerId: row.stripe_customer_id,
+      returnUrl: `${siteUrl}/app/billing`,
+    })
+    if (!portal.ok) return fail('portal_error')
+    return Astro.redirect(portal.data.url, 303)
+  }
+
+  // ------------------------------------------------------- the truck count
+
+  /**
+   * Send today's truck count to Stripe.
+   *
+   * A BUTTON AND NOT A BACKGROUND JOB, because nothing syncs quantities on its
+   * own yet and a screen must not imply otherwise. The two numbers are printed
+   * side by side above it, so what this changes is visible before it is pressed.
+   */
+  if (intent === 'update_trucks') {
+    if (!stripe.secretKey) return fail('stripe_off')
+    const [{ rows, error: fleetError }, row] = await Promise.all([loadFleet(), loadBilling()])
+    if (fleetError) return fail('load_failed')
+    if (!row?.stripe_subscription_id) return fail('no_subscription')
+
+    const sub = await retrieveSubscription(stripe.secretKey, row.stripe_subscription_id)
+    if (!sub.ok) return fail('stripe_error')
+    const facts = subscriptionFacts(sub.data)
+    if (!facts.itemId) return fail('stripe_error')
+
+    const updated = await setSubscriptionQuantity({
+      secretKey: stripe.secretKey,
+      subscriptionId: row.stripe_subscription_id,
+      itemId: facts.itemId,
+      quantity: billingBreakdown(rows).billable,
+    })
+    if (!updated.ok) return fail('stripe_error')
+    // The row itself is written by the webhook, which arrives in seconds. The
+    // page says so rather than writing a number here that Stripe has not
+    // confirmed — one writer for this table, and it is not this page.
+    return back('?saved=trucks')
+  }
+
+  return fail('unknown_intent')
+}
+
+// ----------------------------------------------------------------- the page
+
+const params = Astro.url.searchParams
+const errorCode = params.get('error')
+const savedCode = params.get('saved')
+const checkoutCode = params.get('checkout')
+
+const [{ rows: fleet, error: fleetError }, row, carrier] = await Promise.all([
+  loadFleet(),
+  loadBilling(),
+  supabase.from('carriers').select('created_at').eq('id', carrierId).maybeSingle(),
+])
+
+const breakdown = billingBreakdown(fleet)
+const nowCents = monthlyCents(breakdown.billable)
+const carrierCreatedAt = carrier.data?.created_at ? new Date(carrier.data.created_at) : new Date()
+const plan = planState({ row, carrierCreatedAt, now: new Date() })
+
+/** Stripe is billing a number that is no longer today's. */
+const billedTrucks =
+  plan.state === 'paying' || plan.state === 'payment_problem' ? plan.billedTrucks : null
+const countDiffers = billedTrucks !== null && billedTrucks !== breakdown.billable
+
+const checkoutOn = canCheckout(stripe)
+
+/** A date an owner can read, in the carrier's own words: "March 3, 2026". */
+function day(d: Date | null): string {
+  if (!d) return ''
+  return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+}
+
+const errorMessage: Record<string, string> = {
+  stripe_off: 'Card payment is not switched on yet.',
+  no_account: 'You do not have a card on file yet.',
+  no_subscription: 'You are not paying yet. There is nothing to change.',
+  stripe_error: 'We could not reach Stripe. Please try again.',
+  portal_error: 'We could not open your card page. Please try again.',
+  load_failed: 'We could not read your trucks. Please try again.',
+  unknown_intent: 'That button did nothing. Please try again.',
+}
+
+const savedMessage: Record<string, string> = {
+  trucks: 'Sent to Stripe. Your truck count updates here in a moment.',
+}
+
+const checkoutMessage: Record<string, string> = {
+  done: 'Thank you. Your card is set up. If this page still shows the old plan, reload in a moment.',
+  stopped: 'You stopped before paying. Nothing was charged.',
+}
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const primary =
+  'rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700'
+const secondary =
+  'rounded-lg border border-ink-100 px-4 py-2.5 text-sm font-medium transition hover:bg-ink-50'
+---
+
+<App title="Billing" subtitle="What you pay, and when.">
+  {
+    errorCode && errorMessage[errorCode] && (
+      <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+        {errorMessage[errorCode]}
+      </p>
+    )
+  }
+  {
+    savedCode && savedMessage[savedCode] && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        {savedMessage[savedCode]}
+      </p>
+    )
+  }
+  {
+    checkoutCode && checkoutMessage[checkoutCode] && (
+      <p
+        class:list={[
+          'mb-5 rounded-lg px-4 py-3 text-sm',
+          checkoutCode === 'done' ? 'bg-emerald-50 text-emerald-800' : 'bg-ink-50 text-ink-700',
+        ]}
+      >
+        {checkoutMessage[checkoutCode]}
+      </p>
+    )
+  }
+  {
+    fleetError && (
+      <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+        We could not read your trucks, so the price below may be wrong. Please reload.
+      </p>
+    )
+  }
+
+  <div class="grid gap-4 lg:grid-cols-[1fr_minmax(0,22rem)]">
+    {/* ================================================= what you pay now */}
+
+    <section class={card}>
+      <h2 class="text-lg font-semibold tracking-tight">Your plan</h2>
+
+      {/* The price, large, before any explanation of it. It is the thing the
+      page is opened for, and it is true in every plan state. */}
+      <p class="mt-3 text-4xl font-semibold tracking-tight tabular-nums">
+        {formatMoney(nowCents)}
+        <span class="text-base font-normal text-ink-500"> each month</span>
+      </p>
+      <p class="mt-1 text-sm text-ink-500">
+        {breakdown.billable}{' '}
+        {breakdown.billable === 1 ? 'truck' : 'trucks'} · ${site.pricing.perTruck} per truck · $
+        {site.pricing.floor} minimum
+      </p>
+
+      {/* ------------------------------------------------ the state, in words */}
+
+      {
+        plan.state === 'trial' && (
+          <div
+            class:list={[
+              'mt-5 rounded-lg px-4 py-3 text-sm',
+              // Amber is for a clock that is running out. Seven days is where
+              // this stops being background information.
+              plan.daysLeft <= 7 ? 'bg-amber-50 text-amber-900' : 'bg-brand-500/[0.08] text-brand-700',
+            ]}
+          >
+            <p class="font-medium">
+              Free trial. {plan.daysLeft} {plan.daysLeft === 1 ? 'day' : 'days'} left.
+            </p>
+            <p class="mt-1">
+              Your free days end on {day(plan.trialEndsOn)}. Nothing is charged before then.
+            </p>
+          </div>
+        )
+      }
+
+      {
+        plan.state === 'trial_over' && (
+          <div class="mt-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <p class="font-medium">Your free {site.pricing.trialDays} days ended.</p>
+            <p class="mt-1">
+              They ended on {day(plan.trialEndedOn)}.
+              {checkoutOn
+                ? ' Add a card to keep your account.'
+                : ' Card payment is not switched on yet, so you are not being charged.'}
+            </p>
+          </div>
+        )
+      }
+
+      {
+        plan.state === 'paying' && (
+          <div class="mt-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+            <p class="font-medium">
+              {plan.onStripeTrial ? 'Card on file. Free trial running.' : 'You are paying.'}
+            </p>
+            {plan.endsOn && (
+              <p class="mt-1">
+                You cancelled. Your account stays open until {day(plan.endsOn)}. After that day you
+                are not charged again.
+              </p>
+            )}
+            {!plan.endsOn && plan.renewsOn && (
+              <p class="mt-1">
+                {plan.onStripeTrial ? 'First charge' : 'Next charge'}: {day(plan.renewsOn)}.
+              </p>
+            )}
+            {!plan.endsOn && !plan.renewsOn && (
+              <p class="mt-1">Stripe has not given us the next charge date yet.</p>
+            )}
+          </div>
+        )
+      }
+
+      {
+        plan.state === 'payment_problem' && (
+          <div class="mt-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+            <p class="font-medium">Your payment did not go through.</p>
+            <p class="mt-1">
+              Please check your card. Your account is still open. Stripe will try again.
+            </p>
+          </div>
+        )
+      }
+
+      {
+        plan.state === 'ended' && (
+          <div class="mt-5 rounded-lg bg-ink-50 px-4 py-3 text-sm text-ink-700">
+            <p class="font-medium">Your plan is closed.</p>
+            <p class="mt-1">You can start again any time. Your records are still here.</p>
+          </div>
+        )
+      }
+
+      {
+        plan.state === 'unknown' && (
+          <div class="mt-5 rounded-lg bg-ink-50 px-4 py-3 text-sm text-ink-700">
+            {/* The raw word from Stripe, on purpose. Guessing at a status this
+            build does not know would mean telling a paused customer his account
+            has ended, or the reverse. */}
+            <p class="font-medium">Stripe says your plan is: {plan.status}.</p>
+            <p class="mt-1">Open your card page to see it.</p>
+          </div>
+        )
+      }
+
+      {/* ------------------------------------------------------- the buttons */}
+
+      <div class="mt-5 flex flex-wrap items-center gap-3">
+        {
+          checkoutOn && (plan.state === 'trial' || plan.state === 'trial_over' || plan.state === 'ended') && (
+            <form method="POST">
+              <button type="submit" name="intent" value="start_checkout" class={primary}>
+                Pay with card
+              </button>
+            </form>
+          )
+        }
+        {
+          stripe.secretKey && row?.stripe_customer_id && (
+            <form method="POST">
+              <button type="submit" name="intent" value="open_portal" class={secondary}>
+                Card, invoices and cancel
+              </button>
+            </form>
+          )
+        }
+        <a href="/app/vehicles" class={secondary}>See my trucks</a>
+      </div>
+
+      {
+        checkoutOn && (plan.state === 'trial' || plan.state === 'trial_over') && (
+          <p class="mt-3 text-xs text-ink-500">
+            You pay by card. You can stop any month. There is no contract.
+          </p>
+        )
+      }
+
+      {/* --------------------------------------- Stripe is billing a stale count */}
+
+      {
+        countDiffers && (
+          <div class="mt-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <p class="font-medium">Your truck count changed.</p>
+            <p class="mt-1">
+              Stripe is billing {billedTrucks} {billedTrucks === 1 ? 'truck' : 'trucks'}. You now
+              have {breakdown.billable}. Press the button to make your bill{' '}
+              {formatMoney(nowCents)} each month.
+            </p>
+            <form method="POST" class="mt-3">
+              <button
+                type="submit"
+                name="intent"
+                value="update_trucks"
+                class="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700"
+              >
+                Bill me for {breakdown.billable} {breakdown.billable === 1 ? 'truck' : 'trucks'}
+              </button>
+            </form>
+          </div>
+        )
+      }
+    </section>
+
+    {/* ==================================================== which trucks count */}
+
+    <div class="grid gap-4">
+      <section class={card}>
+        <h2 class="font-medium tracking-tight">Which trucks you pay for</h2>
+        <dl class="mt-3 divide-y divide-ink-100 text-sm">
+          <div class="flex justify-between gap-4 py-2.5">
+            <dt class="text-ink-500">Power units you pay for</dt>
+            <dd class="text-right font-medium tabular-nums">{breakdown.billable}</dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2.5">
+            <dt class="text-ink-500">Trucks marked Sold — free</dt>
+            <dd class="text-right font-medium tabular-nums">{breakdown.sold}</dd>
+          </div>
+          <div class="flex justify-between gap-4 py-2.5">
+            <dt class="text-ink-500">Trailers — free</dt>
+            <dd class="text-right font-medium tabular-nums">{breakdown.trailers}</dd>
+          </div>
+        </dl>
+        <p class="mt-3 text-xs text-ink-500">
+          You pay for power units: trucks with an engine. Trailers are free. Drivers are free. Extra
+          users are free.
+        </p>
+        <p class="mt-2 text-xs text-ink-500">
+          When you sell a truck, mark it <span class="font-medium">Sold</span> on the truck page. We
+          stop billing it and we stop watching its dates. A truck that is parked or out of service
+          still costs ${site.pricing.perTruck}, because we still watch its dates for you.
+        </p>
+      </section>
+
+      {/* ------------------------------------------- the honest off-switch note */}
+
+      {
+        !checkoutOn && (
+          // Blue, not amber: this is a standing fact to read, not a clock
+          // running out. docs/stack.md, and the reason the two are kept apart.
+          <section class="rounded-xl border border-brand-500/20 bg-brand-500/[0.06] p-5">
+            <h2 class="font-medium tracking-tight text-brand-700">
+              Card payment is not switched on yet
+            </h2>
+            <p class="mt-2 text-sm text-brand-700">
+              You cannot pay on this page today. Nothing is being charged. Everything in your
+              account keeps working.
+            </p>
+            <p class="mt-2 text-sm text-brand-700">
+              The price above is the real price. We will tell you before your first bill.
+            </p>
+          </section>
+        )
+      }
+    </div>
+  </div>
+</App>
