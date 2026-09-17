@@ -140,7 +140,7 @@ export function describeLeadDays(days: readonly number[]): string {
 
 // ---------------------------------------------------------------- the matrix
 
-export type NotifyCategory = 'compliance' | 'federal' | 'system'
+export type NotifyCategory = 'compliance' | 'federal' | 'system' | 'reminder'
 export type NotifyChannel = 'email' | 'sms' | 'in_app'
 
 export interface CategoryMeta {
@@ -149,16 +149,27 @@ export interface CategoryMeta {
   blurb: string
   /** Whether anything is actually sent for this category today. */
   live: boolean
+  /**
+   * Whether the lead time is set on each item instead of once for the category.
+   *
+   * True for owner reminders only, and it is here rather than in the page so the
+   * settings screen cannot show a box that nothing reads. Every deadline of a
+   * regulatory kind wants the same warning — one array for all medical cards —
+   * but owner reminders are not alike: an insurance renewal wants a month and
+   * "call the broker back" wants a day, so the number lives on the reminder row
+   * and the screen says where to change it.
+   */
+  perItemLeadDays?: boolean
 }
 
 /**
- * The three enum values in 0008_notifications.sql, with the words an owner
- * would use for them and — deliberately — whether we actually send them yet.
+ * The enum values in 0008_notifications.sql and 0023_custom_reminders.sql, with
+ * the words an owner would use for them and — deliberately — whether we actually
+ * send them yet.
  *
- * `live: false` is not a stub to fill in later and forget. The digest job reads
- * `pref.category !== 'compliance'` and skips everything else, so a screen that
- * presented all three identically would be promising two kinds of alert that no
- * code anywhere sends.
+ * `live: false` is not a stub to fill in later and forget. The digest job skips
+ * every category it has no sender for, so a screen that presented all four
+ * identically would be promising two kinds of alert that no code anywhere sends.
  */
 export const NOTIFY_CATEGORIES: readonly CategoryMeta[] = [
   {
@@ -181,6 +192,26 @@ export const NOTIFY_CATEGORIES: readonly CategoryMeta[] = [
     blurb:
       'A lookup that failed or a feed that went quiet. Us telling on ourselves, so silence never reads as "all clear".',
     live: false,
+  },
+  {
+    /**
+     * The only category added to this list with its sender already written.
+     *
+     * Kept apart from 'compliance' on purpose: a federal deadline missed costs a
+     * truck, a reminder he typed is his own business, and he must be able to
+     * stop hearing about his own list without silencing the warnings that keep
+     * him legal. Folded into one category the only way to quieten one would be
+     * to mute both — the muting failure this whole table exists to prevent.
+     *
+     * Plain words, and no metaphor: this row is read by owners who do not read
+     * English as a first language, on the screen where they decide whether to
+     * keep hearing from us at all.
+     */
+    value: 'reminder',
+    label: 'My reminders',
+    blurb: 'Reminders you write yourself: insurance, payments, appointments. These are not laws.',
+    live: true,
+    perItemLeadDays: true,
   },
 ]
 

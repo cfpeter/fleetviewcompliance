@@ -1,0 +1,626 @@
+---
+/**
+ * My reminders: the owner's own list, beside the ones the law keeps for him.
+ *
+ * Five intents, one page, and every one of them ends in a 303. A replayed POST
+ * here would add the same reminder twice, or mark a repeating one done twice —
+ * which is not a duplicate row but a date silently pushed a whole year further
+ * out, with nothing on screen to show it happened.
+ *
+ * No client JavaScript, like every other screen in this app. The person using it
+ * is standing in a yard on one bar of signal.
+ *
+ * THE COPY RULE ON THIS SCREEN. Every label, button and message is short and
+ * plain, because the owners this is built for run four trucks in Los Angeles and
+ * many do not read English as a first language. No jokes, no metaphors, no long
+ * sentences. "Write what you need to do." is an instruction; "Please provide a
+ * valid value" teaches nothing.
+ */
+import App from '../../../layouts/App.astro'
+import { formatDate, todayInCalifornia } from '../../../lib/drivers.ts'
+import {
+  DEFAULT_REMINDER_LEAD_DAYS,
+  MAX_NOTE,
+  MAX_TITLE,
+  REMINDER_ORIGIN,
+  REPEAT_OPTIONS,
+  isRepeatMonths,
+  loadReminders,
+  nextCycle,
+  parseDateOnly,
+  parseDueOn,
+  parseNote,
+  parseReminderLeadDays,
+  parseTitle,
+  repeatLabel,
+  toDateOnly,
+  toReminderItem,
+  type ReminderItem,
+  type ReminderRow,
+} from '../../../lib/reminders.ts'
+import { dueLine, standingPill } from '../../../lib/rules/index.ts'
+
+const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
+const userId = Astro.locals.userId ?? null
+
+const today = new Date()
+const todayField = todayInCalifornia()
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+const go = (query = '') => Astro.redirect(`/app/reminders${query}`, 303)
+
+/**
+ * Failures travel as CODES, never as text — the rule settings.astro spells out.
+ * A page that renders `?error=` verbatim lets anyone hand this owner a link to
+ * his own reminders reading "Your account is locked, call 555-0100", in our
+ * styling, on our domain, behind our padlock.
+ */
+const fail = (code: string, editId = '') =>
+  go(`?error=${code}${editId ? `&edit=${editId}` : ''}`)
+
+/** The drivers and trucks a reminder may be attached to. */
+const [{ data: driverRows }, { data: vehicleRows }] = await Promise.all([
+  supabase
+    .from('drivers')
+    .select('id, first_name, last_name')
+    .eq('status', 'active')
+    .order('last_name'),
+  supabase.from('vehicles').select('id, unit_number, vin').neq('status', 'sold').order('unit_number'),
+])
+
+const drivers = (driverRows ?? []) as { id: string; first_name: string; last_name: string }[]
+const vehicles = (vehicleRows ?? []) as { id: string; unit_number: string | null; vin: string | null }[]
+
+/**
+ * One `<select>` for "what is this about", because two would let somebody pick a
+ * driver AND a truck — a row the check constraint refuses and no screen could
+ * label. The value carries its own kind: 'driver:<id>', 'vehicle:<id>', or ''.
+ */
+function parseSubject(raw: unknown): { driver_id: string | null; vehicle_id: string | null } | null {
+  const text = typeof raw === 'string' ? raw.trim() : ''
+  if (text === '') return { driver_id: null, vehicle_id: null }
+
+  const [kind, id] = text.split(':')
+  if (!UUID.test(id ?? '')) return null
+
+  // Checked against the lists this page just rendered rather than left to the
+  // trigger in 0023. Both refuse a driver from another carrier; only this one
+  // refuses it with a sentence about a driver instead of a database exception.
+  if (kind === 'driver' && drivers.some((d) => d.id === id)) {
+    return { driver_id: id, vehicle_id: null }
+  }
+  if (kind === 'vehicle' && vehicles.some((v) => v.id === id)) {
+    return { driver_id: null, vehicle_id: id }
+  }
+  return null
+}
+
+/** Everything the add form and the edit form both write, parsed once so the two
+ *  cannot drift — the same doctrine the stops page applies to its two forms. */
+function readFields(form: FormData):
+  | { ok: true; value: Record<string, unknown> }
+  | { ok: false; code: string } {
+  const title = parseTitle(form.get('title'))
+  if (!title.ok) return { ok: false, code: 'title' }
+
+  const dueOn = parseDueOn(form.get('due_on'))
+  if (!dueOn.ok) return { ok: false, code: 'date' }
+
+  const note = parseNote(form.get('note'))
+  if (!note.ok) return { ok: false, code: 'note' }
+
+  const leadDays = parseReminderLeadDays(form.get('lead_days'))
+  if (!leadDays.ok) return { ok: false, code: 'days' }
+
+  const repeatMonths = Number(form.get('repeat_months') ?? 0)
+  // A `<select>` posts what the browser sends; a crafted POST posts anything,
+  // and an unlisted interval would be a repeat nobody chose and no label names.
+  if (!Number.isInteger(repeatMonths) || !isRepeatMonths(repeatMonths)) {
+    return { ok: false, code: 'repeat' }
+  }
+
+  const subject = parseSubject(form.get('subject'))
+  if (!subject) return { ok: false, code: 'subject' }
+
+  return {
+    ok: true,
+    value: {
+      title: title.value,
+      due_on: dueOn.value,
+      note: note.value,
+      lead_days: leadDays.value,
+      repeat_months: repeatMonths,
+      ...subject,
+    },
+  }
+}
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+  const id = String(form.get('id') ?? '')
+
+  if (intent === 'add_reminder') {
+    const fields = readFields(form)
+    if (!fields.ok) return fail(fields.code)
+
+    const { error } = await supabase.from('reminders').insert({
+      // carrier_id is SET on insert, never filtered on. RLS checks the value but
+      // does not fill it in, so a row without it fails the WITH CHECK half of
+      // the policy and reads as a permissions error about the owner's own list.
+      carrier_id: carrierId,
+      created_by: userId,
+      ...fields.value,
+    })
+    if (error) return fail('save')
+    return go('?added=1')
+  }
+
+  if (intent === 'save_reminder') {
+    if (!UUID.test(id)) return fail('gone')
+    const fields = readFields(form)
+    if (!fields.ok) return fail(fields.code, id)
+
+    // `.is('completed_at', null)` is not a filter for tidiness. A repeating
+    // reminder may not be closed (0023), so editing a closed one into a
+    // repeating one would fail at the constraint with a message naming it.
+    // Closed reminders are opened first, which is a button on this page.
+    const { data, error } = await supabase
+      .from('reminders')
+      .update(fields.value)
+      .eq('id', id)
+      .is('completed_at', null)
+      .select('id')
+
+    if (error) return fail('save', id)
+    // An UPDATE matching nothing is not an error in Postgres, so without this
+    // the page reports a cheerful "Saved" for a reminder deleted in another tab.
+    if (!data || data.length === 0) return fail('gone')
+    return go('?saved=1')
+  }
+
+  if (intent === 'done_reminder') {
+    if (!UUID.test(id)) return fail('gone')
+
+    // Read first, because what Done MEANS depends on the row: a one-time
+    // reminder closes, a repeating one moves to its next cycle. Deciding that
+    // from a hidden form field would let a stale tab close a reminder the owner
+    // has since set to repeat.
+    const { data: row, error: readError } = await supabase
+      .from('reminders')
+      .select('id, due_on, repeat_months, completed_at')
+      .eq('id', id)
+      .is('completed_at', null)
+      .maybeSingle()
+
+    if (readError) return fail('save')
+    if (!row) return fail('gone')
+
+    const dueOn = parseDateOnly(row.due_on as string)
+    if (!dueOn) return fail('save')
+
+    const repeatMonths = Number(row.repeat_months ?? 0)
+    const doneOn = toDateOnly(new Date())
+
+    if (repeatMonths > 0) {
+      // Forward to the next cycle, counted from the date it was DUE and not from
+      // today: an annual policy paid three weeks late still renews on its own
+      // date next year. See `nextCycle`.
+      const next = nextCycle(dueOn, repeatMonths, today)
+      const { error } = await supabase
+        .from('reminders')
+        .update({ due_on: toDateOnly(next), last_done_on: doneOn })
+        .eq('id', id)
+        .is('completed_at', null)
+      if (error) return fail('save')
+      return go(`?next=${toDateOnly(next)}`)
+    }
+
+    const { error } = await supabase
+      .from('reminders')
+      .update({ completed_at: new Date().toISOString(), completed_by: userId, last_done_on: doneOn })
+      .eq('id', id)
+      .is('completed_at', null)
+    if (error) return fail('save')
+    return go('?done=1')
+  }
+
+  if (intent === 'reopen_reminder') {
+    if (!UUID.test(id)) return fail('gone')
+    const { error } = await supabase
+      .from('reminders')
+      .update({ completed_at: null, completed_by: null })
+      .eq('id', id)
+      .not('completed_at', 'is', null)
+    if (error) return fail('save')
+    return go('?reopened=1&show=done')
+  }
+
+  if (intent === 'delete_reminder') {
+    if (!UUID.test(id)) return fail('gone')
+    // A real DELETE, unlike a compliance record, which is superseded and kept.
+    // This is the owner's own list, not evidence anybody is entitled to inspect;
+    // a line he typed by mistake goes away when he says so.
+    const { error } = await supabase.from('reminders').delete().eq('id', id)
+    if (error) return fail('save')
+    return go('?deleted=1')
+  }
+
+  // An unknown intent is a form from an older deploy. Redirect rather than fall
+  // through to rendering: a 200 answer to a POST is replayed by the next refresh.
+  return go('')
+}
+
+// ---------------------------------------------------------------- reading
+
+const params = Astro.url.searchParams
+const showDone = params.get('show') === 'done'
+const editId = params.get('edit') ?? ''
+
+const open = await loadReminders(supabase, null, today)
+
+/** The closed ones, read only when he asks for them. */
+const done: ReminderItem[] = []
+if (showDone) {
+  const { data } = await supabase
+    .from('reminders')
+    .select(
+      'id, title, note, due_on, repeat_months, lead_days, driver_id, vehicle_id, completed_at, last_done_on, drivers(first_name, last_name), vehicles(unit_number, vin)',
+    )
+    .not('completed_at', 'is', null)
+    .order('completed_at', { ascending: false })
+    // Bounded. A carrier who has been here three years has a long tail of
+    // finished errands, and none of it is what he opened this page for.
+    .limit(50)
+  for (const row of (data ?? []) as unknown as ReminderRow[]) {
+    const item = toReminderItem(row, today)
+    if (item) done.push(item)
+  }
+}
+
+/**
+ * Plain sentences, one per failure. Short enough to read on a phone, and each
+ * one says what to do rather than what went wrong.
+ */
+const ERRORS: Record<string, string> = {
+  title: 'Write what you need to do.',
+  date: 'Pick a date.',
+  days: 'Days must be a number, 0 to 365.',
+  note: 'The note is too long.',
+  repeat: 'Pick how often it repeats.',
+  subject: 'Pick a driver or a truck from the list.',
+  gone: 'That reminder is gone.',
+  save: 'Not saved. Try again.',
+}
+const errorCode = params.get('error') ?? ''
+const errorMessage = errorCode ? (ERRORS[errorCode] ?? ERRORS.save) : null
+
+const nextDate = params.get('next')
+const nextDateShown = nextDate && /^\d{4}-\d{2}-\d{2}$/.test(nextDate) ? formatDate(nextDate) : null
+
+const good = params.has('added')
+  ? 'Reminder added.'
+  : params.has('saved')
+    ? 'Saved.'
+    : nextDateShown
+      ? `Done. Next one: ${nextDateShown}.`
+      : params.has('done')
+        ? 'Done. It is off your list.'
+        : params.has('reopened')
+          ? 'Open again.'
+          : params.has('deleted')
+            ? 'Deleted.'
+            : null
+
+/** The row being edited, if the URL names one that is still open. */
+const editing = open.find((r) => r.id === editId) ?? null
+
+const field =
+  'w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const label = 'block text-sm font-medium'
+const hint = 'mt-1 block text-xs text-ink-500'
+const primary =
+  'rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700'
+const secondary =
+  'rounded-lg border border-ink-100 bg-white px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50'
+
+/** The value the subject `<select>` posts for a row we already hold. */
+const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
+  item.subject.id ? `${item.subject.kind}:${item.subject.id}` : ''
+---
+
+<App title="My reminders" subtitle="Your own reminders. We email you before the date.">
+  {errorMessage && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</p>}
+  {good && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{good}</p>}
+
+  {/*
+    Said once, at the top, in the plainest words available. These rows sit next
+    to federal deadlines on the dashboard, and the owner has to know which is
+    which before he decides what to do this morning.
+  */}
+  <p class="mb-5 max-w-2xl rounded-xl border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3 text-sm">
+    These are your own reminders. They are <strong class="font-medium">not laws</strong>. The
+    deadlines on the <a href="/app" class="font-medium text-brand-600 hover:underline">Deadlines</a>
+    page come from the rules. These come from you.
+  </p>
+
+  {/* ------------------------------------------------------------ add / edit */}
+
+  <form method="POST" class="rounded-xl border border-ink-100 bg-white p-5">
+    <h2 class="text-lg font-semibold tracking-tight">
+      {editing ? 'Change this reminder' : 'Add a reminder'}
+    </h2>
+    {editing && <input type="hidden" name="id" value={editing.id} />}
+
+    <div class="mt-4 grid gap-4 sm:grid-cols-2">
+      <div class="sm:col-span-2">
+        <label class={label}>
+          What do you need to do?
+          <input
+            type="text"
+            name="title"
+            required
+            maxlength={MAX_TITLE}
+            value={editing?.title ?? ''}
+            placeholder="Pay truck insurance"
+            class={`${field} mt-1`}
+          />
+        </label>
+      </div>
+
+      <div>
+        <label class={label}>
+          Date
+          <input
+            type="date"
+            name="due_on"
+            required
+            min="2000-01-01"
+            max="2100-12-31"
+            value={editing ? toDateOnly(editing.dueOn) : todayField}
+            class={`${field} mt-1 tabular-nums`}
+          />
+        </label>
+        <span class={hint}>The day it must be done.</span>
+      </div>
+
+      <div>
+        <label class={label}>
+          How often?
+          <select name="repeat_months" class={`${field} mt-1`}>
+            {
+              REPEAT_OPTIONS.map((o) => (
+                <option value={o.value} selected={(editing?.repeatMonths ?? 0) === o.value}>
+                  {o.label}
+                </option>
+              ))
+            }
+          </select>
+        </label>
+        <span class={hint}>A repeating reminder moves to the next date when you press Done.</span>
+      </div>
+
+      <div>
+        <label class={label}>
+          Tell me this many days before
+          <input
+            type="number"
+            name="lead_days"
+            min="0"
+            max="365"
+            inputmode="numeric"
+            value={editing?.leadDays ?? DEFAULT_REMINDER_LEAD_DAYS}
+            class={`${field} mt-1 tabular-nums`}
+          />
+        </label>
+        {/* Said out loud, because two of the three emails are not his setting.
+            A reminder that warns a month early and then goes quiet on the day
+            is worse than no reminder. */}
+        <span class={hint}>We also email you on the day, and one day after.</span>
+      </div>
+
+      <div>
+        <label class={label}>
+          Who or what is it for?
+          <select name="subject" class={`${field} mt-1`}>
+            <option value="" selected={!editing?.subject.id}>Whole company</option>
+            {
+              drivers.length > 0 && (
+                <optgroup label="Drivers">
+                  {drivers.map((d) => (
+                    <option
+                      value={`driver:${d.id}`}
+                      selected={editing ? subjectValue(editing) === `driver:${d.id}` : false}
+                    >
+                      {`${d.first_name} ${d.last_name}`.trim()}
+                    </option>
+                  ))}
+                </optgroup>
+              )
+            }
+            {
+              vehicles.length > 0 && (
+                <optgroup label="Trucks">
+                  {vehicles.map((v) => (
+                    <option
+                      value={`vehicle:${v.id}`}
+                      selected={editing ? subjectValue(editing) === `vehicle:${v.id}` : false}
+                    >
+                      {v.unit_number || v.vin || 'Truck'}
+                    </option>
+                  ))}
+                </optgroup>
+              )
+            }
+          </select>
+        </label>
+      </div>
+
+      <div class="sm:col-span-2">
+        <label class={label}>
+          Note (you can leave this empty)
+          <textarea name="note" rows="2" maxlength={MAX_NOTE} class={`${field} mt-1`}>{editing?.note ?? ''}</textarea>
+        </label>
+      </div>
+    </div>
+
+    <div class="mt-4 flex flex-wrap items-center gap-3">
+      <button type="submit" name="intent" value={editing ? 'save_reminder' : 'add_reminder'} class={primary}>
+        {editing ? 'Save' : 'Add reminder'}
+      </button>
+      {editing && <a href="/app/reminders" class={secondary}>Cancel</a>}
+    </div>
+  </form>
+
+  {/* ---------------------------------------------------------- the open list */}
+
+  <section class="mt-8">
+    <h2 class="text-lg font-semibold tracking-tight">
+      Your reminders
+      <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">{open.length}</span>
+    </h2>
+
+    {
+      open.length === 0 ? (
+        <div class="mt-3 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+          <p class="font-medium">No reminders yet</p>
+          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+            Write down anything you must not forget. Insurance, truck payment, DMV. We email you
+            before the date, and it shows on your Deadlines page.
+          </p>
+        </div>
+      ) : (
+        <div class="mt-3 overflow-x-auto rounded-xl border border-ink-100 bg-white">
+          <table class="w-full min-w-[46rem] text-sm">
+            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+              <tr>
+                <th class="px-4 py-3 font-medium">What</th>
+                <th class="px-4 py-3 font-medium">For</th>
+                <th class="px-4 py-3 font-medium">Date</th>
+                <th class="px-4 py-3 font-medium">Repeat</th>
+                <th class="px-4 py-3 font-medium">
+                  <span class="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink-100">
+              {open.map((r) => {
+                const pill = standingPill(r.status.standing)
+                return (
+                  <tr class="hover:bg-ink-50/60">
+                    <td class="px-4 py-3">
+                      <div class="font-medium">{r.title}</div>
+                      {r.note && <div class="mt-0.5 max-w-sm text-xs text-ink-500">{r.note}</div>}
+                    </td>
+                    <td class="px-4 py-3">
+                      {r.subject.href ? (
+                        <a href={r.subject.href} class="font-medium hover:text-brand-600 hover:underline">
+                          {r.subject.label}
+                        </a>
+                      ) : (
+                        <span class="text-ink-500">{r.subject.label}</span>
+                      )}
+                    </td>
+                    <td class="px-4 py-3 whitespace-nowrap">
+                      <span class:list={['rounded-md px-2 py-0.5 text-xs font-medium', pill.className]}>
+                        {pill.label}
+                      </span>
+                      <div class="mt-1 tabular-nums">{dueLine(r)}</div>
+                    </td>
+                    <td class="px-4 py-3 text-xs text-ink-500">
+                      {r.repeatMonths > 0 ? repeatLabel(r.repeatMonths) : '—'}
+                      {r.lastDoneOn && (
+                        <div class="mt-0.5 text-ink-300">Last done {formatDate(toDateOnly(r.lastDoneOn))}</div>
+                      )}
+                    </td>
+                    <td class="px-4 py-3">
+                      <div class="flex flex-wrap items-center justify-end gap-2">
+                        <form method="POST">
+                          <input type="hidden" name="id" value={r.id} />
+                          <button type="submit" name="intent" value="done_reminder" class={secondary}>
+                            Done
+                          </button>
+                        </form>
+                        <a href={`/app/reminders?edit=${r.id}`} class={secondary}>Change</a>
+                        <form method="POST">
+                          <input type="hidden" name="id" value={r.id} />
+                          <button type="submit" name="intent" value="delete_reminder" class={secondary}>
+                            Delete
+                          </button>
+                        </form>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+  </section>
+
+  {/* ------------------------------------------------------------- done list */}
+
+  <section class="mt-8">
+    {
+      !showDone ? (
+        <a href="/app/reminders?show=done" class={secondary}>
+          Show finished reminders
+        </a>
+      ) : (
+        <>
+          <h2 class="text-lg font-semibold tracking-tight">
+            Finished
+            <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">{done.length}</span>
+          </h2>
+          <p class="mt-1 text-sm text-ink-500">The last 50. You can open one again or delete it.</p>
+
+          {done.length === 0 ? (
+            <p class="mt-3 rounded-xl border border-dashed border-ink-100 bg-white p-6 text-center text-sm text-ink-500">
+              Nothing is finished yet.
+            </p>
+          ) : (
+            <ul class="mt-3 space-y-2">
+              {done.map((r) => (
+                <li class="flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white px-4 py-3">
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate font-medium">{r.title}</span>
+                    <span class="block text-xs text-ink-500 tabular-nums">
+                      {r.subject.label} · was due {formatDate(toDateOnly(r.dueOn))}
+                    </span>
+                  </span>
+                  <form method="POST" class="shrink-0">
+                    <input type="hidden" name="id" value={r.id} />
+                    <button type="submit" name="intent" value="reopen_reminder" class={secondary}>
+                      Open again
+                    </button>
+                  </form>
+                  <form method="POST" class="shrink-0">
+                    <input type="hidden" name="id" value={r.id} />
+                    <button type="submit" name="intent" value="delete_reminder" class={secondary}>
+                      Delete
+                    </button>
+                  </form>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <a href="/app/reminders" class:list={['mt-4 inline-block', secondary]}>Hide finished</a>
+        </>
+      )
+    }
+  </section>
+
+  {/* Where these show up next, said plainly. The badge is the same one the
+      dashboard prints where a regulation prints its CFR citation. */}
+  <p class="mt-8 flex flex-wrap items-center gap-2 text-sm text-ink-500">
+    On the Deadlines page your reminders carry this mark:
+    <span class:list={['rounded-md px-2 py-0.5 text-xs font-medium', REMINDER_ORIGIN.className]}>
+      {REMINDER_ORIGIN.label}
+    </span>
+  </p>
+</App>

@@ -2,10 +2,11 @@
  * Deciding what to send. The hard part of an alerting product is not sending —
  * it is not sending.
  */
+import type { Standing } from '../rules/compute.ts'
 import type { DeadlineItem } from '../rules/index.ts'
 import type { Subject } from '../rules/types.ts'
 import { type Channel, dedupKey, withinQuietHours } from './guard.ts'
-import { DEFAULT_LEAD_DAYS } from './preferences.ts'
+import { DEFAULT_LEAD_DAYS, type NotifyCategory } from './preferences.ts'
 
 export interface Recipient {
   userId: string
@@ -25,14 +26,14 @@ export interface Recipient {
  * no longer even expressible in memory.
  */
 export interface Preference {
-  category: 'compliance' | 'federal' | 'system'
+  category: NotifyCategory
   channel: Channel | 'in_app'
   enabled: boolean
 }
 
 /** One row per (carrier, user, category). See notification_category_preferences. */
 export interface CategoryPreference {
-  category: 'compliance' | 'federal' | 'system'
+  category: NotifyCategory
   leadDays: number[]
   /** Stored, and still read by nothing: the job batches unconditionally. */
   digest: boolean
@@ -180,6 +181,22 @@ export function selectForRecipient(args: {
 }
 
 /**
+ * Anything with a standing and a countdown: a regulatory deadline, or one of the
+ * owner's own reminders.
+ *
+ * Widened from `DeadlineItem` when owner reminders arrived, so that "critical"
+ * and the quiet-hours breakthrough have ONE definition covering both lists. The
+ * alternative was a second copy in src/lib/reminders.ts, which is the shape of
+ * drift this file's own comments warn about twice: the settings page promises
+ * "anything already overdue, and anything due tomorrow", and two copies of that
+ * sentence make it true of one list and a lie about the other.
+ */
+export interface TimedItem {
+  status: { standing: Standing }
+  daysUntil?: number
+}
+
+/**
  * SMS is rationed deliberately.
  *
  * Text is for things that are already costing money: overdue, or due within a
@@ -187,7 +204,7 @@ export function selectForRecipient(args: {
  * in a month stops reading the texts, and the one about the truck that cannot
  * roll tomorrow arrives into that silence.
  */
-export function deservesSms(item: DeadlineItem): boolean {
+export function deservesSms(item: TimedItem): boolean {
   if (item.status.standing === 'overdue') return true
   return (item.daysUntil ?? 999) <= 1
 }
@@ -227,11 +244,11 @@ export interface QuietHours {
  * will never arrive — not late, never. Held candidates must reach no writer at
  * all; the next run re-derives them from scratch.
  */
-export function splitForQuietHours(
-  candidates: readonly Candidate[],
+export function splitForQuietHours<T extends { item: TimedItem }>(
+  candidates: readonly T[],
   quiet: QuietHours,
-): { deliver: Candidate[]; held: Candidate[] } {
-  const all = { deliver: [...candidates], held: [] as Candidate[] }
+): { deliver: T[]; held: T[] } {
+  const all = { deliver: [...candidates], held: [] as T[] }
 
   // We could not read the recipient's clock — an unresolvable zone string, most
   // likely. Send. A profile holding junk must not become a person who is never
@@ -246,8 +263,8 @@ export function splitForQuietHours(
   // checkbox says, and the settings page spells out the consequence.
   if (!quiet.allowCritical) return { deliver: [], held: [...candidates] }
 
-  const deliver: Candidate[] = []
-  const held: Candidate[] = []
+  const deliver: T[] = []
+  const held: T[] = []
   for (const c of candidates) {
     // Per ITEM, not per message. One morning's email can carry a lapsed medical
     // card and a registration due in a month; the first is why the breakthrough
