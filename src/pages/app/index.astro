@@ -28,8 +28,10 @@ import {
   buildHealth,
   donutSlices,
   healthHeadline,
+  type HealthInput,
+  type HealthKey,
 } from '../../lib/charts/health.ts'
-import { buildRunway } from '../../lib/charts/runway.ts'
+import { buildRunway, weekRangeLabel } from '../../lib/charts/runway.ts'
 import { TONES } from '../../lib/charts/tones.ts'
 import {
   capSection,
@@ -426,6 +428,20 @@ const tileOn = 'border-ink-900 shadow-sm ring-2 ring-ink-900'
 /** The ring is a chart, so it obeys the chart rule: never on a filtered view. */
 const showRing = view === 'all' && health.total > 0
 
+/**
+ * The ghost ring: the outline, drawn when there is nothing in it yet.
+ *
+ * A carrier on his first morning got four tiles reading 0 and an empty space
+ * where the ring goes, which reads as a screen that failed to load rather than
+ * as a fleet nobody has entered yet. `Donut` already draws its own grey track
+ * for this, so the shape costs nothing: the hole holds a real 0 with the words
+ * 'nothing tracked' under it, in ink rather than green, because nothing tracked
+ * is not the same finding as nothing wrong. The one thing to do about it is the
+ * button further down the page, and there is only ever one of those.
+ */
+const showGhostRing = view === 'all' && health.total === 0
+const ringDrawn = showRing || showGhostRing
+
 // The sentence under the ring, and it is the reason the centre number is
 // allowed to exist. "21 need attention" with nothing beside it is a score, and
 // a score is a thing a broker quotes back at a carrier who then cannot take it
@@ -490,6 +506,170 @@ const runwayCoverage =
   ]
     .filter(Boolean)
     .join(' ') || undefined
+
+/**
+ * The timeline's heading says which week, not what the chart is called.
+ *
+ * It read "The next 13 weeks", which names the shape and leaves the owner to
+ * find the answer inside it. The question he is asking is which week is going
+ * to hurt, so the heading answers that and the sentence under the bars carries
+ * the count. `peak` is null when no week holds more than one item — one item in
+ * one week is not a heavy week, it is a Tuesday — so that case says so plainly
+ * instead of pointing at a column.
+ */
+const runwayTitle = runway.peak
+  ? `Your heaviest week is ${weekRangeLabel(runway.peak)}`
+  : runway.scheduled > 0
+    ? 'No week ahead has more than one deadline'
+    : `Nothing is due in the next ${runway.horizonWeeks} weeks`
+
+/* ====================================================== who to start with ===
+ *
+ * The tables below answer "what is wrong", one row per rule. They cannot answer
+ * the question he asks next — who do I call first — because that answer is a
+ * driver or a truck, and one driver's five problems can sit in three different
+ * sections, ten rows apart. Working that out by reading is how an owner loses a
+ * morning.
+ *
+ * So the SAME items are counted one more way, per record, and the five records
+ * carrying the most are printed in order. Nothing new is decided here: the
+ * buckets come from `buildHealth`, the function the ring and the tiles are
+ * built from, so a row here cannot disagree with the numbers at the top of the
+ * page. It is also what keeps the days arithmetic in one place — a one-time
+ * obligation already satisfied reports something like -2040 days and is on
+ * track, not due soon, and this page is not allowed to decide that twice.
+ *
+ * REMINDERS ARE COUNTED, for the same reason the tiles count them: this list
+ * ranks the work in front of him, and an overdue insurance renewal on a truck
+ * is work in front of him. The runway leaves them out because a shape drawn
+ * from the rules cannot also be a shape drawn from his errands; a count of work
+ * per record has no such problem.
+ */
+const NEEDS_CAP = 5
+
+/** The records with a page of their own to open, and what to call each one. */
+const recordNoun = (type: string): string | null =>
+  type === 'driver'
+    ? 'Driver'
+    : type === 'power_unit'
+      ? 'Truck'
+      : type === 'trailer'
+        ? 'Trailer'
+        : null
+
+interface NeedsRecord {
+  label: string
+  noun: string
+  href: string
+  inputs: HealthInput[]
+}
+
+const needsBy = new Map<string, NeedsRecord>()
+
+/**
+ * Everything that is not one driver or one truck: the carrier's own filings,
+ * and the reminders he wrote against the whole company.
+ *
+ * Counted, never dropped. A pile he can see in the list below and cannot find
+ * here is a list he stops believing.
+ */
+const companyInputs: HealthInput[] = []
+
+const addNeed = (key: string, label: string, noun: string, href: string, input: HealthInput) => {
+  const row = needsBy.get(key) ?? { label, noun, href, inputs: [] as HealthInput[] }
+  row.inputs.push(input)
+  needsBy.set(key, row)
+}
+
+for (const i of items) {
+  const input: HealthInput = { standing: i.status.standing, daysUntil: i.daysUntil }
+  const noun = recordNoun(i.subjectType)
+  if (!noun || !i.subjectId) {
+    companyInputs.push(input)
+    continue
+  }
+  addNeed(
+    `${i.subjectType === 'driver' ? 'driver' : 'vehicle'}:${i.subjectId}`,
+    i.subjectLabel,
+    noun,
+    subjectHref(i.subjectType, i.subjectId),
+    input,
+  )
+}
+
+for (const r of reminders) {
+  const input: HealthInput = { standing: r.status.standing, daysUntil: r.daysUntil }
+  if (!r.subject.id || !r.subject.href) {
+    companyInputs.push(input)
+    continue
+  }
+  // A reminder does not say whether the vehicle is a truck or a trailer, so it
+  // uses the word the rest of this page uses for one. When the rules have
+  // already named the record, that name is the one kept and this is never read.
+  addNeed(
+    `${r.subject.kind}:${r.subject.id}`,
+    r.subject.label,
+    r.subject.kind === 'driver' ? 'Driver' : 'Truck',
+    r.subject.href,
+    input,
+  )
+}
+
+const needsRows = [...needsBy.values()]
+  .map((row) => {
+    const rowHealth = buildHealth(row.inputs)
+    const count = (key: HealthKey) => rowHealth.buckets.find((b) => b.key === key)?.count ?? 0
+    return {
+      ...row,
+      // The same three buckets the ring's sentence prints, in the same order
+      // and the same words, so the breakdown beside the number is the number
+      // taken apart rather than a second opinion about it.
+      parts: attentionParts(rowHealth),
+      attention: rowHealth.needsAttention,
+      overdue: count('overdue'),
+      missing: count('unknown'),
+      soon: count('soon'),
+    }
+  })
+  .filter((r) => r.attention > 0)
+  // Overdue first: an expired document is a fact, a missing date is a question.
+  // Missing breaks the tie, and it is the tie that gets broken on the day a
+  // carrier signs up — nothing is overdue yet, so the ranking is entirely about
+  // who has the most dates nobody has typed in. Same ordering as STANDING_RANK
+  // in src/lib/rules/index.ts, applied to counts instead of to rows.
+  .sort(
+    (a, b) =>
+      b.overdue - a.overdue ||
+      b.missing - a.missing ||
+      b.soon - a.soon ||
+      a.label.localeCompare(b.label),
+  )
+
+const needsTop = needsRows.slice(0, NEEDS_CAP)
+const needsRest = needsRows.length - needsTop.length
+const companyNeeds = buildHealth(companyInputs).needsAttention
+
+/** A ranking across the whole fleet, so it obeys the chart rule: resting view only. */
+const showNeeds = view === 'all' && needsTop.length > 0
+
+// The heading names the record, because the name IS the answer to "who first".
+const needsTitle = needsTop.length > 0 ? `Start with ${needsTop[0].label}` : ''
+const needsSubtitle =
+  needsRows.length > NEEDS_CAP
+    ? `The ${NEEDS_CAP} with the most to fix. Tap one to open it.`
+    : needsRows.length === 1
+      ? 'This is the only one with something to fix. Tap it to open it.'
+      : `All ${needsRows.length} that have something to fix. Tap one to open it.`
+
+const needsMoreParts: string[] = []
+if (needsRest > 0) {
+  needsMoreParts.push(`${needsRest} more ${needsRest === 1 ? 'is' : 'are'} not on this list.`)
+}
+if (companyNeeds > 0) {
+  needsMoreParts.push(`Your company has ${companyNeeds} of its own.`)
+}
+const needsMore =
+  needsMoreParts.length > 0 ? `${needsMoreParts.join(' ')} They are in the list below.` : null
 
 const params = Astro.url.searchParams
 const errorMessage = params.get('error')
@@ -636,12 +816,12 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
   >
     <div class="flex items-center gap-3 sm:gap-6">
       {
-        showRing && (
+        ringDrawn && (
           <Donut
             slices={donutSlices(health)}
             centre={health.needsAttention}
-            centreNote={`of ${health.total}`}
-            centreTone={health.needsAttention === 0 ? 'clear' : 'attention'}
+            centreNote={showGhostRing ? 'nothing tracked' : `of ${health.total}`}
+            centreTone={showRing && health.needsAttention === 0 ? 'clear' : 'attention'}
           />
         )
       }
@@ -654,7 +834,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
           // in a row on a wide screen, where two would leave each tile a third
           // of a metre of empty space to the right of its own label.
           // With no ring — a filtered view — it takes the whole width back.
-          showRing ? 'sm:grid-cols-2 sm:gap-3 lg:grid-cols-4' : 'grid-cols-2 sm:grid-cols-4 sm:gap-3',
+          ringDrawn ? 'sm:grid-cols-2 sm:gap-3 lg:grid-cols-4' : 'grid-cols-2 sm:grid-cols-4 sm:gap-3',
         ]}
       >
         {
@@ -806,11 +986,100 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
     items.length > 0 && view === 'all' && (
       <Figure
         class="mt-6"
-        title="The next 13 weeks"
-        subtitle="How many deadlines fall in each week ahead"
+        title={runwayTitle}
+        subtitle={`One bar for each of the next ${runway.horizonWeeks} weeks. A taller bar is a heavier week.`}
         coverage={runwayCoverage}
       >
         <Runway runway={runway} overdueHref="/app?show=overdue" undatedHref="/app?show=unknown" />
+      </Figure>
+    )
+  }
+
+  {/*
+    ====================================================== who to start with ===
+
+    One question, one ranked list: who do I call first. The rows are RECORDS,
+    not rules — the tables further down are already the rule-by-rule view, and
+    nothing else on this page groups a driver's problems together.
+
+    The big number is the count of the WORST thing that record has — 4, in red,
+    for four overdue — and never a total of the three buckets added together. A
+    total would be a score: one number standing for unlike things, arrived at by
+    arithmetic the reader cannot see. It would also destroy the order of the
+    list, since the rows are ranked on overdue first and a mixed total does not
+    descend down the column. The line under the name carries every bucket this
+    record has, in words, so nothing the number leaves out is hidden.
+
+    Every count carries a dot AND a word AND a number, so colour is never the
+    only signal — and grey is a count like the others. A date nobody has typed
+    in is never folded into the green, on this list or anywhere else.
+  */}
+  {
+    showNeeds && (
+      <Figure class="mt-6" title={needsTitle} subtitle={needsSubtitle}>
+        <ul class="space-y-2">
+          {needsTop.map((r) => {
+            // Rank order, so the first part is the worst thing this record has:
+            // overdue, then a missing date, then due soon. The big number IS
+            // that part — its count and its colour — which is what keeps the
+            // column of numbers reading in the order the rows are sorted in.
+            const worst = r.parts[0]
+            // The row spelled out for a reader who is being read the page. On
+            // screen it is a number, a name and three dots; announced off the
+            // DOM that is a string of digits, so the label says the sentence.
+            const spoken = r.parts.map((p) => `${p.count} ${p.label.toLowerCase()}`).join(', ')
+            return (
+              <li>
+                <a
+                  href={r.href}
+                  aria-label={`${r.label}, ${r.noun.toLowerCase()}. ${spoken}.`}
+                  class="flex items-center gap-3 rounded-lg border border-ink-100 bg-white px-3 py-2.5 transition hover:bg-ink-50"
+                >
+                  <span
+                    class:list={[
+                      // min-w, not w, for the same reason as the tiles: a
+                      // three-figure count is the normal case on the day
+                      // somebody signs up, not an edge case.
+                      'min-w-8 shrink-0 text-right text-xl leading-none font-semibold tabular-nums',
+                      TILE_STYLE[worst.key].countClass,
+                    ]}
+                  >
+                    {worst.count}
+                  </span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate font-medium">{r.label}</span>
+                    <span class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-500 tabular-nums">
+                      <span>{r.noun}</span>
+                      {r.parts.map((p) => (
+                        <span class="flex items-center gap-1">
+                          <span
+                            class:list={['h-1.5 w-1.5 shrink-0 rounded-full', TONES[p.tone].swatch]}
+                            aria-hidden="true"
+                          />
+                          {p.count} {p.label.toLowerCase()}
+                        </span>
+                      ))}
+                    </span>
+                  </span>
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    class="size-5 shrink-0 text-ink-300"
+                    aria-hidden="true"
+                  >
+                    <path d="M9 18l6-6-6-6" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </a>
+              </li>
+            )
+          })}
+        </ul>
+
+        {/* What the five rows leave out, said out loud rather than trimmed
+            away quietly. Same rule as the row cap on the sections below. */}
+        {needsMore && <p class="mt-3 text-xs text-ink-500 tabular-nums">{needsMore}</p>}
       </Figure>
     )
   }
