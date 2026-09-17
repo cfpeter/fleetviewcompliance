@@ -191,7 +191,19 @@ export function milesFigure(args: {
       // Red because the row is a PROBLEM, never because it is a big one — see
       // tones.ts. It is the same red the table below already paints an
       // unpriced line, borrowed rather than invented.
-      tone: unpriced || unentered ? 'overdue' : 'brand',
+      //
+      // `unentered` is NOT that. Fuel was bought and nobody has typed the miles
+      // yet, which is a gap in what we hold — grey, by the same rule the whole
+      // product follows: red is act-now, grey is "we do not have it". Red here
+      // would say the owner is late for something when he is only missing a
+      // number, on the screen whose job is telling him which numbers to go and
+      // find. `unpriced` keeps the red: no tax rate on file stops the return
+      // being filed correctly, and that is act-now.
+      //
+      // Latent rather than visible today — `Bars` draws a null value as the
+      // dashed slot and never reads the tone — so this is the colour being
+      // correct before something starts using it, not a repaint.
+      tone: unpriced ? 'overdue' : unentered ? 'neutral' : 'brand',
     }
   })
 

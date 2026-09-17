@@ -571,31 +571,34 @@ const headline: { tone: Mark; label: string; big: string; what: string; when: st
 const MARK_STYLE: Record<Mark, { dot: string; pill: string; edge: string; big: string }> = {
   act: {
     dot: 'bg-red-500 text-white',
-    pill: 'bg-red-100 text-red-700',
+    // `pill` names the shared badge modifier, never a second copy of the
+    // colours: a pill on this page has to be the pill on the roster and on the
+    // fleet table, and one table of colours is how that stays true.
+    pill: 'badge-danger',
     edge: 'border-l-red-500',
     big: 'text-red-700',
   },
   nodate: {
     dot: 'border border-dashed border-ink-300 text-ink-500',
-    pill: 'bg-ink-100 text-ink-500',
+    pill: 'badge-neutral',
     edge: 'border-l-ink-300',
     big: 'text-ink-500',
   },
   soon: {
     dot: 'bg-amber-500 text-white',
-    pill: 'bg-amber-100 text-amber-800',
+    pill: 'badge-warning',
     edge: 'border-l-amber-500',
     big: 'text-amber-800',
   },
   ok: {
     dot: 'bg-emerald-500 text-white',
-    pill: 'bg-emerald-100 text-emerald-800',
+    pill: 'badge-success',
     edge: 'border-l-emerald-500',
     big: 'text-emerald-800',
   },
   read: {
     dot: 'bg-brand-500 text-white',
-    pill: 'bg-brand-500/10 text-brand-700',
+    pill: 'badge-info',
     edge: 'border-l-brand-500',
     big: 'text-brand-700',
   },
@@ -722,8 +725,13 @@ const vinNotice = vinUnusable
     ? 'This VIN fails its own check digit, so one character is probably wrong. Check the door plate. CARB matches Clean Truck Check on the exact VIN, so one wrong character is a truck we never find. We saved it anyway.'
     : null
 
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+/*
+  There is no `field` string on this page any more. Every box wears
+  `.field-input` from global.css — 44px tall, a border at ink-500 rather than the
+  ink-100 that vanished on a phone in daylight, and the one focus ring the whole
+  app shares. Labels and help lines are `.field-label` and `.field-hint` for the
+  same reason: one construction, corrected in one place.
+*/
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
 const today = new Date().toISOString().slice(0, 10)
 
@@ -732,7 +740,7 @@ const today = new Date().toISOString().slice(0, 10)
  *
  *   h2  text-lg font-semibold tracking-tight        — a section of the page
  *   h3  text-sm font-semibold tracking-tight        — a subsection inside a card
- *   h3  text-xs tracking-wide text-ink-500 uppercase — the label on a small card
+ *   h3  text-xs tracking-wide text-ink-700 uppercase — the label on a small card
  *
  * `cardHeading` is the middle one, and it is the size and weight the chart frame
  * already gives its own heading (src/components/charts/Figure.astro), so a chart
@@ -796,8 +804,9 @@ const datesOpen = error !== null || added || datesCount !== null || params.get('
 const addDatesHref = `/app/vehicles/${vehicle.id}?add=1#add-dates`
 
 const cell = 'block px-4 sm:table-cell sm:py-3'
-/** The column name, said on the block that has no column. */
-const said = 'text-ink-500 sm:hidden'
+/* There is no `said` constant here any more. The one block on this page that
+   names its own column is 12px on a phone, where the text floor is ink-700
+   rather than the ink-500 that constant carried, so it says so in place. */
 ---
 
 <App
@@ -856,7 +865,7 @@ const said = 'text-ink-500 sm:hidden'
           MARK_STYLE[headline.tone].edge,
         ]}
       >
-        <h2 class="text-xs tracking-wide text-ink-500 uppercase">{headline.label}</h2>
+        <h2 class="text-xs tracking-wide text-ink-700 uppercase">{headline.label}</h2>
         <p
           class:list={[
             'mt-1 text-3xl font-semibold tracking-tight sm:text-4xl',
@@ -878,16 +887,14 @@ const said = 'text-ink-500 sm:hidden'
             {missingDates === 1 ? ' date is' : ' dates are'} not on file. We cannot say when{' '}
             {missingDates === 1 ? 'it is' : 'they are'} due until you put{' '}
             {missingDates === 1 ? 'it' : 'them'} in.
-            <a href={addDatesHref} class="ml-1 font-medium text-brand-600 hover:underline">
+            <a href={addDatesHref} class="btn btn-tertiary btn-sm ml-1">
               Put the dates in →
             </a>
           </p>
         )}
         {headline.tone === 'nodate' && (
           <p class="mt-3">
-            <a href={addDatesHref} class="text-sm font-medium text-brand-600 hover:underline">
-              Put the dates in →
-            </a>
+            <a href={addDatesHref} class="btn btn-tertiary btn-sm -ml-3">Put the dates in →</a>
           </p>
         )}
       </section>
@@ -943,7 +950,7 @@ const said = 'text-ink-500 sm:hidden'
           </svg>
           {/* One word, and it goes when the form is open, where the form itself
               says what it is for. */}
-          <span class="ml-auto text-sm font-medium text-brand-600 group-open:hidden">Change</span>
+          <span class="ml-auto text-sm font-medium text-brand-700 group-open:hidden">Change</span>
 
           <span class="flex w-full flex-wrap gap-x-6 gap-y-1 text-sm">
             <span class="whitespace-nowrap">
@@ -952,7 +959,7 @@ const said = 'text-ink-500 sm:hidden'
                 vehicle.unit_number ? (
                   <span class="tabular-nums">{vehicle.unit_number}</span>
                 ) : (
-                  <span class="text-ink-300">not on file</span>
+                  <span class="text-ink-500">not on file</span>
                 )
               }
             </span>
@@ -962,7 +969,7 @@ const said = 'text-ink-500 sm:hidden'
                 vehicle.vin ? (
                   <span class="font-mono uppercase">{vehicle.vin}</span>
                 ) : (
-                  <span class="text-ink-300">not on file</span>
+                  <span class="text-ink-500">not on file</span>
                 )
               }
             </span>
@@ -975,7 +982,7 @@ const said = 'text-ink-500 sm:hidden'
                     {vehicle.plate_state && ` ${vehicle.plate_state}`}
                   </span>
                 ) : (
-                  <span class="text-ink-300">not on file</span>
+                  <span class="text-ink-500">not on file</span>
                 )
               }
             </span>
@@ -1000,16 +1007,16 @@ const said = 'text-ink-500 sm:hidden'
         <form method="POST" class="mt-5 border-t border-ink-100 pt-5">
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">Unit number</span>
+          <span class="field-label">Unit number</span>
           <input
             type="text"
             name="unit_number"
             value={vehicle.unit_number ?? ''}
-            class={`${field} tabular-nums`}
+            class="field-input mt-1 tabular-nums"
           />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">VIN</span>
+          <span class="field-label">VIN</span>
           {/*
             maxlength is 24 and not 17 on purpose: the parser strips spaces and
             hyphens, so a hard 17 would silently swallow the tail of a correctly
@@ -1022,7 +1029,7 @@ const said = 'text-ink-500 sm:hidden'
             maxlength="24"
             autocapitalize="characters"
             spellcheck="false"
-            class={`${field} font-mono uppercase`}
+            class="field-input mt-1 font-mono uppercase"
           />
           {
             vinNotice && (
@@ -1036,38 +1043,38 @@ const said = 'text-ink-500 sm:hidden'
 
       <div class="mt-4 grid gap-4 sm:grid-cols-3">
         <label class="block">
-          <span class="text-sm font-medium">Year</span>
+          <span class="field-label">Year</span>
           <input
             type="text"
             name="model_year"
             value={vehicle.model_year ?? ''}
             inputmode="numeric"
-            class={`${field} tabular-nums`}
+            class="field-input mt-1 tabular-nums"
           />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">Make</span>
-          <input type="text" name="make" value={vehicle.make ?? ''} class={field} />
+          <span class="field-label">Make</span>
+          <input type="text" name="make" value={vehicle.make ?? ''} class="field-input mt-1" />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">Model</span>
-          <input type="text" name="model" value={vehicle.model ?? ''} class={field} />
+          <span class="field-label">Model</span>
+          <input type="text" name="model" value={vehicle.model ?? ''} class="field-input mt-1" />
         </label>
       </div>
 
       <div class="mt-4 grid gap-4 sm:grid-cols-3">
         <label class="block">
-          <span class="text-sm font-medium">Plate</span>
+          <span class="field-label">Plate</span>
           <input
             type="text"
             name="plate"
             value={vehicle.plate ?? ''}
             autocapitalize="characters"
-            class={`${field} uppercase tabular-nums`}
+            class="field-input mt-1 uppercase tabular-nums"
           />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">Plate state</span>
+          <span class="field-label">Plate state</span>
           <input
             type="text"
             name="plate_state"
@@ -1075,29 +1082,29 @@ const said = 'text-ink-500 sm:hidden'
             maxlength="2"
             autocapitalize="characters"
             placeholder="CA"
-            class={`${field} uppercase`}
+            class="field-input mt-1 uppercase"
           />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">GVWR</span>
-          <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
+          <span class="field-label">GVWR</span>
+          <div class="field-affix mt-1">
             <input
               type="text"
               name="gvwr_lbs"
               value={vehicle.gvwr_lbs ?? ''}
               inputmode="numeric"
               placeholder="Unknown"
-              class="w-full bg-transparent px-3 py-2 text-base tabular-nums outline-none"
+              class="field-affix-input tabular-nums"
             />
-            <span class="pr-3 text-ink-300">lb</span>
+            <span class="pr-3 text-ink-500">lb</span>
           </div>
         </label>
       </div>
 
       <div class="mt-4 grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">Kind</span>
-          <select name="kind" class={field}>
+          <span class="field-label">Kind</span>
+          <select name="kind" class="field-input mt-1">
             {
               VEHICLE_KINDS.map((k) => (
                 <option value={k.value} selected={k.value === vehicle.kind}>
@@ -1106,14 +1113,14 @@ const said = 'text-ink-500 sm:hidden'
               ))
             }
           </select>
-          <span class="mt-1 block text-xs text-ink-500">
+          <span class="field-hint block">
             Changing this changes which deadlines this unit gets. Dates you already saved stay in
             the history.
           </span>
         </label>
         <label class="block">
-          <span class="text-sm font-medium">Status</span>
-          <select name="status" class={field}>
+          <span class="field-label">Status</span>
+          <select name="status" class="field-input mt-1">
             {
               VEHICLE_STATUSES.map((s) => (
                 <option value={s.value} selected={s.value === vehicle.status}>
@@ -1129,24 +1136,19 @@ const said = 'text-ink-500 sm:hidden'
             quietly keeps charging is how a customer stops trusting the invoice.
             One sentence, from src/lib/fleet/active.ts, shared with /app/billing.
           */}
-          <span class="mt-1 block text-xs text-ink-500">{VEHICLE_NOT_ACTIVE_MEANS}</span>
+          <span class="field-hint block">{VEHICLE_NOT_ACTIVE_MEANS}</span>
         </label>
       </div>
 
       <label class="mt-4 block">
-        <span class="text-sm font-medium">
-          Notes <span class="font-normal text-ink-300">(optional)</span>
+        <span class="field-label">
+          Notes <span class="font-normal text-ink-500">(optional)</span>
         </span>
-        <textarea name="notes" rows="2" class={field}>{vehicle.notes ?? ''}</textarea>
+        <textarea name="notes" rows="2" class="field-input mt-1">{vehicle.notes ?? ''}</textarea>
       </label>
 
       <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-        <button
-          type="submit"
-          name="intent"
-          value="save"
-          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-        >
+        <button type="submit" name="intent" value="save" class="btn btn-primary">
           Save vehicle
         </button>
       </div>
@@ -1158,13 +1160,11 @@ const said = 'text-ink-500 sm:hidden'
         page, and a way out that only exists once you have opened an edit form is
         not a way out — it was inside the form until now, beside the save button.
       */}
-      <div class="mt-5 flex flex-wrap items-center gap-4 border-t border-ink-100 pt-4">
-        <a href="#dates" class="text-sm font-medium text-brand-600 hover:underline">
-          Compliance dates →
-        </a>
-        <a href="/app/vehicles" class="text-sm font-medium text-brand-600 hover:underline">
-          Back to trucks
-        </a>
+      {/* Tertiary buttons, not lines of blue text: a 44px target each, with the
+          first pulled back so its label still lines up with the card above. */}
+      <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+        <a href="#dates" class="btn btn-tertiary btn-sm -ml-3">Compliance dates →</a>
+        <a href="/app/vehicles" class="btn btn-tertiary btn-sm">Back to trucks</a>
       </div>
     </div>
 
@@ -1205,7 +1205,7 @@ const said = 'text-ink-500 sm:hidden'
       }
 
       <div class={card}>
-        <h3 class="text-xs tracking-wide text-ink-500 uppercase">GVWR</h3>
+        <h3 class="text-xs tracking-wide text-ink-700 uppercase">GVWR</h3>
         <div class={`mt-1 text-3xl font-semibold tabular-nums ${gvwr.className}`}>{gvwr.text}</div>
         {/*
           The one sentence this whole feature turns on. An empty GVWR column is
@@ -1213,7 +1213,7 @@ const said = 'text-ink-500 sm:hidden'
           weight-conditional rule switched on. Rendering it as "—" or "n/a" here
           would tell the owner the opposite of what the system believes.
         */}
-        <p class="mt-2 text-xs text-ink-500">
+        <p class="mt-2 text-xs text-ink-700">
           {
             weightUnknown
               ? 'We do not know this truck’s weight. That is not the same as exempt. We treat it as fully regulated until you tell us the weight.'
@@ -1223,16 +1223,14 @@ const said = 'text-ink-500 sm:hidden'
       </div>
 
       <div class={card}>
-        <h3 class="text-xs tracking-wide text-ink-500 uppercase">Status</h3>
+        <h3 class="text-xs tracking-wide text-ink-700 uppercase">Status</h3>
         <div class="mt-2">
-          <span
-            class:list={[
-              'rounded-md px-2 py-0.5 text-xs font-medium',
-              statusPillClass(vehicle.status),
-            ]}
-          >
-            {statusLabel(vehicle.status)}
-          </span>
+          {/* `statusPillClass` already returns a `badge badge-*` pair, so there
+              is no radius, padding or weight to repeat here — the utilities that
+              used to sit beside it outranked the shared badge and drew a rounded
+              rectangle at font-medium while every other pill in the app is a
+              rounded-full pill at font-semibold. */}
+          <span class={statusPillClass(vehicle.status)}>{statusLabel(vehicle.status)}</span>
         </div>
         {/*
           Why the ring above is missing, said where the status is. Without this
@@ -1241,7 +1239,7 @@ const said = 'text-ink-500 sm:hidden'
         */}
         {
           !isActiveVehicle(vehicle) && (
-            <p class="mt-3 text-xs text-ink-500">
+            <p class="mt-3 text-xs text-ink-700">
               This truck is not Active, so we do not watch its dates and you are not charged for
               it. Set it back to Active to start again.
             </p>
@@ -1330,15 +1328,12 @@ const said = 'text-ink-500 sm:hidden'
                   <p class="text-sm font-medium">{r.item.rule.title}</p>
                   <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                     {/* The word, always, beside the colour. */}
-                    <span
-                      class:list={[
-                        'rounded-md px-1.5 py-0.5 font-medium',
-                        MARK_STYLE[r.mark].pill,
-                      ]}
-                    >
+                    <span class:list={['badge', MARK_STYLE[r.mark].pill]}>
                       {r.mark === 'act' ? lateWords(r.item) : MARK_WORD[r.mark]}
                     </span>
-                    <span class="text-ink-500">{detailOf(r.item, r.mark)}</span>
+                    {/* 12px, so ink-700: this line says what the pill beside it
+                        is about, and it is the half a reader acts on. */}
+                    <span class="text-ink-700">{detailOf(r.item, r.mark)}</span>
                   </p>
                 </div>
               </li>
@@ -1353,7 +1348,7 @@ const said = 'text-ink-500 sm:hidden'
           */}
           {noSchedule.length > 0 && (
             <details class="mt-1 border-t border-ink-100 pt-3">
-              <summary class="cursor-pointer text-xs text-ink-500 select-none">
+              <summary class="flex min-h-11 cursor-pointer items-center text-xs text-ink-700 select-none">
                 <span class="tabular-nums">{noSchedule.length}</span>
                 {noSchedule.length === 1 ? ' more duty has' : ' more duties have'} no date anyone
                 can work out
@@ -1382,7 +1377,7 @@ const said = 'text-ink-500 sm:hidden'
                     </span>
                     <div class="min-w-0 flex-1">
                       <p class="text-sm font-medium">{r.item.rule.title}</p>
-                      <p class="mt-1 text-xs text-ink-500">{r.item.status.reason}</p>
+                      <p class="mt-1 text-xs text-ink-700">{r.item.status.reason}</p>
                     </div>
                   </li>
                 ))}
@@ -1453,19 +1448,19 @@ const said = 'text-ink-500 sm:hidden'
                     return (
                       <div class="border-t border-ink-100 pt-4 first:border-t-0 first:pt-0">
                         <label class="block">
-                          <span class="text-sm font-medium">{anchor.label}</span>
+                          <span class="field-label">{anchor.label}</span>
                           <input
                             type="date"
                             name={`date_${anchor.key}`}
                             value={live?.on ?? ''}
                             max={today}
-                            class={`${field} max-w-xs tabular-nums`}
+                            class="field-input mt-1 max-w-xs tabular-nums"
                           />
                         </label>
-                        <p class="mt-1.5 text-xs text-ink-500">{anchor.help}</p>
-                        <p class="mt-1 text-xs text-ink-300">Used for: {anchor.drives}</p>
+                        <p class="field-hint">{anchor.help}</p>
+                        <p class="mt-1 text-xs text-ink-700">Used for: {anchor.drives}</p>
                         {anchor.weightNote && (
-                          <p class="mt-1 text-xs text-ink-300">{anchor.weightNote}</p>
+                          <p class="mt-1 text-xs text-ink-700">{anchor.weightNote}</p>
                         )}
                         {/*
                           Only ever rendered when the weight is MISSING, and it
@@ -1504,12 +1499,7 @@ const said = 'text-ink-500 sm:hidden'
           Saving adds a new entry. Nothing already saved is erased, and a box you leave blank
           changes nothing.
         </span>
-        <button
-          type="submit"
-          name="intent"
-          value="save_dates"
-          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-        >
+        <button type="submit" name="intent" value="save_dates" class="btn btn-primary">
           Save dates
         </button>
       </div>
@@ -1551,7 +1541,7 @@ const said = 'text-ink-500 sm:hidden'
                 are not columns explain nothing — each block says what it is in
                 its own words instead.
               */}
-              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
                 <tr>
                   <th class="px-4 py-3 font-medium">What</th>
                   <th class="px-4 py-3 font-medium">Date</th>
@@ -1580,26 +1570,21 @@ const said = 'text-ink-500 sm:hidden'
                           beats leaving an unexplained row in the list.
                         */}
                         {!collected && (
-                          <span class="mt-0.5 block text-xs text-ink-300">
+                          <span class="mt-0.5 block text-xs text-ink-700">
                             No rule for a {kindLabel(vehicle.kind).toLowerCase()} uses this date
                           </span>
                         )}
-                        {r.note && <span class="mt-0.5 block text-xs text-ink-300">{r.note}</span>}
+                        {r.note && <span class="mt-0.5 block text-xs text-ink-700">{r.note}</span>}
                       </td>
                       <td class={`${cell} mt-1 whitespace-nowrap tabular-nums sm:mt-0`}>
-                        <span class:list={[r.superseded_at ? 'text-ink-300 line-through' : '']}>
+                        <span class:list={[r.superseded_at ? 'text-ink-500 line-through' : '']}>
                           {formatDay(r.occurred_on)}
                         </span>
-                        {inForce && (
-                          <span class="ml-2 rounded-md bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-800">
-                            in force
-                          </span>
-                        )}
-                        {r.superseded_at && (
-                          <span class="ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs font-medium text-ink-500">
-                            withdrawn
-                          </span>
-                        )}
+                        {/* One badge construction for the whole app: `.badge`
+                            carries the shape and `.badge-*` the colour, so a
+                            pill on this page is the pill on every other. */}
+                        {inForce && <span class="badge badge-success ml-2">in force</span>}
+                        {r.superseded_at && <span class="badge badge-neutral ml-2">withdrawn</span>}
                       </td>
                       {/*
                         The date keeps its own `nowrap`; the line it sits on does
@@ -1608,10 +1593,12 @@ const said = 'text-ink-500 sm:hidden'
                         which is the whole bug in miniature.
                       */}
                       <td
-                        class={`${cell} mt-0.5 text-xs text-ink-500 tabular-nums sm:mt-0 sm:text-sm sm:whitespace-nowrap`}
+                        class={`${cell} mt-0.5 text-xs text-ink-700 tabular-nums sm:mt-0 sm:text-sm sm:whitespace-nowrap`}
                       >
                         <span class="whitespace-nowrap">
-                          <span class={said}>Recorded </span>
+                          {/* Not `said`: this cell is 12px on a phone, where
+                              the floor is ink-700 rather than ink-500. */}
+                          <span class="text-ink-700 sm:hidden">Recorded </span>
                           {formatDay(r.recorded_at)}
                         </span>
                         <span class="sm:hidden">
@@ -1629,18 +1616,32 @@ const said = 'text-ink-500 sm:hidden'
                       <td class="hidden px-4 text-ink-500 sm:table-cell sm:py-3">
                         {r.source === 'fmcsa' ? 'Federal record' : r.source === 'import' ? 'Import' : 'You'}
                       </td>
-                      <td class={`${cell} sm:text-right sm:whitespace-nowrap`}>
+                      {/*
+                        This one cell spells its own classes out rather than
+                        reusing `cell`: the button inside it is already 44px, so
+                        the shared `sm:py-3` would stack 24px of padding on top
+                        of a target that does not need it and make every history
+                        row 68px tall. Without it the row stays the height the
+                        other five cells set.
+                      */}
+                      <td class="block px-4 sm:table-cell sm:text-right sm:whitespace-nowrap">
                         {!r.superseded_at && (
-                          /* Below `sm` this is a full-width bordered tap rather
-                             than a bare text link. It used to be off the right
-                             edge of the screen entirely. */
+                          /* The width of the block below `sm`, its own width
+                             from `sm`, and 44px at either. It used to be off the
+                             right edge of the screen entirely. */
                           <form method="POST" class="mt-2 sm:mt-0">
                             <input type="hidden" name="record_id" value={r.id} />
+                            {/*
+                              Red, and red is right here: withdrawing a date is
+                              the one destructive thing in this table. It keeps
+                              the full 44px on every screen — the desktop rule
+                              used to shrink it to a bare line of text.
+                            */}
                             <button
                               type="submit"
                               name="intent"
                               value="withdraw_date"
-                              class="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-ink-100 px-3 text-sm font-medium text-red-600 hover:underline sm:min-h-0 sm:w-auto sm:rounded-none sm:border-0 sm:px-0 sm:font-normal"
+                              class="btn btn-danger-text btn-sm w-full sm:w-auto"
                             >
                               Withdraw
                             </button>
@@ -1678,9 +1679,14 @@ const said = 'text-ink-500 sm:hidden'
             Only for a truck you added by mistake. If you sold it or parked it, change the status
             above instead — that stops the reminders and the charge, and keeps the records.
           </p>
+          {/*
+            NOT RED. This link deletes nothing — it opens the panel that asks.
+            Red is kept for the button that actually removes the truck, two steps
+            on, so that when red does appear it still means something.
+          */}
           <a
             href={`/app/vehicles/${vehicle.id}?confirm=delete#delete`}
-            class="mt-4 inline-block rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 transition hover:bg-red-50"
+            class="btn btn-secondary btn-sm mt-4"
           >
             Delete this truck
           </a>
@@ -1701,12 +1707,7 @@ const said = 'text-ink-500 sm:hidden'
           <p class="mt-3 text-sm text-amber-900">{refusal.why}</p>
           {/* The dead end is also the answer. */}
           <p class="mt-2 text-sm font-medium text-amber-900">{refusal.instead}</p>
-          <a
-            href={`/app/vehicles/${vehicle.id}`}
-            class="mt-4 inline-block rounded-lg border border-amber-300 px-4 py-2 text-sm font-medium text-amber-900 transition hover:bg-amber-100"
-          >
-            Go back
-          </a>
+          <a href={`/app/vehicles/${vehicle.id}`} class="btn btn-secondary btn-sm mt-4">Go back</a>
         </div>
       ) : (
         <div class="rounded-xl border border-red-200 bg-red-50 p-5">
@@ -1719,21 +1720,13 @@ const said = 'text-ink-500 sm:hidden'
           {alsoGoes && <p class="mt-2 text-sm font-medium text-red-700">{alsoGoes}</p>}
           <div class="mt-4 flex flex-wrap items-center gap-3">
             <form method="POST">
-              <button
-                type="submit"
-                name="intent"
-                value="delete"
-                class="rounded-lg bg-red-600 px-5 py-2.5 font-medium text-white transition hover:bg-red-700"
-              >
+              {/* The one irreversible button on the page, and the only red one. */}
+              <button type="submit" name="intent" value="delete" class="btn btn-danger">
                 Yes, delete {vehicleLabel(vehicle)}
               </button>
             </form>
-            <a
-              href={`/app/vehicles/${vehicle.id}`}
-              class="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 transition hover:bg-red-100"
-            >
-              Keep it
-            </a>
+            {/* The way out of a destructive panel is never red. */}
+            <a href={`/app/vehicles/${vehicle.id}`} class="btn btn-secondary">Keep it</a>
           </div>
         </div>
       )

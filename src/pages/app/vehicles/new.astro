@@ -181,8 +181,10 @@ const priorKind = prior('kind')
 // can put in this form.
 const fromSetup = params.get('from') === 'setup'
 
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+// The shared field classes carry the border, the 46px height, the 16px type and
+// the one focus ring — see src/styles/global.css. `mt-1` is the only thing left
+// for a page to say, and it is spacing rather than construction.
+const field = 'field-input mt-1'
 ---
 
 <App title="Add a vehicle" subtitle="Put in what you know. Everything except the first question can wait.">
@@ -194,28 +196,28 @@ const field =
           it survives however this form is submitted. */}
       {fromSetup && <input type="hidden" name="from" value="setup" />}
       <fieldset>
-        <legend class="text-sm font-medium">
+        <legend class="field-label">
           What is it? <span class="text-red-600">*</span>
         </legend>
-        <p class="mt-1 text-xs text-ink-500">
+        <p class="field-hint">
           This decides which deadlines this record gets. A tractor and its trailer are inspected
           separately and each keeps its own paperwork, so add them as two vehicles.
         </p>
         <div class="mt-2 grid gap-3 sm:grid-cols-2">
           {
             VEHICLE_KINDS.map((k) => (
-              <label class="flex cursor-pointer items-start gap-3 rounded-lg border border-ink-100 p-3 transition hover:bg-ink-50">
+              <label class="flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border border-ink-100 p-3 transition hover:bg-ink-50">
                 <input
                   type="radio"
                   name="kind"
                   value={k.value}
                   required
                   checked={priorKind === k.value}
-                  class="mt-0.5 size-4 border-ink-300"
+                  class="mt-0.5"
                 />
                 <span>
                   <span class="block text-sm font-medium">{k.label}</span>
-                  <span class="mt-0.5 block text-xs text-ink-500">{k.hint}</span>
+                  <span class="mt-0.5 block text-sm text-ink-500">{k.hint}</span>
                 </span>
               </label>
             ))
@@ -225,8 +227,8 @@ const field =
 
       <div class="mt-5 grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">
-            Unit number <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            Unit number <span class="font-normal text-ink-500">(optional)</span>
           </span>
           <input
             type="text"
@@ -235,14 +237,14 @@ const field =
             placeholder="e.g. 12"
             class={`${field} tabular-nums`}
           />
-          <span class="mt-1 block text-xs text-ink-500">
+          <span class="field-hint block">
             What you call it in the yard. If you leave it blank, we show the VIN instead.
           </span>
         </label>
 
         <label class="block">
-          <span class="text-sm font-medium">
-            VIN <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            VIN <span class="font-normal text-ink-500">(optional)</span>
           </span>
           {/*
             maxlength is 24 and not 17 on purpose. The parser strips spaces and
@@ -261,7 +263,7 @@ const field =
             placeholder="17 characters"
             class={`${field} font-mono uppercase`}
           />
-          <span class="mt-1 block text-xs text-ink-500">
+          <span class="field-hint block">
             CARB uses the VIN to set your Clean Truck Check months, so it is worth a walk to the
             door. Spaces and dashes are fine. We take them out.
           </span>
@@ -270,7 +272,7 @@ const field =
 
       <div class="mt-4 grid gap-4 sm:grid-cols-3">
         <label class="block">
-          <span class="text-sm font-medium">Year</span>
+          <span class="field-label">Year</span>
           <input
             type="text"
             name="model_year"
@@ -281,7 +283,7 @@ const field =
           />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">Make</span>
+          <span class="field-label">Make</span>
           <input
             type="text"
             name="make"
@@ -291,7 +293,7 @@ const field =
           />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">Model</span>
+          <span class="field-label">Model</span>
           <input
             type="text"
             name="model"
@@ -304,7 +306,7 @@ const field =
 
       <div class="mt-4 grid gap-4 sm:grid-cols-3">
         <label class="block">
-          <span class="text-sm font-medium">Plate</span>
+          <span class="field-label">Plate</span>
           <input
             type="text"
             name="plate"
@@ -314,7 +316,7 @@ const field =
           />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">Plate state</span>
+          <span class="field-label">Plate state</span>
           <input
             type="text"
             name="plate_state"
@@ -326,17 +328,17 @@ const field =
           />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">GVWR</span>
-          <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
+          <span class="field-label">GVWR</span>
+          <div class="field-affix mt-1">
             <input
               type="text"
               name="gvwr_lbs"
               value={prior('gvwr_lbs')}
               inputmode="numeric"
               placeholder="80,000"
-              class="w-full bg-transparent px-3 py-2 text-base tabular-nums outline-none"
+              class="field-affix-input tabular-nums"
             />
-            <span class="pr-3 text-ink-300">lb</span>
+            <span class="pr-3 text-ink-500">lb</span>
           </div>
         </label>
       </div>
@@ -353,18 +355,14 @@ const field =
       </p>
 
       <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-        <button
-          type="submit"
-          name="intent"
-          value="create"
-          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-        >
+        <button type="submit" name="intent" value="create" class="btn btn-primary">
           Add vehicle
         </button>
-        {/* The way out goes back where he came in. */}
+        {/* The way out goes back where he came in. Tertiary, not a second
+            Primary and not a bare line of blue text: it is a 44px target. */}
         <a
           href={fromSetup ? '/app/setup' : '/app/vehicles'}
-          class="text-sm font-medium text-brand-600 hover:underline"
+          class="btn btn-tertiary"
         >
           {fromSetup ? 'Back to setup' : 'Back to trucks'}
         </a>

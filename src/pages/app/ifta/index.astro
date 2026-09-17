@@ -459,7 +459,6 @@ const milesTrendCoverage = [
 const quarterHref = (p: Date) => `/app/ifta?q=${isoDay(p)}`
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition'
 
 /**
  * ON A PHONE THE RETURN IS NOT A TABLE.
@@ -511,24 +510,31 @@ const deadlineTone =
   subtitle="Tax on the fuel you burned in each state or province, minus the fuel tax you already paid at the pump there."
 >
   {/* ------------------------------------------------------- quarter picker */}
-  <div class="-mx-4 mb-5 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
+  {/*
+    .filter-tab is 44px tall and .is-current is the one selected metaphor in this
+    app: a tinted pill plus semibold, which survives colour blindness and a phone
+    screen in the sun. aria-current is what a screen reader gets, so the colour
+    never carries it alone. gap-2 keeps 8px between two targets a thumb aims at.
+  */}
+  <nav
+    aria-label="Pick a quarter"
+    class="-mx-4 mb-5 flex items-center gap-2 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0"
+  >
     {
-      quarters.map((q) => (
-        <a
-          href={quarterHref(q)}
-          class:list={[
-            tab,
-            'tabular-nums',
-            isoDay(q) === periodIso
-              ? 'bg-brand-500/10 text-brand-700'
-              : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
-          ]}
-        >
-          {quarterLabel(q)}
-        </a>
-      ))
+      quarters.map((q) => {
+        const here = isoDay(q) === periodIso
+        return (
+          <a
+            href={quarterHref(q)}
+            aria-current={here ? 'page' : undefined}
+            class:list={['filter-tab shrink-0 tabular-nums', here && 'is-current']}
+          >
+            {quarterLabel(q)}
+          </a>
+        )
+      })
     }
-  </div>
+  </nav>
 
   {
     /* The deadline is rendered even when the database is unreachable: it comes
@@ -536,7 +542,7 @@ const deadlineTone =
   }
   <div class:list={['mb-5 flex flex-wrap items-center gap-4 rounded-xl border p-5', deadlineTone]}>
     <div class="min-w-0 flex-1">
-      <h3 class="text-xs tracking-wide text-ink-500 uppercase">{label} return is due</h3>
+      <h3 class="text-xs tracking-wide text-ink-700 uppercase">{label} return is due</h3>
       <div class="mt-1 text-3xl font-semibold tabular-nums">{formatDate(isoDay(due))}</div>
       {
         /* The sentence that makes the date mean something. A nil return is still
@@ -595,12 +601,9 @@ const deadlineTone =
           We show no figures on purpose. An empty screen here would look the same as a quarter
           where the trucks really did not run. Reload this page before you file anything.
         </p>
-        <a
-          href={quarterHref(period)}
-          class="mt-4 inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-700"
-        >
-          Try again
-        </a>
+        {/* Not red. Reloading the page destroys nothing — red is kept for the
+            banner around it, which is the part that means "do not file". */}
+        <a href={quarterHref(period)} class="btn btn-secondary btn-sm mt-4">Try again</a>
       </div>
     ) : (
       <>
@@ -654,10 +657,10 @@ const deadlineTone =
               </span>{' '}
               miles of travel.
             </p>
-            <a
-              href={`/app/ifta/fuel?q=${periodIso}`}
-              class="mt-3 inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-700"
-            >
+            {/* NOT RED. Typing in fuel receipts is ordinary work, not a
+                destructive act — red belongs to the banner this button sits in
+                and to nothing that merely opens a form. */}
+            <a href={`/app/ifta/fuel?q=${periodIso}`} class="btn btn-secondary btn-sm mt-3">
               Enter the fuel receipts →
             </a>
           </div>
@@ -683,10 +686,7 @@ const deadlineTone =
               jurisdiction, so every line below prices at nothing. Usually one gallons figure is in
               the wrong unit. A price per gallon typed into the gallons box does this.
             </p>
-            <a
-              href={`/app/ifta/fuel?q=${periodIso}`}
-              class="mt-3 inline-block rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-700"
-            >
+            <a href={`/app/ifta/fuel?q=${periodIso}`} class="btn btn-secondary btn-sm mt-3">
               Check the receipts →
             </a>
           </div>
@@ -697,7 +697,7 @@ const deadlineTone =
             You have fuel on file for {label} but no miles. Right now this return asks for credit
             on tax paid at the pump while saying the trucks went nowhere. That is the first thing an
             auditor opens.{' '}
-            <a href={`/app/ifta/miles?q=${periodIso}`} class="font-medium underline">
+            <a href={`/app/ifta/miles?q=${periodIso}`} class="link font-medium">
               Enter the miles for each jurisdiction
             </a>
             .
@@ -760,7 +760,7 @@ const deadlineTone =
           {
             waitingShown.length > 0 && (
               <div class="mt-4 border-t border-ink-100 pt-4">
-                <h4 class="text-xs tracking-wide text-ink-500 uppercase">
+                <h4 class="text-xs tracking-wide text-ink-700 uppercase">
                   These trucks have no miles for {label}
                 </h4>
                 <ul class="mt-2 space-y-1.5 text-sm">
@@ -784,7 +784,7 @@ const deadlineTone =
                           This is read one-handed in a yard. */}
                       <a
                         href={`/app/ifta/miles?q=${periodIso}&v=${truck.id}`}
-                        class="inline-flex min-h-11 shrink-0 items-center font-medium whitespace-nowrap text-brand-600 hover:underline sm:min-h-0"
+                        class="btn btn-tertiary btn-sm shrink-0"
                       >
                         Enter miles →
                       </a>
@@ -795,11 +795,8 @@ const deadlineTone =
                        miles screen's own per-truck chart lists every truck
                        including the empty ones, so the link is where the rest
                        of the names actually are. */
-                    <li class="pt-1 text-ink-500">
-                      <a
-                        href={`/app/ifta/miles?q=${periodIso}`}
-                        class="font-medium text-brand-600 hover:underline"
-                      >
+                    <li class="pt-1">
+                      <a href={`/app/ifta/miles?q=${periodIso}`} class="btn btn-tertiary btn-sm -ml-3">
                         <span class="tabular-nums">{waitingRest}</span> more{' '}
                         {waitingRest === 1 ? 'truck has' : 'trucks have'} no miles →
                       </a>
@@ -831,10 +828,7 @@ const deadlineTone =
                     {step.href && step.action && (
                       <>
                         {' '}
-                        <a
-                          href={step.href}
-                          class="font-medium whitespace-nowrap text-brand-600 hover:underline"
-                        >
+                        <a href={step.href} class="btn btn-tertiary btn-sm">
                           {step.action} →
                         </a>
                       </>
@@ -849,30 +843,30 @@ const deadlineTone =
         {/* ------------------------------------------------------------- figures */}
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div class={card}>
-            <h3 class="text-xs tracking-wide text-ink-500 uppercase">Total miles</h3>
+            <h3 class="text-xs tracking-wide text-ink-700 uppercase">Total miles</h3>
             <div class="mt-1 text-3xl font-semibold tabular-nums">
               {result.totalMiles.toLocaleString('en-US')}
             </div>
-            <div class="mt-1 text-xs text-ink-500">Every jurisdiction, every truck.</div>
+            <div class="mt-1 text-xs text-ink-700">Every jurisdiction, every truck.</div>
           </div>
 
           <div class={card}>
-            <h3 class="text-xs tracking-wide text-ink-500 uppercase">Total gallons</h3>
+            <h3 class="text-xs tracking-wide text-ink-700 uppercase">Total gallons</h3>
             <div class="mt-1 text-3xl font-semibold tabular-nums">
               {gallons(result.totalGallonsMilli)}
             </div>
             {/* Taxed and untaxed alike. The engine burned bulk fuel the same as
                 pump fuel, so it counts toward the average; only the CREDIT side
                 cares whether tax was paid on it. */}
-            <div class="mt-1 text-xs text-ink-500">Bulk fuel counts here too. The engine burned it.</div>
+            <div class="mt-1 text-xs text-ink-700">Bulk fuel counts here too. The engine burned it.</div>
           </div>
 
           <div class={card}>
-            <h3 class="text-xs tracking-wide text-ink-500 uppercase">Fleet MPG</h3>
+            <h3 class="text-xs tracking-wide text-ink-700 uppercase">Fleet MPG</h3>
             <div class="mt-1 text-3xl font-semibold tabular-nums">
-              {result.mpgCentis > 0 ? mpg(result.mpgCentis) : <span class="text-ink-300">—</span>}
+              {result.mpgCentis > 0 ? mpg(result.mpgCentis) : <span class="text-ink-500">—</span>}
             </div>
-            <div class="mt-1 text-xs text-ink-500">
+            <div class="mt-1 text-xs text-ink-700">
               One figure for the whole fleet. Per-truck averages would not add up to the return.
             </div>
           </div>
@@ -889,7 +883,7 @@ const deadlineTone =
             {/* A real heading, not a styled div — the wording, the size and the
                 position are exactly as they were. This is the line that tells
                 an owner the big number under it is not the one to file. */}
-            <h3 class="text-xs tracking-wide text-ink-500 uppercase">
+            <h3 class="text-xs tracking-wide text-ink-700 uppercase">
               {incomplete
                 ? 'Part of the net — do not file this figure'
                 : result.netCents < 0
@@ -904,7 +898,7 @@ const deadlineTone =
             >
               {formatCents(Math.abs(result.netCents))}
             </div>
-            <div class="mt-1 text-xs text-ink-500">
+            <div class="mt-1 text-xs text-ink-700">
               {incomplete
                 ? 'This covers only the jurisdictions that have a rate below.'
                 : result.netCents < 0
@@ -957,17 +951,11 @@ const deadlineTone =
         {/* ---------------------------------------------------------- the return */}
         <div id="jurisdictions" class="mt-6 flex flex-wrap items-baseline justify-between gap-3">
           <h2 class="text-lg font-semibold tracking-tight">Jurisdiction by jurisdiction</h2>
-          <div class="flex flex-wrap gap-4">
-            <a
-              href={`/app/ifta/miles?q=${periodIso}`}
-              class="text-sm font-medium text-brand-600 hover:underline"
-            >
+          <div class="flex flex-wrap gap-2">
+            <a href={`/app/ifta/miles?q=${periodIso}`} class="btn btn-tertiary btn-sm">
               Enter miles →
             </a>
-            <a
-              href={`/app/ifta/fuel?q=${periodIso}`}
-              class="text-sm font-medium text-brand-600 hover:underline"
-            >
+            <a href={`/app/ifta/fuel?q=${periodIso}`} class="btn btn-tertiary btn-sm">
               Fuel receipts →
             </a>
           </div>
@@ -990,16 +978,10 @@ const deadlineTone =
                 : 'No miles and no fuel have been entered for this quarter yet.'}
             </p>
             <div class="mt-4 flex flex-wrap justify-center gap-3">
-              <a
-                href={`/app/ifta/miles?q=${periodIso}`}
-                class="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
-              >
+              <a href={`/app/ifta/miles?q=${periodIso}`} class="btn btn-primary btn-sm">
                 Enter miles →
               </a>
-              <a
-                href={`/app/ifta/fuel?q=${periodIso}`}
-                class="rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
-              >
+              <a href={`/app/ifta/fuel?q=${periodIso}`} class="btn btn-secondary btn-sm">
                 Fuel receipts →
               </a>
             </div>
@@ -1009,7 +991,7 @@ const deadlineTone =
             <table class="w-full text-sm sm:min-w-[56rem]">
               {/* No header line on a phone. Six column names above blocks that
                   are not columns explain nothing; each block says what it is. */}
-              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
                 <tr>
                   <th class="px-4 py-3 font-medium">Jurisdiction</th>
                   <th class="px-4 py-3 text-right font-medium">Miles</th>
@@ -1034,7 +1016,7 @@ const deadlineTone =
                           it is copied onto the form in. */}
                       <td class={`${cell} order-1`}>
                         <span class="font-medium">{line.jurisdiction}</span>
-                        <span class="ml-2 text-xs text-ink-500">
+                        <span class="ml-2 text-xs text-ink-700">
                           {jurisdictionName(line.jurisdiction)}
                         </span>
                       </td>
@@ -1060,7 +1042,16 @@ const deadlineTone =
                         {line.outcome.kind === 'computed' ? (
                           rate(line.outcome.rateMills)
                         ) : (
-                          <span class="font-medium text-red-700">unknown</span>
+                          /* GREY, NOT RED. A rate nobody has loaded is a number
+                             we do not have, and grey is what this app paints a
+                             thing it does not know — red means act now. The
+                             act-now half of this line is not lost: the net cell
+                             beside it still carries a red badge, the row is
+                             still tinted, and the banner at the top of the page
+                             still says do not file. Saying it in red here as
+                             well made "missing" and "late" the same colour on
+                             the one screen that has to keep them apart. */
+                          <span class="font-medium text-ink-700">not on file</span>
                         )}
                       </td>
                       <td class={`${cell} order-3 tabular-nums sm:text-right`}>
@@ -1080,9 +1071,7 @@ const deadlineTone =
                           /* NOT $0.00, and not an em dash either. A blank cell
                              in a money column reads as nothing owed, which is
                              the exact lie this outcome exists to prevent. */
-                          <span class="rounded-md bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-800">
-                            no rate on file
-                          </span>
+                          <span class="badge badge-danger">no rate on file</span>
                         )}
                       </td>
                     </tr>

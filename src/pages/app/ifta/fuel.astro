@@ -235,9 +235,12 @@ const confirmRemove = params.get('confirm') ?? ''
 const daysLeft = daysUntil(returnDueOn(period), today)
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
-const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition'
+/*
+  Every box on this page wears `.field-input` from global.css — 46px tall, a
+  border a reader can see, 16px type so iOS does not zoom the page on a tap, and
+  the one focus ring the whole app shares. `mt-1` is spacing, not construction.
+*/
+const field = 'field-input mt-1'
 
 /**
  * ON A PHONE THE RECEIPTS ARE NOT ROWS.
@@ -257,11 +260,11 @@ const cell = 'block px-4 py-1 sm:table-cell sm:py-3'
 /** The column name, carried into the block that no longer has a header row. */
 const colName = 'text-ink-500 sm:hidden'
 /**
- * Below `sm` the row's control is a full-width bordered tap at the end of the
- * block; from `sm` it is a small link at the end of the row again.
+ * The row's control: full width on a phone, its own width from `sm`. It keeps
+ * the full 44px on every screen — the desktop rule used to shrink it to a bare
+ * line of text, which is a target no thumb and few mice hit reliably.
  */
-const rowAction =
-  'inline-flex min-h-11 items-center justify-center rounded-lg border border-ink-100 px-3 text-sm font-medium hover:underline sm:min-h-0 sm:justify-start sm:rounded-none sm:border-0 sm:px-0 sm:text-xs'
+const rowAction = 'btn btn-sm w-full sm:w-auto'
 
 const usJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'US')
 const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
@@ -285,47 +288,48 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
     )
   }
 
-  <div class="-mx-4 mb-5 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
+  {/* 44px targets, 8px apart, and the selected quarter is the app's one
+      selected metaphor: a tinted pill plus semibold, with aria-current so the
+      colour never carries it alone. */}
+  <nav
+    aria-label="Pick a quarter"
+    class="-mx-4 mb-5 flex items-center gap-2 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0"
+  >
     {
-      quarters.map((q) => (
-        <a
-          href={`/app/ifta/fuel?q=${isoDay(q)}`}
-          class:list={[
-            tab,
-            'tabular-nums',
-            isoDay(q) === periodIso
-              ? 'bg-brand-500/10 text-brand-700'
-              : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
-          ]}
-        >
-          {quarterLabel(q)}
-        </a>
-      ))
+      quarters.map((q) => {
+        const here = isoDay(q) === periodIso
+        return (
+          <a
+            href={`/app/ifta/fuel?q=${isoDay(q)}`}
+            aria-current={here ? 'page' : undefined}
+            class:list={['filter-tab shrink-0 tabular-nums', here && 'is-current']}
+          >
+            {quarterLabel(q)}
+          </a>
+        )
+      })
     }
-    <a
-      href={`/app/ifta?q=${periodIso}`}
-      class="ml-auto text-sm font-medium text-brand-600 hover:underline"
-    >
+    <a href={`/app/ifta?q=${periodIso}`} class="btn btn-tertiary btn-sm ml-auto shrink-0">
       The {label} return →
     </a>
-  </div>
+  </nav>
 
   <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]">
     {/* ------------------------------------------------------- the receipts */}
     <div class="min-w-0">
       <div class="mb-4 grid gap-4 sm:grid-cols-3">
         <div class={card}>
-          <h3 class="text-xs tracking-wide text-ink-500 uppercase">Gallons this quarter</h3>
+          <h3 class="text-xs tracking-wide text-ink-700 uppercase">Gallons this quarter</h3>
           <div class="mt-1 text-2xl font-semibold tabular-nums">{gallons(totalGallonsMilli)}</div>
-          <div class="mt-1 text-xs text-ink-500">
+          <div class="mt-1 text-xs text-ink-700">
             <span class="tabular-nums">{purchases.length}</span>
             {purchases.length === 1 ? ' receipt' : ' receipts'}
           </div>
         </div>
         <div class={card}>
-          <h3 class="text-xs tracking-wide text-ink-500 uppercase">Tax paid at the pump</h3>
+          <h3 class="text-xs tracking-wide text-ink-700 uppercase">Tax paid at the pump</h3>
           <div class="mt-1 text-2xl font-semibold tabular-nums">{gallons(taxPaidGallonsMilli)}</div>
-          <div class="mt-1 text-xs text-ink-500">
+          <div class="mt-1 text-xs text-ink-700">
             {
               bulkGallonsMilli > 0 ? (
                 <>
@@ -339,9 +343,9 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
           </div>
         </div>
         <div class={card}>
-          <h3 class="text-xs tracking-wide text-ink-500 uppercase">Spent on fuel</h3>
+          <h3 class="text-xs tracking-wide text-ink-700 uppercase">Spent on fuel</h3>
           <div class="mt-1 text-2xl font-semibold tabular-nums">{formatCents(totalCents)}</div>
-          <div class="mt-1 text-xs text-ink-500">
+          <div class="mt-1 text-xs text-ink-700">
             {
               /* The cost is not part of the return — IFTA is computed on gallons
                  and rates, never on what was paid. It is here because it is on
@@ -382,7 +386,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
             <table class="w-full text-sm sm:min-w-[60rem]">
               {/* No header line on a phone. Eight column names above blocks that
                   are not columns explain nothing; each block says what it is. */}
-              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
                 <tr>
                   <th class="px-4 py-3 font-medium">Date</th>
                   <th class="px-4 py-3 font-medium">Where</th>
@@ -421,9 +425,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
                       <td class={`${cell} order-1`}>
                         <span class="font-medium">{p.jurisdiction}</span>
                         {flags.length > 0 && (
-                          <span class="ml-2 rounded-md bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-700">
-                            check this
-                          </span>
+                          <span class="badge badge-danger ml-2">check this</span>
                         )}
                         {flags.map((f) => (
                           <div class="mt-1 max-w-xs text-xs text-red-700">{f.message}</div>
@@ -433,9 +435,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
                             audit finding, and a bulk row that looks identical to
                             a pump row is a row nobody ever re-checks. */}
                         {!p.tax_paid && (
-                          <span class="ml-2 rounded-md bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
-                            bulk · no credit
-                          </span>
+                          <span class="badge badge-warning ml-2">bulk · no credit</span>
                         )}
                       </td>
                       <td class={`${cell} order-6`}>
@@ -443,7 +443,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
                         {vehicle ? (
                           vehicleLabel(vehicle)
                         ) : (
-                          <span class="text-ink-300">not recorded</span>
+                          <span class="text-ink-500">not recorded</span>
                         )}
                       </td>
                       {/* The gallons are second. They are the figure the whole
@@ -456,7 +456,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
                       <td class={`${cell} order-4 tabular-nums sm:text-right`}>
                         <span class={colName}>Cost </span>
                         {p.total_cents === null ? (
-                          <span class="text-ink-300">—</span>
+                          <span class="text-ink-500">—</span>
                         ) : (
                           formatCents(p.total_cents)
                         )}
@@ -464,16 +464,16 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
                       <td class={`${cell} order-5 tabular-nums text-ink-500 sm:text-right`}>
                         <span class={colName}>Per gallon </span>
                         {perGallon === null ? (
-                          <span class="text-ink-300">—</span>
+                          <span class="text-ink-500">—</span>
                         ) : (
                           `$${(perGallon / 1000).toFixed(3)}`
                         )}
                       </td>
                       <td class={`${cell} order-7`}>
                         <span class={colName}>Vendor </span>
-                        {p.vendor ?? <span class="text-ink-300">—</span>}
+                        {p.vendor ?? <span class="text-ink-500">—</span>}
                         {p.receipt_number && (
-                          <span class="block text-xs tabular-nums text-ink-300">
+                          <span class="block text-xs tabular-nums text-ink-700">
                             #{p.receipt_number}
                           </span>
                         )}
@@ -488,28 +488,32 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
                         {removing ? (
                           <form method="POST" class="flex items-center gap-2 sm:justify-end">
                             <input type="hidden" name="purchase_id" value={p.id} />
+                            {/* The only irreversible control on this row, and the
+                                only red one. */}
                             <button
                               type="submit"
                               name="intent"
                               value="remove_fuel"
-                              class="min-h-11 flex-1 rounded-lg bg-red-600 px-3 text-xs font-medium text-white transition hover:bg-red-700 sm:min-h-0 sm:flex-none sm:py-1.5"
+                              class="btn btn-danger btn-sm flex-1 sm:flex-none"
                             >
                               Remove
                             </button>
+                            {/* The way out of a destructive step is never red. */}
                             <a
                               href={`/app/ifta/fuel?q=${periodIso}`}
-                              class={`${rowAction} flex-1 text-brand-600 sm:flex-none`}
+                              class="btn btn-tertiary btn-sm flex-1 sm:flex-none"
                             >
                               Keep
                             </a>
                           </form>
                         ) : (
                           /* Below `sm` this was off the right-hand edge of the
-                             row entirely. It is a full-width bordered tap there
-                             now, and the same small link from `sm` up. */
+                             row entirely. It is the width of the block there
+                             now, and its own width from `sm` — a 44px target
+                             either way. */
                           <a
                             href={`/app/ifta/fuel?q=${periodIso}&confirm=${p.id}`}
-                            class={`${rowAction} w-full text-red-600 sm:w-auto`}
+                            class={`${rowAction} btn-danger-text`}
                           >
                             Remove
                           </a>
@@ -560,7 +564,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
 
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">
+          <span class="field-label">
             Date <span class="text-red-600">*</span>
           </span>
           {/* min and max are the quarter, so the browser refuses a date that
@@ -576,7 +580,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
           />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">
+          <span class="field-label">
             Jurisdiction <span class="text-red-600">*</span>
           </span>
           <select name="jurisdiction" required class={field}>
@@ -603,7 +607,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
       </div>
 
       <label class="block">
-        <span class="text-sm font-medium">Truck</span>
+        <span class="field-label">Truck</span>
         <select name="vehicle_id" class={field}>
           <option value="">Not recorded</option>
           {
@@ -612,7 +616,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
             ))
           }
         </select>
-        <span class="mt-1 block text-xs text-ink-500">
+        <span class="field-hint block">
           Optional. You file the return for the whole fleet, so a receipt that does not say which
           truck still counts as a gallon in that jurisdiction.
         </span>
@@ -620,7 +624,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
 
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">
+          <span class="field-label">
             Gallons <span class="text-red-600">*</span>
           </span>
           <input
@@ -631,23 +635,23 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
             placeholder="125.400"
             class={`${field} tabular-nums`}
           />
-          <span class="mt-1 block text-xs text-ink-500">
+          <span class="field-hint block">
             Three decimals, the way the pump prints them. 125.4 and 125.400 are the same.
           </span>
         </label>
         <label class="block">
-          <span class="text-sm font-medium">Total cost</span>
-          <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
-            <span class="pl-3 text-ink-300">$</span>
+          <span class="field-label">Total cost</span>
+          <div class="field-affix mt-1">
+            <span class="pl-3 text-ink-500">$</span>
             <input
               type="text"
               name="total_cents"
               inputmode="decimal"
               placeholder="501.60"
-              class="w-full bg-transparent px-2 py-2 text-base tabular-nums outline-none"
+              class="field-affix-input tabular-nums"
             />
           </div>
-          <span class="mt-1 block text-xs text-ink-500">
+          <span class="field-hint block">
             Not used in the return. It gives the price per gallon, which catches a mistyped gallons
             figure.
           </span>
@@ -656,22 +660,19 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
 
       {/* ------------------------------------------------- THE tax-paid box */}
       <div class="rounded-lg border border-ink-100 bg-ink-50 p-4">
-        <label class="flex items-start gap-3">
+        <label class="flex min-h-11 cursor-pointer items-start gap-3">
           {/* Defaults to CHECKED because the overwhelming majority of receipts
               are pump purchases with the jurisdiction's tax already in the
               price. The default is not the risk — the risk is a bulk row saved
               with the box still ticked, which claims a credit for tax that was
               never paid. That is the classic IFTA audit finding, so the label
               says what unticking is FOR rather than restating the field name. */}
-          <input
-            type="checkbox"
-            name="tax_paid"
-            checked
-            class="mt-0.5 size-4 shrink-0 rounded border-ink-300"
-          />
+          {/* No size utility: global.css gives every checkbox in the app a 20px
+              box and the brand accent colour, and the row around it is 44px. */}
+          <input type="checkbox" name="tax_paid" checked class="mt-0.5" />
           <span>
-            <span class="text-sm font-medium">Tax paid at the pump</span>
-            <span class="mt-0.5 block text-xs text-ink-500">
+            <span class="field-label">Tax paid at the pump</span>
+            <span class="mt-0.5 block text-sm text-ink-700">
               Leave this ticked for fuel bought at a pump, where the tax is already in the price.
               Untick it for bulk fuel or a farm tank. Bulk gallons still count toward the fleet
               average, because the engine burned them, but they earn no credit. Claiming a credit
@@ -683,25 +684,20 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
 
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">Vendor</span>
+          <span class="field-label">Vendor</span>
           <input type="text" name="vendor" placeholder="Pilot #431" class={field} />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">Receipt number</span>
+          <span class="field-label">Receipt number</span>
           <input type="text" name="receipt_number" class={`${field} tabular-nums`} />
         </label>
       </div>
 
       <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-        <button
-          type="submit"
-          name="intent"
-          value="add_fuel"
-          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-        >
+        <button type="submit" name="intent" value="add_fuel" class="btn btn-primary">
           Add receipt
         </button>
-        <span class="text-xs text-ink-500">Keep the paper receipt for four years.</span>
+        <span class="text-xs text-ink-700">Keep the paper receipt for four years.</span>
       </div>
     </form>
   </div>

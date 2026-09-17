@@ -335,10 +335,25 @@ const stripCaveats = [
  * strip is made of. "Something due in the next three months" would be the
  * months only, and would read as though the two columns in front of them were
  * part of the same claim.
+ *
+ * IT COUNTS MORE THAN THE SENTENCE ABOVE THE STRIP, AND IT SAYS SO.
+ *
+ * `fleetLine` counts the units with something OVERDUE OR UNDATED. This counts
+ * those units and every unit with a date simply coming up inside three months.
+ * So the two are almost never the same number, and stacked three lines apart
+ * they read as one screen contradicting itself — "3 of 6" over "6 of 6" on the
+ * same six trucks. Both are right and they answer different questions, so the
+ * subtitle names the difference in plain words rather than leaving an owner to
+ * work out which fraction he is meant to act on.
  */
 const stripTitle = `${withSomething.length} of ${allDueRows.length} ${
   allDueRows.length === 1 ? 'unit has' : 'units have'
 } something late, missing, or due by ${lastMonth}`
+
+/** Said under the title, because two fractions on one screen have to be told apart. */
+const stripSubtitle =
+  'The line above counts only what is late or has no date. This one also counts dates that are ' +
+  'simply coming up. Each dot is something due that month. The first two columns are not months.'
 
 /** The dot in a cell. Grey is an absence, so it is drawn as an outline, never as a fill. */
 const DUE_DOT: Record<DueMark['tone'], string> = {
@@ -349,7 +364,9 @@ const DUE_DOT: Record<DueMark['tone'], string> = {
 }
 const DUE_TEXT: Record<DueMark['tone'], string> = {
   act: 'text-red-700',
-  nodate: 'text-ink-500',
+  // 12px, so ink-700: the floor on a cell this small. Grey stays grey — a unit
+  // with no date on file is missing, not late, and never draws red.
+  nodate: 'text-ink-700',
   soon: 'text-amber-800',
   ok: 'text-emerald-800',
 }
@@ -366,7 +383,6 @@ const stripHeadings = ['Overdue', 'No date', ...stripMonths.map((m) => m.label)]
 // Trailers tab pre-selects trailer instead of making that choice twice.
 const addHref = kind ? `/app/vehicles/new?kind=${kind}` : '/app/vehicles/new'
 
-const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
 const emptyAll = all.length === 0 && !q
 
 /**
@@ -411,32 +427,40 @@ const said = 'text-ink-500 sm:hidden'
     )
   }
 
-  <div class="mb-4 flex flex-wrap items-center gap-3">
-    <div class="-mx-4 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
-      {
-        segments.map((s) => (
+  {/*
+    .filter-tab is 44px tall and .is-current is the one selected metaphor in this
+    app: a tinted pill plus semibold, which survives colour blindness and a phone
+    screen in the sun. aria-current is what a screen reader gets, so the colour
+    never carries it alone. gap-2 keeps 8px between two targets a thumb aims at.
+  */}
+  <nav
+    aria-label="Filter by kind"
+    class="-mx-4 mb-4 flex items-center gap-2 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0"
+  >
+    {
+      segments.map((s) => {
+        const here = s.key === '' ? kind === null : s.key === kind
+        return (
           <a
             href={viewHref(s.key)}
-            class:list={[
-              tab,
-              (s.key === '' ? kind === null : s.key === kind)
-                ? 'bg-brand-500/10 text-brand-700'
-                : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
-            ]}
+            aria-current={here ? 'page' : undefined}
+            class:list={['filter-tab shrink-0', here && 'is-current']}
           >
             {s.label}
-            <span class="ml-1.5 text-xs tabular-nums opacity-70">{s.count}</span>
+            <span class="ml-1.5 text-xs tabular-nums">{s.count}</span>
           </a>
-        ))
-      }
-    </div>
+        )
+      })
+    }
+  </nav>
 
-    <form method="GET" class="ml-auto flex items-center gap-2">
+  <div class="mb-4 flex flex-wrap items-center gap-3">
+    <form method="GET" class="flex flex-1 items-center gap-3">
       {/* Carried so a search does not silently drop you back to All. */}
       {kind && <input type="hidden" name="kind" value={kind} />}
-      <div class="relative">
+      <div class="relative min-w-0 flex-1 sm:max-w-sm">
         <svg
-          class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-300"
+          class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-500"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -446,37 +470,35 @@ const said = 'text-ink-500 sm:hidden'
           <circle cx="11" cy="11" r="7"></circle>
           <path d="m20 20-3.5-3.5"></path>
         </svg>
+        {/* .field-input from global.css: a border a reader can see, 16px type so
+            iOS does not zoom the page on a tap, and the one focus ring. The
+            utilities only make room for the icon. */}
         <input
           type="search"
           name="q"
           value={q}
           placeholder="Unit number or VIN…"
           aria-label="Search by unit number or VIN"
-          class="w-56 rounded-lg border border-ink-100 bg-white py-2 pr-3 pl-10 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 sm:w-64"
+          class="field-input pr-4 pl-10"
         />
       </div>
-      <button
-        type="submit"
-        class="rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
-      >
-        Search
-      </button>
+      {/* Secondary, because the one Primary on this screen is Add a vehicle. */}
+      <button type="submit" class="btn btn-secondary btn-sm shrink-0">Search</button>
     </form>
 
-    <a
-      href={addHref}
-      class="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
-    >
-      Add a vehicle
-    </a>
+    <a href={addHref} class="btn btn-primary shrink-0">Add a vehicle</a>
   </div>
 
   {
     q && (
-      <p class="mb-4 text-sm text-ink-500">
-        <span class="tabular-nums">{shown.length}</span>
-        {shown.length === 1 ? ' match' : ' matches'} for “{q}”.
-        <a href={viewHref(kind ?? '')} class="ml-2 font-medium text-brand-600 hover:underline">
+      <p class="mb-4 flex flex-wrap items-center gap-x-2 text-sm text-ink-500">
+        <span>
+          <span class="tabular-nums">{shown.length}</span>
+          {shown.length === 1 ? ' match' : ' matches'} for “{q}”.
+        </span>
+        {/* A repeated inline action, so it is a Tertiary button: a full 44px
+            target rather than five characters of blue text. */}
+        <a href={viewHref(kind ?? '')} class="btn btn-tertiary btn-sm">
           Clear
         </a>
       </p>
@@ -493,10 +515,7 @@ const said = 'text-ink-500 sm:hidden'
             : 'No vehicle in this view matches. Try the All tab, or type a shorter part of the VIN.'}
         </p>
         {emptyAll && (
-          <a
-            href={addHref}
-            class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
-          >
+          <a href={addHref} class="btn btn-primary btn-sm mt-4">
             Add a vehicle →
           </a>
         )}
@@ -522,7 +541,7 @@ const said = 'text-ink-500 sm:hidden'
           The shape is taken in before any prose is read, so the caveat has to
           be where the shape is.
         */}
-        <p class="mb-3 text-xs text-ink-500">
+        <p class="mb-3 text-xs text-ink-700">
           The circle is the deadlines we track for that one unit. It counts the dates you typed
           in. Nobody here has looked at the truck or the paper.
           {showsTrailers && <span> {TRAILER_NOTE}</span>}
@@ -548,14 +567,14 @@ const said = 'text-ink-500 sm:hidden'
           !q && dueRows.length > 0 && (
             <Figure
               title={stripTitle}
-              subtitle="Each dot is something due that month. The first two columns are not months."
+              subtitle={stripSubtitle}
               coverage={stripCaveats}
               class="mb-4"
             >
               <div class="-mx-1 overflow-x-auto px-1">
                 <table class="w-full text-xs">
                   <thead>
-                    <tr class="text-ink-500">
+                    <tr class="text-ink-700">
                       <th scope="col" class="py-1 pr-3 text-left font-medium">
                         Unit
                       </th>
@@ -572,13 +591,17 @@ const said = 'text-ink-500 sm:hidden'
                   <tbody class="divide-y divide-ink-100">
                     {dueRows.map((r) => (
                       <tr>
-                        <th scope="row" class="max-w-[9rem] py-1 pr-3 text-left font-medium">
-                          <a
-                            href={`/app/vehicles/${r.id}`}
-                            class="block truncate py-1.5 hover:text-brand-600 hover:underline"
-                          >
-                            {r.label}
-                          </a>
+                        {/*
+                          WORDS, NOT A LINK. Twelve of these stacked in a dense
+                          strip are twelve 26px targets touching each other, and
+                          a target smaller than a thumb sitting on top of the
+                          next one is worse than no target at all. The same unit
+                          is a full 44px link in the table below, which is where
+                          this page sends anybody who wants to open it. The
+                          driver roster made the same call for the same reason.
+                        */}
+                        <th scope="row" class="max-w-[9rem] py-1.5 pr-3 text-left font-medium">
+                          <span class="block truncate">{r.label}</span>
                         </th>
                         {r.marks.map((m) => (
                           <td class="px-1 text-center">
@@ -602,7 +625,7 @@ const said = 'text-ink-500 sm:hidden'
                                 </span>
                               </span>
                             ) : (
-                              <span class="text-ink-200">
+                              <span class="text-ink-500">
                                 <span aria-hidden="true">·</span>
                                 <span class="sr-only">none</span>
                               </span>
@@ -615,7 +638,7 @@ const said = 'text-ink-500 sm:hidden'
                 </table>
               </div>
 
-              <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-500">
+              <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-700">
                 {DUE_LEGEND.map((l) => (
                   <li class="flex items-center gap-1.5 whitespace-nowrap">
                     <span
@@ -643,7 +666,7 @@ const said = 'text-ink-500 sm:hidden'
             worry about. It was last, which on a phone is the bottom of the
             block and off the right edge of the old sideways scroll.
           */}
-          <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+          <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
             <tr>
               <th class="px-4 py-3 font-medium">Unit</th>
               <th class="px-4 py-3 font-medium">Status</th>
@@ -670,35 +693,35 @@ const said = 'text-ink-500 sm:hidden'
                         <Ring ring={ring} size={34} />
                       ) : (
                         <span
-                          class="flex size-[34px] shrink-0 items-center justify-center rounded-full border border-dashed border-ink-200 text-ink-300"
+                          class="flex size-[34px] shrink-0 items-center justify-center rounded-full border border-dashed border-ink-200 text-ink-500"
                           aria-hidden="true"
                         >
                           —
                         </span>
                       )}
                       <div class="min-w-0">
-                        <a
-                          href={`/app/vehicles/${v.id}`}
-                          class="font-medium hover:text-brand-600 hover:underline"
-                        >
+                        {/* .link-row is 44px tall, so the unit number is a thumb
+                            target rather than a 20px line of text. */}
+                        <a href={`/app/vehicles/${v.id}`} class="link-row">
                           {vehicleLabel(v)}
                         </a>
                         {/* The numbers, in words, under the unit number: the
                             ring is never the only carrier. One man in twelve
-                            cannot separate the red arc from the amber one. */}
+                            cannot separate the red arc from the amber one.
+
+                            WORDS, NOT A SECOND LINK. This line used to link to
+                            the dates, which put a 20px target directly under the
+                            44px unit number — two things to hit with one thumb,
+                            touching each other. The unit number is the row's
+                            target now and the dates are one tap further on. */}
                         <div class="text-xs tabular-nums">
                           {ring ? (
-                            <a
-                              href={`/app/vehicles/${v.id}#dates`}
-                              class="text-ink-500 hover:text-brand-600 hover:underline"
-                            >
-                              {rowLine(ring)}
-                            </a>
+                            <span class="text-ink-700">{rowLine(ring)}</span>
                           ) : (
-                            <span class="text-ink-300">Not checked — not Active</span>
+                            <span class="text-ink-700">Not checked — not Active</span>
                           )}
                         </div>
-                        <div class="text-xs text-ink-300">
+                        <div class="text-xs text-ink-700">
                           {v.kind === 'trailer' ? 'Trailer' : 'Power unit'}
                         </div>
                       </div>
@@ -706,29 +729,30 @@ const said = 'text-ink-500 sm:hidden'
                   </td>
                   {/* Second: is this unit still one we watch and charge for. */}
                   <td class={`${cell} order-2 mt-1.5 sm:mt-0`}>
-                    <span
-                      class:list={[
-                        'rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
-                        statusPillClass(v.status),
-                      ]}
-                    >
-                      {statusLabel(v.status)}
-                    </span>
+                    {/* `statusPillClass` already returns a `badge badge-*` pair,
+                        so there is no radius, padding or weight to repeat here —
+                        the utilities that used to sit beside it outranked the
+                        shared badge and drew a rounded rectangle at font-medium
+                        while every other pill in the app is a rounded-full pill
+                        at font-semibold. */}
+                    <span class={statusPillClass(v.status)}>{statusLabel(v.status)}</span>
                   </td>
                   {/* LAST ON A PHONE. It is the longest string on the row and the
                       one nobody reads a list by — it is copied off a title or a
                       registration when there is a reason to. */}
                   <td
-                    class={`${cell} order-6 mt-1.5 font-mono text-xs tracking-tight break-all text-ink-500 tabular-nums sm:mt-0 sm:break-normal`}
+                    class={`${cell} order-6 mt-1.5 font-mono text-xs tracking-tight break-all text-ink-700 tabular-nums sm:mt-0 sm:break-normal`}
                   >
-                    <span class={`${said} font-sans`}>VIN </span>
-                    {v.vin ?? <span class="font-sans text-ink-300">Not given</span>}
+                    {/* Not `said`: this cell is 12px, where the floor is
+                        ink-700 rather than ink-500. */}
+                    <span class="font-sans text-ink-700 sm:hidden">VIN </span>
+                    {v.vin ?? <span class="font-sans text-ink-700">Not given</span>}
                   </td>
                   {/* Third and fourth: what the truck looks like and what is on
                       the back of it. This is how a unit is recognised standing
                       in front of it. */}
                   <td class={`${cell} order-3 mt-1 sm:mt-0`}>
-                    {ymm || <span class="text-ink-300">Not given</span>}
+                    {ymm || <span class="text-ink-500">Not given</span>}
                   </td>
                   <td class={`${cell} order-4 mt-1 whitespace-nowrap sm:mt-0`}>
                     <span class={said}>Plate </span>
@@ -738,7 +762,7 @@ const said = 'text-ink-500 sm:hidden'
                         {v.plate_state && <span class="ml-1 text-ink-500">{v.plate_state}</span>}
                       </>
                     ) : (
-                      <span class="text-ink-300">Not given</span>
+                      <span class="text-ink-500">Not given</span>
                     )}
                   </td>
                   {/*

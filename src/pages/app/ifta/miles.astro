@@ -49,12 +49,20 @@ const BLANK_ROWS = 5
 
 interface VehicleOption {
   id: string
+  kind: string
   unit_number: string | null
   vin: string | null
 }
 
+interface MileRowRecord {
+  id: string
+  jurisdiction: string
+  miles: number
+  vehicle_id: string | null
+}
+
 /**
- * The carrier's trucks. Loaded before the POST is dispatched, for the same
+ * The carrier's fleet. Loaded before the POST is dispatched, for the same
  * reason the fuel page does it: RLS on `jurisdiction_miles` checks that
  * carrier_id is mine, NOT that vehicle_id points at a truck of mine, so a
  * crafted POST carrying another carrier's vehicle id passes the policy. Proving
@@ -62,10 +70,53 @@ interface VehicleOption {
  */
 const { data: vehicleData, error: vehicleError } = await supabase
   .from('vehicles')
-  .select('id, unit_number, vin')
+  .select('id, kind, unit_number, vin')
   .order('unit_number', { ascending: true })
 
-const vehicles = (vehicleData ?? []) as VehicleOption[]
+const allVehicles = (vehicleData ?? []) as VehicleOption[]
+
+/**
+ * Every mileage row in this quarter, for every truck.
+ *
+ * The whole quarter rather than just the selected truck, because the summary
+ * below is what tells her which trucks she has not done yet — and a page that
+ * only ever shows one truck is how a fleet files a return with one truck's
+ * miles on it. `.eq('period_start', …)` is a scope, not a tenancy filter; RLS
+ * does the tenancy.
+ *
+ * Read BEFORE the truck list is narrowed, because the narrowing depends on it.
+ */
+const { data: mileData, error: mileError } = await supabase
+  .from('jurisdiction_miles')
+  .select('id, jurisdiction, miles, vehicle_id')
+  .eq('period_start', periodIso)
+  .order('jurisdiction', { ascending: true })
+
+const allRows = (mileData ?? []) as MileRowRecord[]
+
+/**
+ * POWER UNITS ONLY — the same rule the return itself counts by.
+ *
+ * IFTA is a fuel tax. A trailer has no engine, buys no diesel and can never
+ * have miles of its own, so counting trailers here made this screen disagree
+ * with the return one click away: /app/ifta counts power units and says "6 of 6
+ * trucks have miles entered", while the chart in the rail here counted the two
+ * trailers as well and said "6 of 8", with two rows telling the owner to go and
+ * find numbers that cannot exist. One fleet, one count, and the count is the
+ * return's.
+ *
+ * A UNIT THAT ALREADY HAS MILES ON THIS QUARTER STAYS ON THE LIST whatever kind
+ * it is. Nothing on this screen can create such a row any more, but a row
+ * imported or typed before this rule would otherwise be unreachable — not
+ * editable, not removable, and still counting on the return. A mile on the
+ * return that no screen admits to is the worst kind there is.
+ */
+const unitsWithMiles = new Set(
+  allRows.map((r) => r.vehicle_id).filter((id): id is string => id !== null),
+)
+const vehicles = allVehicles.filter(
+  (v) => v.kind === 'power_unit' || unitsWithMiles.has(v.id),
+)
 
 const requestedVehicle = Astro.url.searchParams.get('v') ?? ''
 /**
@@ -78,6 +129,8 @@ const requestedVehicle = Astro.url.searchParams.get('v') ?? ''
  * selector below always names the truck being written to.
  */
 const vehicle = vehicles.find((v) => v.id === requestedVehicle) ?? vehicles[0] ?? null
+/** A `?v=` naming something not on the list above. The GET falls back; a POST must not. */
+const wrongVehicle = requestedVehicle !== '' && vehicle?.id !== requestedVehicle
 
 const go = (query: string) =>
   Astro.redirect(
@@ -86,29 +139,6 @@ const go = (query: string) =>
   )
 const fail = (message: string) => go(`&error=${encodeURIComponent(message)}`)
 
-interface MileRowRecord {
-  id: string
-  jurisdiction: string
-  miles: number
-  vehicle_id: string | null
-}
-
-/**
- * Every mileage row in this quarter, for every truck.
- *
- * The whole quarter rather than just the selected truck, because the summary
- * below is what tells her which trucks she has not done yet — and a page that
- * only ever shows one truck is how a fleet files a return with one truck's
- * miles on it. `.eq('period_start', …)` is a scope, not a tenancy filter; RLS
- * does the tenancy.
- */
-const { data: mileData, error: mileError } = await supabase
-  .from('jurisdiction_miles')
-  .select('id, jurisdiction, miles, vehicle_id')
-  .eq('period_start', periodIso)
-  .order('jurisdiction', { ascending: true })
-
-const allRows = (mileData ?? []) as MileRowRecord[]
 const rows = vehicle ? allRows.filter((r) => r.vehicle_id === vehicle.id) : []
 
 if (Astro.request.method === 'POST') {
@@ -117,6 +147,15 @@ if (Astro.request.method === 'POST') {
 
   if (intent === 'save_miles') {
     if (!vehicle) return fail('Add a truck first, then enter miles for it.')
+    // The form named a unit this screen does not record miles for — a trailer,
+    // or a truck that has left the fleet — and `vehicle` has already fallen back
+    // to the first one on the list. Saving now would file this quarter's miles
+    // against a truck she never picked, silently. Refuse instead.
+    if (wrongVehicle) {
+      return fail(
+        'That unit is not one we record miles for. A trailer has no engine, so it has no miles of its own. Pick a truck and enter the miles again.',
+      )
+    }
     // The rows already on file could not be read, so this handler cannot tell an
     // edit of an existing jurisdiction from a new one — it would silently ignore
     // every corrected line while reporting the new ones as saved. Refusing the
@@ -261,6 +300,11 @@ if (Astro.request.method === 'POST') {
  * vehicle_id would otherwise be invisible here while still counting on the
  * return, and a mile on the return that no screen admits to is the worst kind
  * there is.
+ *
+ * The denominator is `vehicles`, which is power units and anything that already
+ * has miles on this quarter — the same count /app/ifta reports the return by.
+ * Counting trailers made this chart say "6 of 8 trucks have miles entered" on
+ * the same fleet the return called "6 of 6".
  */
 const truckChart = truckMilesFigure({
   trucks: vehicles.map((v) => ({
@@ -330,9 +374,11 @@ const confirmRemove = params.get('confirm') ?? ''
 const daysLeft = daysUntil(returnDueOn(period), today)
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const field =
-  'w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
-const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition'
+/*
+  Every box on this page wears `.field-input` from global.css — 46px tall, a
+  border a reader can see, 16px type so iOS does not zoom the page on a tap, and
+  the one focus ring the whole app shares.
+*/
 
 /**
  * ON A PHONE THE LINES ARE NOT ROWS.
@@ -349,8 +395,7 @@ const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transi
  */
 const cell = 'block py-1 sm:table-cell sm:py-2.5'
 /** The miles box: the width of the block on a phone, a 128px column from `sm`. */
-const milesBox =
-  'w-full rounded-lg border border-ink-100 px-3 py-2 text-right text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 sm:ml-auto sm:w-32 sm:py-1.5'
+const milesBox = 'field-input text-right tabular-nums sm:ml-auto sm:w-32'
 
 const usJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'US')
 const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
@@ -386,30 +431,31 @@ const quarterHref = (p: Date) =>
     )
   }
 
-  <div class="-mx-4 mb-5 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
+  {/* 44px targets, 8px apart, and the selected quarter is the app's one
+      selected metaphor: a tinted pill plus semibold, with aria-current so the
+      colour never carries it alone. */}
+  <nav
+    aria-label="Pick a quarter"
+    class="-mx-4 mb-5 flex items-center gap-2 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0"
+  >
     {
-      quarters.map((q) => (
-        <a
-          href={quarterHref(q)}
-          class:list={[
-            tab,
-            'tabular-nums',
-            isoDay(q) === periodIso
-              ? 'bg-brand-500/10 text-brand-700'
-              : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
-          ]}
-        >
-          {quarterLabel(q)}
-        </a>
-      ))
+      quarters.map((q) => {
+        const here = isoDay(q) === periodIso
+        return (
+          <a
+            href={quarterHref(q)}
+            aria-current={here ? 'page' : undefined}
+            class:list={['filter-tab shrink-0 tabular-nums', here && 'is-current']}
+          >
+            {quarterLabel(q)}
+          </a>
+        )
+      })
     }
-    <a
-      href={`/app/ifta?q=${periodIso}`}
-      class="ml-auto text-sm font-medium text-brand-600 hover:underline"
-    >
+    <a href={`/app/ifta?q=${periodIso}`} class="btn btn-tertiary btn-sm ml-auto shrink-0">
       The {label} return →
     </a>
-  </div>
+  </nav>
 
   {
     vehicles.length === 0 ? (
@@ -419,10 +465,7 @@ const quarterHref = (p: Date) =>
           We record miles per truck, per quarter. That is what a jurisdiction asks to see if it
           ever checks the work behind your return. Add the truck first.
         </p>
-        <a
-          href="/app/vehicles/new"
-          class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
-        >
+        <a href="/app/vehicles/new" class="btn btn-primary btn-sm mt-4">
           Add a truck →
         </a>
       </div>
@@ -437,8 +480,8 @@ const quarterHref = (p: Date) =>
           <form method="GET" class={`mb-4 flex flex-wrap items-end gap-3 ${card}`}>
             <input type="hidden" name="q" value={periodIso} />
             <label class="block min-w-0 flex-1">
-              <span class="text-sm font-medium">Truck</span>
-              <select name="v" class={`mt-1 ${field}`}>
+              <span class="field-label">Truck</span>
+              <select name="v" class="field-input mt-1">
                 {vehicles.map((v) => (
                   <option value={v.id} selected={vehicle?.id === v.id}>
                     {vehicleLabel(v)}
@@ -446,12 +489,13 @@ const quarterHref = (p: Date) =>
                 ))}
               </select>
             </label>
-            <button
-              type="submit"
-              class="rounded-lg border border-ink-100 px-4 py-2.5 font-medium transition hover:bg-ink-50"
-            >
-              Show
-            </button>
+            <button type="submit" class="btn btn-secondary">Show</button>
+            {/* Said once, here, so a missing trailer reads as a rule rather than
+                as a bug. The list is trucks and anything that already has miles
+                on this quarter. */}
+            <p class="field-hint w-full">
+              Trucks only. A trailer has no engine, so it has no miles of its own.
+            </p>
           </form>
 
           <form method="POST" class={`space-y-4 ${card}`}>
@@ -482,7 +526,7 @@ const quarterHref = (p: Date) =>
               <table class="w-full text-sm sm:min-w-[34rem]">
                 {/* No header line on a phone. Each block says what it is: the
                     jurisdiction names itself and the box is labelled. */}
-                <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+                <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
                   <tr>
                     <th class="py-2 pr-4 font-medium">Jurisdiction</th>
                     <th class="px-4 py-2 text-right font-medium">Miles this quarter</th>
@@ -499,7 +543,7 @@ const quarterHref = (p: Date) =>
                     >
                       <td class={`${cell} sm:pr-4`}>
                         <span class="font-medium">{row.jurisdiction}</span>
-                        <span class="ml-2 text-xs text-ink-500">
+                        <span class="ml-2 text-xs text-ink-700">
                           {jurisdictionName(row.jurisdiction)}
                         </span>
                       </td>
@@ -529,28 +573,29 @@ const quarterHref = (p: Date) =>
                                 button was pressed. Only one row can be
                                 confirming at a time, so only one exists. */}
                             <input type="hidden" name="row_id" value={row.id} />
+                            {/* The only irreversible control on this row, and the
+                                only red one. It keeps the full 44px on every
+                                screen — the desktop rule used to shrink it. */}
                             <button
                               type="submit"
                               name="intent"
                               value="remove_miles"
-                              class="min-h-11 flex-1 rounded-lg bg-red-600 px-3 text-xs font-medium text-white transition hover:bg-red-700 sm:min-h-0 sm:flex-none sm:py-1.5"
+                              class="btn btn-danger btn-sm flex-1 sm:flex-none"
                             >
                               Remove {row.jurisdiction}
                             </button>
-                            <a
-                              href={quarterHref(period)}
-                              class="inline-flex min-h-11 flex-1 items-center justify-center rounded-lg border border-ink-100 px-3 text-sm font-medium text-brand-600 hover:underline sm:min-h-0 sm:flex-none sm:rounded-none sm:border-0 sm:px-0 sm:text-xs"
-                            >
+                            {/* The way out of a destructive step is never red. */}
+                            <a href={quarterHref(period)} class="btn btn-tertiary btn-sm flex-1 sm:flex-none">
                               Keep
                             </a>
                           </span>
                         ) : (
                           /* Below `sm` this sat off the right-hand edge of the
-                             row. It is a full-width bordered tap there now, and
-                             the same small link from `sm` up. */
+                             row. It is the width of the block there now, and its
+                             own width from `sm` — a 44px target either way. */
                           <a
                             href={`${quarterHref(period)}&confirm=${row.id}`}
-                            class="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-ink-100 px-3 text-sm text-red-600 hover:underline sm:min-h-0 sm:w-auto sm:rounded-none sm:border-0 sm:px-0 sm:text-xs"
+                            class="btn btn-danger-text btn-sm w-full sm:w-auto"
                           >
                             Remove
                           </a>
@@ -568,7 +613,7 @@ const quarterHref = (p: Date) =>
                         <select
                           name={`new_jurisdiction_${i}`}
                           aria-label="Jurisdiction"
-                          class={field}
+                          class="field-input"
                         >
                           <option value="">—</option>
                           <optgroup label="United States">
@@ -610,12 +655,7 @@ const quarterHref = (p: Date) =>
             </div>
 
             <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-              <button
-                type="submit"
-                name="intent"
-                value="save_miles"
-                class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-              >
+              <button type="submit" name="intent" value="save_miles" class="btn btn-primary">
                 Save miles
               </button>
               <span class="flex-1 text-sm text-ink-500">
@@ -629,10 +669,10 @@ const quarterHref = (p: Date) =>
         {/* ------------------------------------------------------- the quarter */}
         <div class="space-y-4">
           <div class={card}>
-            <h3 class="text-xs tracking-wide text-ink-500 uppercase">{label} fleet miles</h3>
+            <h3 class="text-xs tracking-wide text-ink-700 uppercase">{label} fleet miles</h3>
             <div class="mt-1 text-3xl font-semibold tabular-nums">
               {mileError ? (
-                <span class="text-ink-300">—</span>
+                <span class="text-ink-500">—</span>
               ) : (
                 quarterTotal.toLocaleString('en-US')
               )}
@@ -708,7 +748,7 @@ const quarterHref = (p: Date) =>
           )}
 
           <div class={card}>
-            <h3 class="text-xs tracking-wide text-ink-500 uppercase">Where this number goes</h3>
+            <h3 class="text-xs tracking-wide text-ink-700 uppercase">Where this number goes</h3>
             <p class="mt-2 text-sm text-ink-500">
               We apply the fleet's average miles per gallon to these miles. That gives the gallons
               burned in each jurisdiction, and the tax is charged on those gallons. Nobody measures
