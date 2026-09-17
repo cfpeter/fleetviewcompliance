@@ -2,106 +2,368 @@
 /**
  * Privacy policy.
  *
- * Plain-language and short on purpose. NOT reviewed by a lawyer — see the notice
- * at the foot of the page, and remove it once it has been.
+ * Ported from the old Next.js app and CORRECTED, because that policy described a
+ * different product. Three things it said are no longer true and are gone:
+ *
+ *   1. "FleetView is not a dispatch system ... we do not collect load data."
+ *      Dispatch, loads, customers, settlements and IFTA all ship. IFTA is trip
+ *      and mileage data by jurisdiction. Denying collection of data we hold is
+ *      the one mistake a privacy policy cannot survive.
+ *   2. Driver update links, and drivers submitting "dates and photos".
+ *      No such feature exists here. There is no upload of any kind.
+ *   3. Proof tokens "stored as hashes". This was FALSE when written —
+ *      0013_share_links.sql stored the token in plain text. 0026 fixed the
+ *      code rather than the sentence: the column is now token_hash, the
+ *      digest is computed inside the database function so the stored value is
+ *      never itself a working credential, and the plaintext column is gone.
+ *      The claim is now true, so the page makes it.
+ *
+ * Every factual claim below was checked against the schema in
+ * supabase/migrations/ and against src/. Plain, short sentences: many readers
+ * are fleet owners who do not read English fluently. NOT reviewed by a lawyer —
+ * see the notice at the foot of the page, and remove it once it has been.
  */
 import Public from '../layouts/Public.astro'
+import {
+  CONTACT_EMAIL,
+  EFFECTIVE_DATE,
+  LEGAL_ENTITY,
+  OUTBOUND_LOOKUPS,
+  PRIVACY_EMAIL,
+  PRODUCT_NAME,
+  SITE_HOST,
+  SITE_URL,
+  SUBPROCESSORS,
+} from '../lib/legal.ts'
 import { site } from '../lib/site.ts'
 
-const updated = 'September 2026'
+const h2 = 'text-xl font-semibold tracking-tight'
+const p = 'mt-2 text-sm text-ink-500'
+const list = 'mt-2 space-y-2 text-sm text-ink-500'
+const link = 'text-brand-600 hover:underline'
 ---
 
-<Public title="Privacy" description="What FleetView Compliance collects, and what it does not do with it.">
+<Public
+  title="Privacy"
+  description="What FleetView Compliance collects, who else sees it, and what we never do with it."
+>
   <section class="mx-auto max-w-3xl px-4 py-14 sm:px-6">
     <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">Privacy</h1>
-    <p class="mt-2 text-sm text-ink-500">Last updated {updated}</p>
+    <p class="mt-2 text-sm text-ink-500">Effective {EFFECTIVE_DATE}</p>
 
     <div class="mt-8 space-y-6 text-ink-700">
       <div>
-        <h2 class="text-xl font-semibold tracking-tight">The short version</h2>
-        <p class="mt-2 text-sm text-ink-500">
-          We collect what we need to track your deadlines and run your account. We do not sell it,
-          we do not share it with brokers, insurers or load boards, and we do not use your
-          operational data to build products for anyone else.
+        <h2 class={h2}>The short version</h2>
+        <p class={p}>
+          We collect what we need to run your account. We do not sell it. We do not give it to
+          brokers, insurers or load boards. We do not use your data to build products for other
+          people. You decide who gets a proof link.
         </p>
       </div>
 
       <div>
-        <h2 class="text-xl font-semibold tracking-tight">What we hold</h2>
-        <ul class="mt-2 space-y-2 text-sm text-ink-500">
-          <li><strong>Account information</strong> — names, email addresses and phone numbers of the people who sign in.</li>
-          <li><strong>Carrier information</strong> — your USDOT number and what the public federal record says about your business.</li>
-          <li><strong>Driver and vehicle records</strong> — including documents you upload, such as medical certificates and licences. This is sensitive personal information about your employees, and we treat it that way.</li>
-          <li><strong>Operational records</strong> — loads, trips and the documents attached to them.</li>
-          <li><strong>Usage logs</strong> — enough to keep the service running and secure.</li>
+        <h2 class={h2}>What the product does</h2>
+        <p class={p}>
+          {PRODUCT_NAME} tracks compliance deadlines for your trucks and drivers. It also runs
+          dispatch and loads, keeps your customer and broker list, works out driver pay, and
+          prepares your IFTA figures.
+        </p>
+        <p class={p}>
+          So we do hold load and trip information: stops and addresses, rates, and miles by state
+          for IFTA. Earlier versions of this page said we did not. That was wrong, and this is the
+          correction.
+        </p>
+        <p class={p}>
+          What we are <strong>not</strong>: we are not an ELD, and we do not sell one. We do not
+          record hours of service. We do not track your trucks by GPS and we keep no location
+          trail. We are not a load board.
+        </p>
+      </div>
+
+      <div>
+        <h2 class={h2}>Two kinds of information</h2>
+        <p class={p}>
+          <strong>Your account.</strong> When you sign in we hold your name, email address, phone
+          number if you give one, time zone, your role on the account, and your notification
+          settings. We decide what to collect here, and this policy covers it.
+        </p>
+        <p class={p}>
+          <strong>Your records.</strong> Everything you put inside the account — drivers,
+          vehicles, loads, customers, pay — belongs to you, the carrier. You decided to collect
+          it. We only process it to run the service for you. Under California law we act as your
+          <em>service provider</em> for this. You stay the business responsible for it.
+        </p>
+        <p class="mt-2 rounded-lg border border-ink-100 bg-ink-50 px-4 py-3 text-sm text-ink-700">
+          <strong>If you are a driver</strong> and you want to know what is held about you, or
+          want it corrected or deleted, ask your employer first. The carrier controls the record.
+          We will help them answer. If you write to us, we will pass your request to the carrier
+          and tell you that we did.
+        </p>
+      </div>
+
+      <div>
+        <h2 class={h2}>What we hold</h2>
+        <ul class={list}>
+          <li>
+            <strong>Account</strong> — name, email, phone, time zone, role, notification settings
+            and quiet hours.
+          </li>
+          <li>
+            <strong>Carrier</strong> — legal name, DBA, USDOT number, address, phone, time zone.
+            Most of this comes from the public federal record.
+          </li>
+          <li>
+            <strong>Drivers</strong> — name, date of birth, phone, email, CDL number and state,
+            CDL expiry, hire and termination dates, status and your notes. This is personal
+            information about your employees, and we treat it that way.
+          </li>
+          <li>
+            <strong>Vehicles and terminals</strong> — unit number, VIN, make, model, year, weight
+            rating, plate and state, status, notes, and terminal addresses.
+          </li>
+          <li>
+            <strong>Compliance records</strong> — what was recorded as done, the date it happened,
+            and which user recorded it.
+          </li>
+          <li>
+            <strong>Customers and brokers</strong> — company name, MC and DOT number, contact
+            name, phone, email, billing email, billing address and pay terms.
+          </li>
+          <li>
+            <strong>Loads</strong> — load number, broker reference, status, rates, equipment,
+            commodity, weight, hazmat flag, detention terms and notes.
+          </li>
+          <li>
+            <strong>Stops</strong> — company name, street address, city, state, ZIP, a contact
+            name and phone at the stop, appointment windows, when the truck arrived and left,
+            reference numbers and instructions.
+          </li>
+          <li>
+            <strong>Assignments</strong> — which driver, co-driver, tractor and trailer were put
+            on a load, by whom, and the reason if a warning was overridden.
+          </li>
+          <li>
+            <strong>Driver pay</strong> — pay agreements and rates, settlements, every line on
+            them, when a settlement was approved and by whom, when it was paid, and the payment
+            reference you typed.
+          </li>
+          <li>
+            <strong>IFTA</strong> — fuel purchases (date, state, gallons, amount, vendor, receipt
+            number) and miles by state, per truck, per quarter.
+          </li>
+          <li>
+            <strong>Proof links</strong> — the link itself, what it covers, who you made it for,
+            when it expires, whether you revoked it, and how many times it was opened.
+          </li>
+          <li>
+            <strong>USDOT claim</strong> — when you prove a USDOT number is yours: the number, the
+            channel you chose, a masked version of the destination, and the number of tries. The
+            code itself is stored only as a hash.
+          </li>
+          <li>
+            <strong>Messages we sent</strong> — the address we sent to, the subject and text of
+            the message, when it went, and what the provider said happened to it.
+          </li>
+        </ul>
+        <p class={p}>
+          There is <strong>no file or photo upload</strong> in the product. We hold no scans, no
+          photographed medical cards, no licences. Dates are typed in.
+        </p>
+        <p class={p}>
+          We use no advertising pixels and no third-party marketing analytics. The cookies we set
+          are for signing in.
+        </p>
+      </div>
+
+      <div>
+        <h2 class={h2}>Where it comes from</h2>
+        <p class={p}>
+          From you, and from public federal records that anyone can look up. We re-check the
+          public record from time to time so we can tell you when something on it changes.
+        </p>
+      </div>
+
+      <div>
+        <h2 class={h2}>Who else sees it</h2>
+        <p class={p}>
+          Only the companies we need to run the service. Each one may use the information only to
+          do its job for us. This list is a promise: a company goes on it before it gets data, not
+          after.
+        </p>
+        <ul class={list}>
+          {
+            SUBPROCESSORS.map((s) => (
+              <li>
+                <strong>{s.name}</strong> — {s.role} ({s.location})
+              </li>
+            ))
+          }
+        </ul>
+        <p class={p}>
+          We do not take card payments through this site, so no payment processor holds anything
+          for us. When billing goes live this list changes first.
+        </p>
+        <p class={p}>
+          Otherwise we give your data to someone else only if the law requires it. If that happens
+          and we are allowed to tell you, we will.
+        </p>
+      </div>
+
+      <div>
+        <h2 class={h2}>What we send out for you</h2>
+        <ul class={list}>
+          {
+            OUTBOUND_LOOKUPS.map((o) => (
+              <li>
+                <strong>{o.name}</strong> — {o.sent}
+              </li>
+            ))
+          }
         </ul>
       </div>
 
       <div>
-        <h2 class="text-xl font-semibold tracking-tight">Where it comes from</h2>
-        <p class="mt-2 text-sm text-ink-500">
-          From you, and from public federal and California government records that anyone can
-          look up. We re-check the public record periodically so we can tell you when something
-          changes on it.
+        <h2 class={h2}>Proof links</h2>
+        <p class={p}>
+          A proof link lets a broker or an insurer see a summary without signing in. That is the
+          point of it. You choose what it covers, how long it lasts, and who you send it to. You
+          can revoke it at any time and it stops working straight away.
+        </p>
+        <p class={p}>
+          Until it expires or you revoke it, anyone holding the link can open it, including
+          someone it was forwarded to. Treat it like a password.
         </p>
       </div>
 
       <div>
-        <h2 class="text-xl font-semibold tracking-tight">Who else sees it</h2>
-        <p class="mt-2 text-sm text-ink-500">
-          Only the service providers we need to operate: hosting and database, file storage, and
-          the services that send our email and text messages. They process data on our
-          instructions and for no other purpose. We disclose data otherwise only if the law
-          requires it — and if that happens and we are permitted to tell you, we will.
+        <h2 class={h2}>What we do not do</h2>
+        <ul class={list}>
+          <li>
+            We do not sell personal information, and we do not share it for cross-context
+            behavioural advertising, as those words are used in California law.
+          </li>
+          <li>We do not use your records to train machine-learning models.</li>
+          <li>
+            We do not use one carrier's data to serve another. Carriers are kept apart in the
+            database itself, not only in the screens.
+          </li>
+          <li>We do not file anything with any agency on your behalf.</li>
+          <li>We do not give legal advice.</li>
+        </ul>
+      </div>
+
+      <div>
+        <h2 class={h2}>How long we keep it</h2>
+        <p class={p}>
+          Compliance records have to last. A driver qualification file must be kept while the
+          driver works for you and for three years after. So deactivating a driver keeps the
+          history instead of wiping it, and a corrected record supersedes the old one rather than
+          erasing it.
         </p>
-        <p class="mt-2 text-sm text-ink-500">
-          If you generate a proof link and send it to a broker or an underwriter, you are sharing
-          it — that is the point of the feature — and it is your decision who receives it.
+        <p class={p}>
+          We keep your data while the account is open. After the account ends we delete or
+          de-identify it within about 90 days, except where the law requires longer, and except
+          backups, which age out on their own schedule.
+        </p>
+        <p class={p}>
+          Ask us for a copy of your data and we will send it to you. Ask us to delete a record and
+          we will, unless we are required to keep it — and if deleting it would destroy evidence
+          you may still need, we will tell you before we act.
         </p>
       </div>
 
       <div>
-        <h2 class="text-xl font-semibold tracking-tight">Your drivers</h2>
-        <p class="mt-2 text-sm text-ink-500">
-          Drivers do not have accounts here. Where we send a driver a link to supply a document,
-          that link is single-purpose and expires. Some records — such as a return-to-duty
-          follow-up testing schedule — are restricted by federal rule from being shown to the
-          driver, and our system enforces that.
+        <h2 class={h2}>Security</h2>
+        <p class={p}>
+          Traffic to the site is encrypted, and our database provider encrypts what it stores.
+          Carriers are separated by database policy, so a query that forgets to filter by carrier
+          returns nothing instead of somebody else's records. USDOT verification codes are stored
+          only as a salted hash, and you get a limited number of tries.
+        </p>
+        <p class={p}>
+          A proof link is protected by the link itself: 256 random bits, generated fresh, derived
+          from nothing about you. There is no second password behind it, which is why it expires
+          and why you can turn it off. We do not keep a copy of the link. We keep only a one-way
+          fingerprint of it, so the link cannot be read back out of our database by anyone,
+          including us. That is also why we can show you a new link only once, when you make it.
+        </p>
+        <p class={p}>
+          No system is perfectly secure. If a breach affects your information we will tell you
+          without undue delay and say what we know.
         </p>
       </div>
 
       <div>
-        <h2 class="text-xl font-semibold tracking-tight">Keeping and deleting</h2>
-        <p class="mt-2 text-sm text-ink-500">
-          Compliance records have legally required retention periods — a driver qualification file,
-          for instance, must be kept for as long as the driver is employed and three years after.
-          We keep records for at least as long as the rule that produced them requires. You can
-          export everything at any time, and on request we will delete what we are not required
-          to retain.
+        <h2 class={h2}>Your rights in California</h2>
+        <p class={p}>
+          Under California law you may ask us what personal information we hold about you, to
+          correct it, to delete it, and to tell you who we gave it to. You may ask us to limit how
+          we use sensitive personal information. We will not treat you worse for asking.
+        </p>
+        <p class={p}>
+          To make a request, write to <a class={link} href={`mailto:${PRIVACY_EMAIL}`}>{PRIVACY_EMAIL}</a>.
+          We will check who you are first — usually by confirming you control the email address on
+          the account — and answer within 45 days. Someone may act for you in writing.
+        </p>
+        <p class={p}>For driver records, see above: the request goes to the carrier, and we help them.</p>
+      </div>
+
+      <div>
+        <h2 class={h2}>Children</h2>
+        <p class={p}>
+          This is a tool for businesses. It is not for anyone under 16, and we do not knowingly
+          collect information from children.
         </p>
       </div>
 
       <div>
-        <h2 class="text-xl font-semibold tracking-tight">California rights</h2>
-        <p class="mt-2 text-sm text-ink-500">
-          If you are a California resident you have rights to know what we hold about you, to
-          correct it, to delete it, and not to be discriminated against for exercising them. We do
-          not sell or share personal information as those terms are defined under California law.
-          Write to us to exercise any of this.
+        <h2 class={h2}>Changes</h2>
+        <p class={p}>
+          If we change this policy we change the date at the top. If a change materially affects
+          your rights, we will email account holders before it takes effect.
         </p>
       </div>
 
       <div>
-        <h2 class="text-xl font-semibold tracking-tight">Contact</h2>
-        <p class="mt-2 text-sm text-ink-500">
-          {site.email ? site.email : 'Contact details are on the About page.'}
+        <h2 class={h2}>Contact</h2>
+        <p class={p}>
+          {LEGAL_ENTITY}
+        </p>
+        {/* PRIVACY_EMAIL and CONTACT_EMAIL are the same mailbox today — see the
+            note in src/lib/legal.ts. Printing one address twice under two
+            labels reads as a mistake, so it is printed once, and this collapses
+            back into two lines the day a privacy@ alias actually exists. */}
+        <p class={p}>
+          {
+            PRIVACY_EMAIL === CONTACT_EMAIL ? (
+              <a class={link} href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
+            ) : (
+              <>
+                Privacy: <a class={link} href={`mailto:${PRIVACY_EMAIL}`}>{PRIVACY_EMAIL}</a><br />
+                Anything else: <a class={link} href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
+              </>
+            )
+          }<br />
+          <a class={link} href={SITE_URL}>{SITE_HOST}</a>
+        </p>
+        {/* The only place the business address appears. It is kept off the
+            marketing pages deliberately, but a terms and a privacy page are
+            expected to name where the business is, and a payment processor
+            will ask for it. */}
+        <p class="mt-1 text-sm text-ink-500">{site.legalLocation}</p>
+      </div>
+
+      <div>
+        <p class={p}>
+          See also our <a class={link} href="/terms">terms of use</a> and
+          <a class={link} href="/pricing"> pricing</a>.
         </p>
       </div>
     </div>
 
     <p class="mt-10 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-      <strong>Draft.</strong> This policy has not yet been reviewed by a lawyer, and the operating
-      entity is not yet named. Both must be done before launch.
+      <strong>Draft.</strong> This policy has not yet been reviewed by a lawyer. That must be done
+      before launch.
     </p>
   </section>
 </Public>
