@@ -230,6 +230,74 @@ Two things close it, and both should be on:
    (Resend, SendGrid) on the dev project.** The moment you do, its auth emails
    reach anybody, and nothing in this repository can stop them.
 
+### Password reset links — two settings, or the feature does not work
+
+`/auth/forgot-password` calls `resetPasswordForEmail` with a `redirectTo` of
+`https://<the host being used>/auth/new-password`. Two things in the Supabase
+dashboard decide whether that link ever arrives in a usable state.
+
+**1. The redirect allow-list (Authentication → URL Configuration).** It must
+contain `/auth/new-password` for every host that serves the app, exactly as it
+already contains `/auth/callback`:
+
+```
+https://dev.fleetviewcompliance.com/auth/new-password
+http://localhost:4323/auth/new-password
+https://fleetviewcompliance.com/auth/new-password
+```
+
+The port matters: `astro dev` is on **4323** here, not the 4321 in
+`.claude/launch.json`, and the dev project's allow-list already spells the
+callback entry that way.
+
+**State as of 16 September 2026 — both projects are configured.**
+
+| | `fleetview-dev` | `Fleet View` (production) |
+|---|---|---|
+| Site URL | `https://dev.fleetviewcompliance.com` | `https://fleetviewcompliance.com` |
+| Redirect URLs | `/auth/callback` and `/auth/new-password` on both `https://dev.fleetviewcompliance.com` and `http://localhost:4323` (4 total) | `/auth/callback` and `/auth/new-password` on `https://fleetviewcompliance.com` (2 total) |
+
+Production needed more than the reset entry. Its allow-list was EMPTY and its
+Site URL was still Supabase's default `http://localhost:3000`, so every auth
+email it sent — signup confirmations included, not just resets — pointed at a
+port nothing listens on. That is precisely the failure the stray-code rescue in
+`src/middleware.ts` was written for, and it would have hit the first real
+customer who ever signed up there. Both were set on 16 September 2026.
+
+Apex only. If `www.fleetviewcompliance.com` is ever served directly rather than
+redirected to the apex, it needs its own two entries — a redirect URL is matched
+host and all.
+
+A URL that is not on the list is **not refused** — Supabase silently falls back
+to the project's Site URL, so the reset link lands on `/` with a `?code=`. The
+middleware rescues that to `/auth/callback`, which signs the person in and drops
+them on the dashboard with the password they have forgotten still on the
+account. It looks like a working login, not like a broken feature, so it will
+not be reported. Add the entry.
+
+**2. The recovery email template (Authentication → Email Templates → Reset
+Password), if reset has to work on a second device.** With the default
+`{{ .ConfirmationURL }}` template the link carries a PKCE `code`, and the code
+can only be exchanged in the browser that asked for the reset — the other half
+of the secret is a cookie written on that request. A carrier who asks on the
+office computer and opens the mail on his phone gets "that link did not work".
+
+Changing the template body to
+
+```
+<a href="{{ .SiteURL }}/auth/new-password?token_hash={{ .TokenHash }}&type=recovery">
+  Pick a new password
+</a>
+```
+
+removes the cookie from the equation and the link works on any device.
+`/auth/new-password` already accepts both shapes, so this is a dashboard change
+with no deploy behind it.
+
+Reset emails are sent by Supabase, not by us, so everything in the section above
+applies to them: they do not pass through `guard.ts`, and on dev they are
+contained only by Supabase's built-in sender and by Cloudflare Access.
+
 ### The FMCSA / USDOT lookups
 
 Read-only GETs against a public Socrata dataset. No account, no outbound

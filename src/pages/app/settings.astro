@@ -13,8 +13,10 @@
  * or update emails or phone number or any other information for the owner to
  * manage." He was right. This page edited a USDOT number and a pile of
  * notification preferences, and nothing at all about the person reading it — no
- * name, no phone, no email, and no way to change a password on an account that
- * still has no password reset anywhere. The first two sections are that gap.
+ * name, no phone, no email, and no way to change a password. The first two
+ * sections are that gap. The other half of it — a person who has FORGOTTEN the
+ * password, whom no form on this page can help, because every form here is
+ * behind the sign-in they cannot get through — is now /auth/forgot-password.
  *
  * The honesty rule on this screen is load-bearing. Everything it offers either
  * works today or says, in words, that it does not. A settings page that quietly
@@ -44,6 +46,9 @@ import {
   timeForInput,
   timezoneOptions,
 } from '../../lib/notify/preferences.ts'
+// One rule, one number: the same minimum the sign-up form and the reset
+// screen enforce, imported rather than re-typed.
+import { MIN_PASSWORD } from '../../lib/onboarding.ts'
 import { formatPhone, parsePhoneEdit, toE164 } from '../../lib/phone.ts'
 import { ruleByCode } from '../../lib/rules/index.ts'
 import { site } from '../../lib/site.ts'
@@ -83,19 +88,19 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
  */
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-/** The sign-up form's own minimum, in login.astro. One rule, one number. */
-const MIN_PASSWORD = 8
-
 /**
  * Does the person holding this session actually know the password on it?
  *
- * BOTH sensitive changes below require this, and the reason is specific to this
- * application: THERE IS NO PASSWORD RESET ANYWHERE IN IT. No link on the login
- * page, no route, no recovery branch in /auth/callback. So a password changed
- * by somebody who is not the owner is not an inconvenience he undoes by email —
- * it is a permanent lockout of the account his compliance record lives in, and
- * the same is true of an email change, which moves where the next sign-in
- * happens. A laptop left open on the yard desk must not be enough to do either.
+ * BOTH sensitive changes below require this, and it matters more now that
+ * password reset exists, not less. A signed-in browser is no longer the only
+ * way back into an account — but it is still the whole of what somebody
+ * standing at an open laptop on the yard desk has, and without this check that
+ * is enough to take the account over: change the password, then change the
+ * email, and the owner cannot even use the new reset link, because the link
+ * goes to an address that is no longer his. The reset flow proves control of
+ * the INBOX. This form proves knowledge of the PASSWORD. Neither substitutes
+ * for the other, and this page is the one that must not be satisfied by
+ * proximity to a chair.
  *
  * Supabase does not expose "check this password"; signing in IS the check. So:
  * a THROWAWAY client, never `Astro.locals.supabase`. The request's own client
@@ -261,12 +266,14 @@ if (Astro.request.method === 'POST') {
   /**
    * The signed-in person changes their own password.
    *
-   * HALF A PROBLEM, and the screen says which half. There is no forgot-password
-   * flow in this application at all, so somebody who has forgotten their
-   * password is locked out permanently and this form cannot help them — it needs
-   * the old one. What it does close is the other half: until today a person who
-   * KNEW their password and wanted a different one had no way to change it
-   * either, which is the easy case, and it was missing.
+   * THE HALF THAT NEEDS THE OLD PASSWORD. This form is for a person who knows
+   * their password and wants a different one; it asks for the current one and
+   * refuses without it, for the reason passwordHolds() gives.
+   *
+   * Somebody who has FORGOTTEN their password cannot be here at all — this page
+   * is behind the sign-in they cannot get through — and is served by
+   * /auth/forgot-password, which proves control of the email instead. Two
+   * doors, two proofs; neither one weakens the other.
    */
   if (intent === 'change_password') {
     const current = String(form.get('current_password') ?? '')
@@ -867,7 +874,7 @@ const ERRORS: Record<string, string> = {
   email_same: 'That is the email you use now. Nothing changed.',
   email_failed: 'We could not change your email. Try again in a moment.',
   password_wrong: 'That password is not right. Type the password you use now.',
-  password_short: 'Your new password is too short. Use 8 letters or numbers or more.',
+  password_short: `Your new password is too short. Use ${MIN_PASSWORD} letters or numbers or more.`,
   password_mismatch: 'The two new passwords are not the same. Type the same one in both boxes.',
   password_same: 'Your new password is the same as your old one. Pick a different one.',
   password_failed: 'We could not change your password. Try again in a moment.',
@@ -1069,20 +1076,29 @@ const help = 'mt-1 block text-xs text-ink-500'
           <h3 class="font-medium tracking-tight">Your password</h3>
 
           {/*
-            THE MISSING HALF, said out loud. There is no forgot-password link
-            anywhere in this application, so a person who cannot remember their
-            password cannot get back in at all. This form needs the old password,
-            so it does not help that person — and the screen has to say so here
-            rather than let somebody discover it on the morning they are locked
-            out. The page's own doctrine: a control either works or says it does
-            not.
+            THIS BOX USED TO BE A WARNING, and it was amber because it carried
+            bad news: there was no forgot-password anywhere in the application,
+            so a person who could not remember their password never got back in,
+            and the only thing this screen could honestly do was say so and give
+            them an address to write to.
+
+            /auth/forgot-password now exists, so the warning would be a lie —
+            and an expensive one, because the person who reads it is deciding
+            what to do on the morning they are locked out. It is an instruction
+            now, not an alarm, which is why it is no longer amber: nothing here
+            is going wrong. The steps are numbered because they are steps, and
+            because they will be read by somebody who is worried.
           */}
-          <div class="mt-3 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            <p class="font-medium">Keep your password safe</p>
-            <p class="mt-1">
-              There is no "forgot password" in this app yet. If you forget your password, you
-              cannot sign in and we cannot reset it from here. Write the new one down somewhere
-              safe. If you are locked out, email{' '}
+          <div class="mt-3 rounded-lg bg-ink-50 px-4 py-3 text-sm text-ink-700">
+            <p class="font-medium">If you forget your password</p>
+            <ol class="mt-1 list-decimal space-y-1 pl-4">
+              <li>Go to the sign-in page and press "Forgot your password?".</li>
+              <li>Type your email. We send you a link.</li>
+              <li>Open the link and pick a new password.</li>
+            </ol>
+            <p class="mt-2">
+              The link goes to the email you sign in with, so keep that email working. If you
+              cannot get into that email, write to{' '}
               <a href={`mailto:${site.email}`} class="font-medium underline">{site.email}</a>.
             </p>
           </div>
@@ -1108,7 +1124,7 @@ const help = 'mt-1 block text-xs text-ink-500'
                 autocomplete="new-password"
                 class={field}
               />
-              <span class={help}>Use 8 letters or numbers or more.</span>
+              <span class={help}>Use {MIN_PASSWORD} letters or numbers or more.</span>
             </label>
             <label class="mt-3 block">
               <span class="text-sm font-medium">New password again</span>

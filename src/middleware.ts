@@ -6,6 +6,7 @@
  * silently serves a signed-out visitor.
  */
 import { defineMiddleware } from 'astro:middleware'
+import { handlesAuthCode } from './lib/redirect.ts'
 import { sessionClient } from './lib/supabase/server.ts'
 
 const GUARDED = /^\/app(\/|$)/
@@ -79,15 +80,21 @@ const route = async (
    * who could never finish creating an account.
    *
    * The fix is the allow-list in the Supabase dashboard; this is the safety net
-   * under it. A `?code=` on any path other than the callback is rescued rather
-   * than dropped, so links already sent still work and a future misconfiguration
-   * costs a redirect instead of a lost customer. Scoped to a UUID shape so it
-   * cannot swallow some other page's `?code=` parameter.
+   * under it. A `?code=` on any path other than a route that reads codes itself
+   * is rescued rather than dropped, so links already sent still work and a
+   * future misconfiguration costs a redirect instead of a lost customer. Scoped
+   * to a UUID shape so it cannot swallow some other page's `?code=` parameter.
+   *
+   * WHICH ROUTES ARE EXEMPT IS NOT A DETAIL — see handlesAuthCode. A password
+   * reset link carries a UUID code to /auth/new-password, so without that
+   * exemption this rescue would take every reset link, hand it to the callback,
+   * and sign the person in at the dashboard with the password they have already
+   * forgotten still on the account.
    */
   const strayCode = context.url.searchParams.get('code')
   if (
     strayCode &&
-    pathname !== '/auth/callback' &&
+    !handlesAuthCode(pathname) &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(strayCode)
   ) {
     return context.redirect(`/auth/callback?code=${encodeURIComponent(strayCode)}`, 303)

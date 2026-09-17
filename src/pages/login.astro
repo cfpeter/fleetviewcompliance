@@ -31,7 +31,13 @@
  */
 import Public from '../layouts/Public.astro'
 import { normalizeDot } from '../lib/fmcsa.ts'
-import { type AuthMode, notice, parseAuthMode, signupOutcome } from '../lib/onboarding.ts'
+import {
+  type AuthMode,
+  MIN_PASSWORD,
+  notice,
+  parseAuthMode,
+  signupOutcome,
+} from '../lib/onboarding.ts'
 import { safeNext } from '../lib/redirect.ts'
 import { sessionClient } from '../lib/supabase/server.ts'
 import { ASSENT, recordTermsAcceptance, ticked } from '../lib/terms.ts'
@@ -216,11 +222,34 @@ const field =
           name="password"
           autocomplete={signup ? 'new-password' : 'current-password'}
           required
-          minlength={signup ? 8 : undefined}
+          minlength={signup ? MIN_PASSWORD : undefined}
           class={field}
         />
-        {signup && <span class="mt-1 block text-xs text-ink-500">Use 8 characters or more.</span>}
+        {signup && (
+          <span class="mt-1 block text-xs text-ink-500">Use {MIN_PASSWORD} characters or more.</span>
+        )}
       </label>
+
+      {/*
+        THE WAY BACK IN, and until today there was not one. This link had no
+        destination to point at: no reset route, no recovery branch, nothing —
+        so a customer who forgot the password to the account holding his driver
+        files was locked out of it for good.
+
+        Under the password box rather than at the foot of the page, because the
+        moment a person needs it is the moment they are looking at that box. Not
+        on the sign-up screen: there is no password to have forgotten yet, and a
+        recovery link next to a "create account" button only reads as doubt.
+      */}
+      {
+        !signup && (
+          <p class="text-sm">
+            <a href="/auth/forgot-password" class="font-medium text-brand-600 hover:underline">
+              Forgot your password?
+            </a>
+          </p>
+        )
+      }
 
       {
         signup && (

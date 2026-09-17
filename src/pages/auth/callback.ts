@@ -24,6 +24,27 @@ import { sessionClient } from '../../lib/supabase/server.ts'
 import { recordTermsAcceptance } from '../../lib/terms.ts'
 
 export const GET: APIRoute = async ({ url, cookies, request, redirect }) => {
+  /**
+   * A RESET LINK IS NOT A SIGN-IN LINK, and this route must never treat one as
+   * the other.
+   *
+   * Password recovery has its own route — /auth/new-password — and that route
+   * deliberately does not exchange the code until a new password has been
+   * typed, so that opening the link cannot by itself leave a live session on
+   * the browser. Exchanging it HERE would hand out exactly the session that
+   * route refuses to create, and drop the customer on the dashboard with the
+   * password they came to change still on the account.
+   *
+   * It should not arrive here at all: resetPasswordForEmail points at the other
+   * route. This catches the two ways it could anyway — a Supabase email
+   * template edited to point at the callback, and an operator adding
+   * `type=recovery` to the redirect — by handing the whole query string on
+   * untouched. Checked before anything else, so no branch below can spend it.
+   */
+  if (url.searchParams.get('type') === 'recovery') {
+    return redirect(`/auth/new-password${url.search}`, 303)
+  }
+
   const code = url.searchParams.get('code')
 
   // Supabase reports a refused link in the query string rather than by failing
@@ -50,9 +71,12 @@ export const GET: APIRoute = async ({ url, cookies, request, redirect }) => {
   // server-side, so no account can exist without one — but the evidence row
   // would be missing, which is the whole point of collecting it.
   //
-  // ONLY WHEN THERE IS NO ROW AT ALL. This route today serves one thing:
-  // confirming a new account. The moment a password reset or a magic link is
-  // added it will come through here too, and writing an acceptance for somebody
+  // ONLY WHEN THERE IS NO ROW AT ALL. This route serves one thing: confirming a
+  // new account. Password reset now exists and is deliberately kept off this
+  // route, which is what the branch at the top of this handler enforces — but
+  // the guard below is what makes that a routing choice rather than a
+  // load-bearing one, and it still stands for the magic link or the second
+  // confirmation path somebody adds next. Writing an acceptance for somebody
   // who ticked nothing that day is fabricated evidence — worse than no evidence,
   // because it would be produced in a dispute as though it were real. Checking
   // first means a returning user writes nothing, whatever brought them here.

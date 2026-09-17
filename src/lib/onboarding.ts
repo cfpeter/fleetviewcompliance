@@ -26,6 +26,43 @@ export function parseAuthMode(raw: string | null | undefined): AuthMode {
   return raw === 'signup' ? 'signup' : 'signin'
 }
 
+// -------------------------------------------------------------- passwords
+
+/**
+ * The shortest password this application will set, anywhere.
+ *
+ * ONE RULE, ONE NUMBER. It is enforced on the sign-up form, on the settings
+ * page, and on the reset screen, and the help line under every one of those
+ * boxes is written from this constant rather than typed. A minimum that is 8 on
+ * one screen and 6 on another is not a policy, it is three screens disagreeing
+ * — and the one a customer meets on the day they are locked out is the one that
+ * decides whether they get back in.
+ *
+ * NOT enforced on the SIGN-IN box, deliberately: the Supabase project setting
+ * has been lower, so an existing password may be shorter than this, and a form
+ * that refuses to send it locks out somebody whose password is perfectly good.
+ */
+export const MIN_PASSWORD = 8
+
+/**
+ * What is wrong with a new password typed into two boxes, as a notice code.
+ * Null means nothing is.
+ *
+ * TWO BOXES, ALWAYS, on every screen that sets a password without asking for
+ * the old one. A typo typed once into one box is a password nobody knows, on an
+ * account whose only way back is another trip through the email — and for a
+ * carrier whose address on file is an old dispatcher's, there may not be one.
+ *
+ * Length first. A person who mistyped BOTH boxes the same way and typed
+ * something too short should hear the fixable thing, and "too short" is fixable
+ * without retyping both boxes from scratch.
+ */
+export function passwordProblem(next: string, again: string): string | null {
+  if (next.length < MIN_PASSWORD) return 'password_short'
+  if (next !== again) return 'password_mismatch'
+  return null
+}
+
 // ---------------------------------------------------------------- notices
 
 export type NoticeTone = 'error' | 'ok' | 'info'
@@ -78,6 +115,52 @@ const NOTICES: Record<string, Notice> = {
   link_invalid: {
     tone: 'error',
     text: 'That confirmation link is not one we can read. Sign up again to get a fresh one.',
+  },
+
+  // ---- /auth/forgot-password and /auth/new-password
+  //
+  // THE SAME SENTENCE FOR EVERY ADDRESS. The sign-in form refuses to
+  // distinguish "no such account" from "wrong password", and a reset form that
+  // said "we have no account for that address" would hand back the fact the
+  // sign-in form is protecting — ask it about a competitor's dispatcher and it
+  // answers. So `reset_sent` is worded to be true whether or not there is an
+  // account, and resetOutcome() below sends every account-shaped failure here.
+  reset_sent: {
+    tone: 'ok',
+    text:
+      'If that email has an account here, we just sent it a link. Open the email and pick a new ' +
+      'password. The link works one time only.',
+  },
+  reset_failed: {
+    tone: 'error',
+    text: 'We could not send that link just now. Try again in a moment.',
+  },
+  email_needed: { tone: 'error', text: 'Enter your email address.' },
+  reset_link_unusable: {
+    tone: 'error',
+    // Three causes, one sentence, because the person cannot act on the
+    // difference and we must not say which it was: an expired link and an
+    // already-used one are different facts about a link somebody may be holding
+    // without owning it.
+    text:
+      'That link did not work. It may be old, it may have been used already, or it may have been ' +
+      'opened on a different phone or computer. Ask for a new link below.',
+  },
+  reset_link_missing: {
+    tone: 'error',
+    text: 'That link is not complete. Ask for a new link below.',
+  },
+  password_not_saved: {
+    tone: 'error',
+    text: 'We could not save that password. Ask for a new link below and try again.',
+  },
+  password_short: {
+    tone: 'error',
+    text: `Your new password is too short. Use ${MIN_PASSWORD} letters or numbers or more.`,
+  },
+  password_mismatch: {
+    tone: 'error',
+    text: 'The two passwords are not the same. Type the same one in both boxes.',
   },
 
   // ---- /app/setup
@@ -372,6 +455,49 @@ export function signupOutcome(err: AuthFailure | null | undefined): string {
   }
 
   return 'signup_failed'
+}
+
+// ------------------------------------------------------------- reset errors
+
+/**
+ * What the "I forgot my password" form is allowed to say.
+ *
+ * THE WHOLE POINT OF THIS FUNCTION IS THE FIRST BRANCH. A reset form is the
+ * easiest account-enumeration oracle a product ever ships: type an address,
+ * read the answer, learn whether that person is a customer here. The sign-in
+ * form is careful never to give that away and signupOutcome() closes the same
+ * hole on the other screen; this closes the third door.
+ *
+ * Supabase already helps — `resetPasswordForEmail` answers an unknown address
+ * with success and sends nothing — so the neutral case is the no-error case.
+ * The first branch is the belt to that suspender: if a Supabase release ever
+ * starts reporting a missing user, the page keeps saying the one sentence it
+ * says for everybody instead of quietly becoming a lookup service.
+ *
+ * Rate limiting and a malformed address are still reported, for the reason
+ * signupOutcome() reports them: they are facts about the request that was just
+ * made, not about who else has an account here.
+ */
+export function resetOutcome(err: AuthFailure | null | undefined): string {
+  if (!err) return 'reset_sent'
+
+  const code = (err.code ?? '').toLowerCase()
+  const message = (err.message ?? '').toLowerCase()
+
+  // Checked first, and answered with the same sentence a real address gets.
+  if (code === 'user_not_found' || /user not found|no user|not found/.test(message)) {
+    return 'reset_sent'
+  }
+
+  if (err.status === 429 || code.includes('rate_limit') || /rate limit/.test(message)) {
+    return 'rate_limited'
+  }
+
+  if (code === 'email_address_invalid' || /invalid.*email|email.*invalid/.test(message)) {
+    return 'bad_email'
+  }
+
+  return 'reset_failed'
 }
 
 // ------------------------------------------------------------ census counts
