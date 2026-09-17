@@ -27,6 +27,11 @@ import {
   payByMonth,
 } from '../../../lib/charts/pay.ts'
 import { dqRing, driverLine } from '../../../lib/charts/dq-rings.ts'
+import {
+  CHECK_TONES,
+  buildDriverChecklist,
+  checklistLine,
+} from '../../../lib/charts/driver-status.ts'
 import { ceilingFor, compactMoney } from '../../../lib/charts/scale.ts'
 import { loadDeadlines } from '../../../lib/deadlines.ts'
 import { assembleDqf } from '../../../lib/proof/dqf.ts'
@@ -468,9 +473,26 @@ const driverAnchorLabel = (key: string) =>
  *
  * The gate is the shared predicate, so it cannot drift from the loader.
  */
-const dqf = isActiveDriver(driver)
-  ? dqRing(assembleDqf({ items: allDeadlines.filter((i) => i.subjectId === id) }), new Date())
-  : null
+const observedAt = new Date()
+const driverItems = allDeadlines.filter((i) => i.subjectId === id)
+
+const dqf = isActiveDriver(driver) ? dqRing(assembleDqf({ items: driverItems }), observedAt) : null
+
+/**
+ * THE CHECKLIST: everything with a deadline on this driver, worst first.
+ *
+ * Same gate as the ring, and the same reason. `loadDeadlines` evaluates active
+ * drivers and nobody else, so a terminated driver comes back with no items at
+ * all — and an empty list would print "Nothing needs you today" over a man
+ * nobody is watching, which is the most reassuring sentence in the app shown in
+ * the one case where it is not true. No checklist is drawn for him instead, and
+ * the Record card beside it says why in the same words the truck page uses.
+ *
+ * The rows, the tones and the day counts are all derived in
+ * src/lib/charts/driver-status.ts — including the two ways "overdue by N days"
+ * comes out backwards, which is worth reading before touching any of this.
+ */
+const checklist = isActiveDriver(driver) ? buildDriverChecklist(driverItems, observedAt) : null
 
 // Only the anchors a normal driver is expected to have. The exemption dates are
 // blank for almost everyone, and counting them here would report every driver in
@@ -620,7 +642,82 @@ const said = 'text-ink-500 sm:hidden'
  * one version of this that cannot be broken by adding a thirteenth field or a
  * new way to refuse one.
  */
-const recordOpen = error !== null
+const recordOpen = error !== null || params.get('edit') === 'record'
+
+/**
+ * IS THE DATE FORM OPEN WHEN THE PAGE LOADS?
+ *
+ * Twelve date boxes with a sentence of help under each one, measured at 2,220px
+ * of a 5,618px page on a phone — two fifths of everything, on a page an owner
+ * opens to READ where a driver stands. So the boxes fold away and the checklist
+ * above them prints the state of every one of those dates in words, which is
+ * what he came for.
+ *
+ * NOTHING IS BURIED BY THIS. The section stays exactly where it was, directly
+ * under the record, and every line in the checklist that needs a date links
+ * straight to the box that answers it — `?edit=dates#date_<anchor>` opens this
+ * fold on the server and lands the browser on that label. A medical card date
+ * that used to be 4,076px down the page is now one tap from the top of it.
+ *
+ * It opens on its own whenever the next thing he does is certainly the form: a
+ * refused save (which prints its message above and must have something to
+ * correct), a save that just went through, or a link that asked for it.
+ */
+const datesOpen = error !== null || datesSaved !== null || params.get('edit') === 'dates'
+
+/**
+ * The history is every date ever recorded, withdrawn ones included — a log that
+ * grows for as long as the driver is employed, and is read when a date looks
+ * wrong rather than on the way past. Folded, and open whenever a withdrawal has
+ * just happened or a withdrawal was refused, because both of those redirect
+ * here with something to see.
+ */
+const historyOpen = withdrew || error !== null
+
+/** The summary line on each fold: a chevron that turns, drawn once. */
+const chevron = 'size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180'
+/** A fold's summary row. `list-none` because the default triangle is not ours. */
+const summaryRow =
+  'flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-2 select-none [&::-webkit-details-marker]:hidden'
+
+/**
+ * Where a checklist row sends him to answer it.
+ *
+ * `null` when there is no box on this page for that rule — the pre-employment
+ * Clearinghouse query is one — and a row with no link simply has no link rather
+ * than a button that lands nowhere.
+ */
+function answerHref(row: { code: string; anchorKey?: string }): string | null {
+  // The licence expiry is a column on the driver record, not a compliance
+  // record, so it is answered in the record fold and not in the date form.
+  if (row.code === 'cdl_expiry') return `/app/drivers/${id}?edit=record#record`
+  // `box` and the fragment name the same field, and both are needed: the
+  // fragment scrolls the browser to it, and the parameter is the half the
+  // SERVER can read — a fragment never leaves the browser, so without it a
+  // field inside a folded group would be linked to and still not be on screen.
+  if (row.anchorKey) {
+    return `/app/drivers/${id}?edit=dates&box=${row.anchorKey}#date_${row.anchorKey}`
+  }
+  return null
+}
+
+/** Which date box a link asked for, so the group holding it is not folded. */
+const wantedBox = params.get('box')
+
+/**
+ * The four status icons, drawn as paths so they cost nothing and print.
+ *
+ * COLOUR IS NEVER THE ONLY CARRIER. Each icon sits beside a pill that says the
+ * same thing in words, because roughly one man in twelve cannot separate the
+ * red mark from the amber one, and this is read on a phone, in a yard.
+ */
+const ICONS = {
+  act: 'M6 6l8 8M14 6l-8 8',
+  soon: 'M10 5.5v5M10 14.2v.3',
+  nodate: 'M7.6 7.6a2.4 2.4 0 1 1 2.9 2.35c-.3.1-.5.4-.5.75v.8M10 14.2v.3',
+  ok: 'M5.5 10.5l3 3 6-7',
+  read: 'M10 9v5.5M10 5.7v.3',
+} as const
 ---
 
 <App
@@ -690,12 +787,33 @@ const recordOpen = error !== null
       `open` is decided on the server, so a refused save always comes back with
       the form already open under its own error message. See `recordOpen`.
     */}
-    <div class="rounded-xl border border-ink-100 bg-white p-5">
+    {/*
+      The left column is the record and then the checklist, in that order, and
+      the order is measured rather than chosen. The closed record is about 180px
+      and holds the three facts somebody opens a driver page for — the number to
+      ring him on, his licence number, and the day that licence runs out — so
+      the checklist starts within the first screen on a phone and the phone
+      number is not pushed under it.
+    */}
+    <div class="space-y-4">
+    <div id="record" class="scroll-mt-24 rounded-xl border border-ink-100 bg-white p-5">
       <details open={recordOpen} class="group">
         <summary
           class="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-3 select-none [&::-webkit-details-marker]:hidden"
         >
           <h2 class="text-lg font-semibold tracking-tight">Driver record</h2>
+          {/* The status, beside his name rather than in a card on the other
+              side of the screen. "Is he still one of mine" is the first thing
+              read about a driver, and it decides whether anything else on this
+              page is being watched at all. */}
+          <span
+            class:list={[
+              'rounded-md px-2 py-0.5 text-xs font-medium',
+              statusPillClass(driver.status),
+            ]}
+          >
+            {driver.status}
+          </span>
           <svg
             aria-hidden="true"
             viewBox="0 0 20 20"
@@ -758,6 +876,21 @@ const recordOpen = error !== null
             phoneUndialable && (
               <span class="w-full rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
                 We cannot text this number.
+              </span>
+            )
+          }
+
+          {/*
+            Why there is no checklist and no ring on this page, said where the
+            status is — the same sentence in the same place as the truck page.
+            Both are drawn only for a driver on the active list, because the
+            engine only looks at those, and a page where two blocks simply are
+            not there reads as broken rather than as switched off.
+          */}
+          {
+            !isActiveDriver(driver) && (
+              <span class="w-full text-xs text-ink-500">
+                {DRIVER_NOT_ACTIVE_MEANS} Set him back to Active to start again.
               </span>
             )
           }
@@ -916,6 +1049,16 @@ const recordOpen = error !== null
               Save driver
             </button>
           </div>
+
+          {/*
+            Where the row came from, at the foot of the form. These are facts
+            about the record rather than about the driver — nobody opens a
+            driver to find out which day the row was typed — so they no longer
+            take a card of their own in the rail.
+          */}
+          <p class="text-xs text-ink-500 tabular-nums">
+            Added {formatDate(String(driver.created_at).slice(0, 10))} · from {driver.source}
+          </p>
         </form>
       </details>
 
@@ -934,6 +1077,180 @@ const recordOpen = error !== null
           Back to drivers
         </a>
       </div>
+    </div>
+
+    {/*
+      WHAT NEEDS HIM, AT THE TOP, IN WORDS.
+
+      One row per obligation the engine tracked for this driver, worst first:
+      a large icon, the thing itself, and a pill saying how long — "overdue 12
+      days", "in 29 days", "no date on file". Colour, icon and words on every
+      row, never colour on its own.
+
+      THE RED, AMBER AND GREY ROWS ARE NEVER FOLDED. A gap an owner has to open
+      something to find is a gap he does not know about, and "we have no date"
+      is a state of its own, not an absence to tidy away. Only the rows with
+      nothing to do on them go behind the fold, and the fold says how many.
+
+      Each row that can be answered links to the box that answers it, which is
+      what lets the date form below fold up without burying anything.
+    */}
+    {
+      checklist && (
+        <section id="needs" class="scroll-mt-24 rounded-xl border border-ink-100 bg-white p-5">
+          <h2 class="text-lg font-semibold tracking-tight">What this driver needs</h2>
+          {/* The answer, in a sentence, before any shape or colour is read. */}
+          <p class="mt-1 text-sm font-medium">{checklistLine(checklist)}</p>
+          {checklist.counts.nodate > 0 && (
+            <p class="mt-1 text-sm text-ink-500">
+              A missing date is not a safe date. Until you record it, we list this driver as
+              missing data, next to the overdue ones.
+            </p>
+          )}
+
+          {checklist.needs.length > 0 && (
+            <ul class="mt-4 divide-y divide-ink-100 border-t border-ink-100 text-sm">
+              {checklist.needs.map((row) => {
+                const href = answerHref(row)
+                /*
+                  THE WHOLE ROW IS THE TAP, not a link on the end of it.
+
+                  An "Add the date →" link beside the words wrapped onto a line
+                  of its own on a 375px screen and took 44px with it — on twelve
+                  rows that was 528px of arrows. The row is already taller than
+                  a thumb, so the row IS the target, and the chevron says so.
+                */
+                const Row = href ? 'a' : 'div'
+                return (
+                  <li>
+                    <Row
+                      href={href ?? undefined}
+                      class:list={[
+                        'flex items-start gap-3 py-2.5',
+                        href && '-mx-2 rounded-lg px-2 hover:bg-ink-50/60',
+                      ]}
+                    >
+                      <span
+                        class:list={[
+                          'flex size-7 shrink-0 items-center justify-center rounded-full',
+                          CHECK_TONES[row.tone].icon,
+                        ]}
+                        aria-hidden="true"
+                      >
+                        <svg
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          class="size-4"
+                        >
+                          <path d={ICONS[row.tone]} />
+                        </svg>
+                      </span>
+                      <span class="min-w-0 flex-1">
+                        <span class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                          <span class="font-medium">{row.title}</span>
+                          <span
+                            class:list={[
+                              'rounded-md px-1.5 py-0.5 text-xs font-medium whitespace-nowrap',
+                              CHECK_TONES[row.tone].pill,
+                            ]}
+                          >
+                            {row.text}
+                          </span>
+                        </span>
+                        {/* Only where there is a date in it. See `hasDate`. */}
+                        {row.hasDate && (
+                          <span class="mt-0.5 block text-xs text-ink-500 tabular-nums">
+                            {row.due}
+                          </span>
+                        )}
+                      </span>
+                      {href && (
+                        <svg
+                          aria-hidden="true"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          class="mt-1 size-4 shrink-0 text-ink-300"
+                        >
+                          <path d="M8 5l5 5-5 5" />
+                        </svg>
+                      )}
+                    </Row>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+
+          {checklist.settled.length > 0 && (
+            /* Denser on purpose, and not the same row twice: these are the ones
+               with nothing to do on them, so they carry the name and the pill
+               and no date line and no link. */
+            <details class="group mt-4 border-t border-ink-100 pt-4">
+              <summary class={summaryRow}>
+                <h3 class={cardHeading}>
+                  <span class="tabular-nums">{checklist.settled.length}</span>
+                  {checklist.settled.length === 1 ? ' more item' : ' more items'}, nothing to do
+                </h3>
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  class={chevron}
+                >
+                  <path d="M5 8l5 5 5-5" />
+                </svg>
+              </summary>
+              <ul class="mt-2 divide-y divide-ink-100">
+                {checklist.settled.map((row) => (
+                  <li class="flex flex-wrap items-center gap-x-2 gap-y-1 py-2 text-sm">
+                    <span
+                      class:list={[
+                        'flex size-5 shrink-0 items-center justify-center rounded-full',
+                        CHECK_TONES[row.tone].icon,
+                      ]}
+                      aria-hidden="true"
+                    >
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.6"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        class="size-3"
+                      >
+                        <path d={ICONS[row.tone]} />
+                      </svg>
+                    </span>
+                    <span class="min-w-0 flex-1">{row.title}</span>
+                    <span
+                      class:list={[
+                        'rounded-md px-1.5 py-0.5 text-xs font-medium whitespace-nowrap',
+                        CHECK_TONES[row.tone].pill,
+                      ]}
+                    >
+                      {row.text}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </section>
+      )
+    }
     </div>
 
     <div class="space-y-4">
@@ -958,69 +1275,30 @@ const recordOpen = error !== null
         )
       }
 
-      <div class={card}>
-        <h3 class="text-xs tracking-wide text-ink-500 uppercase">Dates not recorded</h3>
-        <div class="mt-1 text-3xl font-semibold tabular-nums">{missing.length}</div>
-        <p class="mt-2 text-sm text-ink-500">
-          A missing date is not a safe date. Until you record it, we list this driver as missing
-          data, next to the overdue ones.
-        </p>
-        {
-          missing.length > 0 && (
-            <ul class="mt-3 space-y-1 text-sm text-ink-700">
-              {missing.map((a) => (
-                <li>{a.label}</li>
-              ))}
-            </ul>
-          )
-        }
-      </div>
+      {/*
+        THE "DATES NOT RECORDED" CARD IS GONE FROM HERE, AND NOTHING IT SAID IS.
 
-      <div class={card}>
-        <h3 class="text-xs tracking-wide text-ink-500 uppercase">Record</h3>
-        <dl class="mt-2 divide-y divide-ink-100 text-sm">
-          <div class="flex justify-between gap-4 py-2">
-            <dt class="text-ink-500">Status</dt>
-            <dd>
-              <span
-                class:list={[
-                  'rounded-md px-2 py-0.5 text-xs font-medium',
-                  statusPillClass(driver.status),
-                ]}
-              >
-                {driver.status}
-              </span>
-            </dd>
-          </div>
-          {/*
-            Why the ring above is missing, said where the status is — the same
-            sentence in the same place as the truck page. `dqf` is null for a
-            driver who is not active, so the circle simply is not there, and a
-            card that vanishes without a word reads as broken rather than as
-            switched off. This page had the disappearing ring and not the
-            explanation.
-          */}
-          {
-            !isActiveDriver(driver) && (
-              <div class="py-2">
-                <p class="text-xs text-ink-500">
-                  {DRIVER_NOT_ACTIVE_MEANS} Set him back to Active to start again.
-                </p>
-              </div>
-            )
-          }
-          <div class="flex justify-between gap-4 py-2">
-            <dt class="text-ink-500">Added</dt>
-            <dd class="text-right tabular-nums">
-              {formatDate(String(driver.created_at).slice(0, 10))}
-            </dd>
-          </div>
-          <div class="flex justify-between gap-4 py-2">
-            <dt class="text-ink-500">Source</dt>
-            <dd class="text-right">{driver.source}</dd>
-          </div>
-        </dl>
-      </div>
+        It counted the anchors with `expected: 'always'` and no date, and listed
+        their labels. The checklist above says the same thing per obligation, in
+        the engine's own words, with a link to the box that answers each one —
+        and it says it about every tracked date rather than only the anchors.
+        Two counts of the same gap, in two columns of one screen, is how an
+        owner learns that one of them is not worth reading.
+
+        The count itself lives on: it is the summary of the date form below,
+        where the boxes are.
+      */}
+      {/*
+        THE "RECORD" CARD IS GONE FROM HERE TOO, AND FOR A PLAINER REASON.
+
+        It was a 176px card holding three things: the status pill, which belongs
+        beside his name and is now on the record summary where it is read first;
+        the day the row was created and where it came from, which are facts
+        about the database rather than about the driver and now sit at the foot
+        of the record form; and the sentence saying why the ring above it is
+        missing, which has followed the status pill onto the summary — it has to
+        be beside the status, because the status is what caused it.
+      */}
     </div>
   </div>
 
@@ -1038,60 +1316,147 @@ const recordOpen = error !== null
     to this page to LOOK at; the dates are what it comes to fix.
   */}
   <section id="dates" class="mt-8 scroll-mt-24">
-  <form method="POST" class="space-y-4">
-    <div>
-      <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
-      <p class="mt-1 max-w-3xl text-sm text-ink-500">
-        These are the dates we count the deadlines from. We save each one as a new entry instead
-        of replacing the old one, because an expired medical card is the proof this driver was
-        qualified while it ran. A blank box changes nothing. To fix a date, type the new one over
-        the old one.
-      </p>
-    </div>
+  <div class="rounded-xl border border-ink-100 bg-white p-5">
+    <details open={datesOpen} class="group">
+      <summary class={summaryRow}>
+        <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          class={chevron}
+        >
+          <path d="M5 8l5 5 5-5"></path>
+        </svg>
+        <span class="ml-auto text-sm font-medium text-brand-600 group-open:hidden">Change</span>
 
-    {
-      DRIVER_ANCHOR_GROUPS.map((group) => (
-        <div class={card}>
-          {/* The same heading the truck page gives its date groups. The two
-              pages had two different treatments for one thing — 16px black here,
-              12px grey uppercase there — on screens an owner moves between all
-              morning. */}
-          <h3 class={cardHeading}>{group.name}</h3>
-          <div class="mt-4 grid gap-4 sm:grid-cols-2">
-            {group.anchors.map((anchor) => (
-              <label class="block">
-                <span class="text-sm font-medium">{anchor.label}</span>
-                <input
-                  type="date"
-                  name={`date_${anchor.key}`}
-                  value={current.get(anchorSlot('driver', id, anchor.key))?.occurred_on ?? ''}
-                  max={anchor.kind === 'last_done' ? today : undefined}
-                  class={`${field} tabular-nums`}
-                />
-                <span class="mt-1 block text-xs text-ink-500">{anchor.help}</span>
-              </label>
-            ))}
-          </div>
+        {/*
+          THE COUNT THE OLD SIDEBAR CARD CARRIED, SAID WHERE THE BOXES ARE.
+
+          A closed fold has to answer the question it is hiding. This one says
+          how many of the dates we expect from every driver are still blank —
+          the same `missing` count, now beside the form that fills them in
+          instead of in a card on the other side of the screen.
+        */}
+        <span class="w-full text-sm">
+          {missing.length > 0 ? (
+            /* The count, not the list. The checklist above already names every
+               one of these in the rule's own words, with a link to the box —
+               printing the labels again here is the same gap said twice on one
+               screen, which teaches him that one of the two is not worth
+               reading. */
+            <span>
+              <span class="font-medium tabular-nums">{missing.length}</span>
+              {missing.length === 1
+                ? ' date we expect from every driver is not recorded.'
+                : ' dates we expect from every driver are not recorded.'}
+            </span>
+          ) : (
+            <span class="text-ink-500">Every date we expect from a driver is recorded.</span>
+          )}
+        </span>
+      </summary>
+
+      <form method="POST" class="mt-5 space-y-4 border-t border-ink-100 pt-5">
+        <p class="max-w-3xl text-sm text-ink-500">
+          These are the dates we count the deadlines from. We save each one as a new entry instead
+          of replacing the old one, because an expired medical card is the proof this driver was
+          qualified while it ran. A blank box changes nothing. To fix a date, type the new one over
+          the old one.
+        </p>
+
+        {
+          DRIVER_ANCHOR_GROUPS.map((group) => {
+            /*
+              A GROUP NOBODY HAS TO ANSWER FOLDS ITSELF.
+
+              Every box in "Exemptions and waivers" is blank for almost every
+              driver, and the four of them were 614px of a 2,220px form — a
+              quarter of the tallest thing on the page, asking about a Skill
+              Performance Evaluation certificate that well under 1% of drivers
+              hold. A group folds only when EVERY box in it is optional AND
+              every one is empty: a date already recorded is never folded away,
+              because a date on file is the answer somebody came to read.
+            */
+            const blankOptional =
+              !group.anchors.some((a) => a.key === wantedBox) &&
+              group.anchors.every(
+                (a) =>
+                  a.expected === 'only_if_it_applies' &&
+                  !current.has(anchorSlot('driver', id, a.key)),
+              )
+            return (
+              <div class={card}>
+                {/* The same heading the truck page gives its date groups. The two
+                    pages had two different treatments for one thing — 16px black here,
+                    12px grey uppercase there — on screens an owner moves between all
+                    morning. */}
+                <details open={!blankOptional} class="group/field">
+                  <summary class={summaryRow}>
+                    <h3 class={cardHeading}>{group.name}</h3>
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      class="size-4 shrink-0 text-ink-500 transition-transform group-open/field:rotate-180"
+                    >
+                      <path d="M5 8l5 5 5-5"></path>
+                    </svg>
+                    {blankOptional && (
+                      <span class="ml-auto text-xs text-ink-500">
+                        Leave blank unless he holds one
+                      </span>
+                    )}
+                  </summary>
+                  <div class="mt-4 grid gap-4 sm:grid-cols-2">
+                    {group.anchors.map((anchor) => (
+                      /* The id is what "Add the date →" in the checklist lands
+                         on, so the box a row asks for is the box he sees. */
+                      <label id={`date_${anchor.key}`} class="block scroll-mt-24">
+                        <span class="text-sm font-medium">{anchor.label}</span>
+                        <input
+                          type="date"
+                          name={`date_${anchor.key}`}
+                          value={current.get(anchorSlot('driver', id, anchor.key))?.occurred_on ?? ''}
+                          max={anchor.kind === 'last_done' ? today : undefined}
+                          class={`${field} tabular-nums`}
+                        />
+                        <span class="mt-1 block text-xs text-ink-500">{anchor.help}</span>
+                      </label>
+                    ))}
+                  </div>
+                </details>
+              </div>
+            )
+          })
+        }
+
+        <div
+          class="sticky bottom-0 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white/95 p-4 backdrop-blur"
+        >
+          <span class="flex-1 text-sm text-ink-500">
+            Only the boxes you changed are written. Blank boxes are left alone.
+          </span>
+          <button
+            type="submit"
+            name="intent"
+            value="save_dates"
+            class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+          >
+            Save dates
+          </button>
         </div>
-      ))
-    }
-
-    <div
-      class="sticky bottom-0 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white/95 p-4 backdrop-blur"
-    >
-      <span class="flex-1 text-sm text-ink-500">
-        Only the boxes you changed are written. Blank boxes are left alone.
-      </span>
-      <button
-        type="submit"
-        name="intent"
-        value="save_dates"
-        class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-      >
-        Save dates
-      </button>
-    </div>
-  </form>
+      </form>
+    </details>
+  </div>
   </section>
 
   {/*
@@ -1263,8 +1628,37 @@ const recordOpen = error !== null
     history.length > 0 && (
       <section id="history" class="mt-8 scroll-mt-24">
         <div class={card}>
-          <h2 class="text-lg font-semibold tracking-tight">Everything recorded for this driver</h2>
-          <p class="mt-1 text-sm text-ink-500">
+          {/*
+            FOLDED, BECAUSE IT IS A LOG AND IT ONLY GROWS.
+
+            Every date ever recorded, withdrawn ones included — which is right,
+            and which means a driver of three years carries a table nobody walks
+            past on purpose. It is opened when a date on the page looks wrong,
+            so it opens on its own in the two cases where that has just
+            happened: a withdrawal went through, or one was refused. The count
+            is in the summary, so the closed fold still says how much is in it.
+          */}
+          <details open={historyOpen} class="group">
+            <summary class={summaryRow}>
+              <h2 class="text-lg font-semibold tracking-tight">Everything recorded for this driver</h2>
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 20 20"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                class={chevron}
+              >
+                <path d="M5 8l5 5 5-5"></path>
+              </svg>
+              <span class="ml-auto text-sm text-ink-500">
+                <span class="tabular-nums">{history.length}</span>
+                {history.length === 1 ? ' entry' : ' entries'}
+              </span>
+            </summary>
+          <p class="mt-3 text-sm text-ink-500">
             We keep old dates instead of replacing them. An old date is the proof this driver was
             qualified during the time it covered. The <strong>latest date</strong> is the one we
             use, not the one you typed last. So to move a date to an EARLIER one, withdraw the
@@ -1376,6 +1770,7 @@ const recordOpen = error !== null
               </tbody>
             </table>
           </div>
+          </details>
         </div>
       </section>
     )

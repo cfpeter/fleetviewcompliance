@@ -6,9 +6,11 @@
  * URL she can bookmark, text to the owner, or reload on one bar of signal in a
  * yard. Nothing here runs JavaScript.
  */
+import Proportion from '../../../components/charts/Proportion.astro'
 import Ring from '../../../components/charts/Ring.astro'
 import App from '../../../layouts/App.astro'
 import { dqRing, rosterLine, rowLine } from '../../../lib/charts/dq-rings.ts'
+import { CHECK_TONES, pillFor, rosterBar } from '../../../lib/charts/driver-status.ts'
 import { loadDeadlines } from '../../../lib/deadlines.ts'
 import {
   DRIVER_STATUSES,
@@ -141,6 +143,40 @@ const answer = rosterLine(rings)
 // Counted rather than assumed: the roster mixes tabs, and the caveat is only
 // true of the rows actually on this screen.
 const unchecked = rows.length - rings.length
+
+/**
+ * THE ROSTER BAR: the same four buckets as the rings, added up.
+ *
+ * One driver, one segment, chosen by the worst thing in his file — so the bar
+ * and the column of rings under it are two readings of one set of numbers and
+ * cannot disagree. The arithmetic is in src/lib/charts/driver-status.ts.
+ *
+ * It sits in the same block as the sentence rather than in a `Figure` card of
+ * its own: a roster is a work surface, and a card with a title and a caveat
+ * line would push the first driver another 140px down a page an owner opens to
+ * find a man's name. The caveat it would have carried is the sentence already
+ * under it, which was there before the bar was.
+ */
+const bar = rosterBar(rings)
+
+/**
+ * The CDL expiry pill, taken from the rule engine rather than from the column.
+ *
+ * The date beside it is a plain string comparison and may only ever raise alarm
+ * (see the cell below). This is the engine's own answer for `cdl_expiry`, so it
+ * is allowed to count days in either direction — and it is the same function
+ * that draws the pills on the driver page, so the two screens say the same
+ * thing about the same licence.
+ *
+ * A driver off the active list has no items at all, so he gets no pill. That is
+ * the same rule the ring follows and it is explained in the sentence above.
+ */
+const cdlByDriver = new Map(
+  rows.map((d) => {
+    const item = byDriver.get(d.id)?.find((i) => i.rule.code === 'cdl_expiry')
+    return [d.id, item ? pillFor(item, observedAt) : null]
+  }),
+)
 
 /** A link that keeps the other filter intact. */
 function withParam(key: string, value: string): string {
@@ -290,6 +326,17 @@ const said = 'text-ink-500 sm:hidden'
         </div>
 
         {/*
+          THE SHAPE OF THE ROSTER, IN ONE BAR, UNDER THE SENTENCE THAT SAYS IT.
+
+          The sentence is the answer and stays first; the bar is how the same
+          answer is taken in without reading. Every segment prints its own count
+          and its own words beside it — `Proportion` will not draw a legend-less
+          bar, and it must not: a thin red stripe looks like a small problem
+          even when it is two men who cannot legally be under a load.
+        */}
+        {rings.length > 0 && <div class="mb-3"><Proportion segments={bar.segments} total={bar.total} /></div>}
+
+        {/*
           What the rings do NOT cover, beside them rather than in a footnote.
           The shape is taken in before any prose is read, so the caveat has to
           be where the shape is.
@@ -326,6 +373,7 @@ const said = 'text-ink-500 sm:hidden'
             <tbody class="divide-y divide-ink-100">
               {rows.map((d) => {
                 const ring = ringByDriver.get(d.id)
+                const cdl = cdlByDriver.get(d.id) ?? null
                 return (
                 <tr class="flex flex-col py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
                   {/* The ring lives in the FIRST column, with the name, and on a
@@ -396,7 +444,7 @@ const said = 'text-ink-500 sm:hidden'
                   {/* THIRD ON A PHONE, right under the status: an expired CDL is
                       a man who cannot be under a load today, and the date goes
                       red by itself. */}
-                  <td class={`${cell} order-3 mt-1 whitespace-nowrap tabular-nums sm:mt-0`}>
+                  <td class={`${cell} order-3 mt-1 tabular-nums sm:mt-0`}>
                     <span class={said}>CDL expires </span>
                     {
                       /* Red for a date already gone, and nothing at all for a
@@ -406,12 +454,35 @@ const said = 'text-ink-500 sm:hidden'
                          which is not the same as compliant, and the deadline
                          engine is what will eventually say so. */
                     }
-                    {d.cdl_expires_on ? (
-                      <span class:list={[d.cdl_expires_on < today ? 'font-medium text-red-700' : '']}>
-                        {formatDate(d.cdl_expires_on)}
+                    <span class="whitespace-nowrap">
+                      {d.cdl_expires_on ? (
+                        <span class:list={[d.cdl_expires_on < today ? 'font-medium text-red-700' : '']}>
+                          {formatDate(d.cdl_expires_on)}
+                        </span>
+                      ) : (
+                        <span class="text-ink-300">—</span>
+                      )}
+                    </span>
+                    {/*
+                      HOW LONG, IN WORDS, AND ONLY WHEN THERE IS SOMETHING TO SAY.
+
+                      The engine's own answer for this licence, so "overdue 12
+                      days" is counted from the day it was due and never from the
+                      next occurrence after it. A green pill on every row of
+                      forty would be forty pills nobody reads, and the date is
+                      already printed beside it — so a licence that is dated and
+                      far out gets the date alone. The three states that need
+                      him keep their pill: gone, coming up, and no date at all.
+                    */}
+                    {cdl && cdl.tone !== 'ok' && cdl.tone !== 'read' && (
+                      <span
+                        class:list={[
+                          'ml-2 inline-block rounded-md px-1.5 py-0.5 text-xs font-medium whitespace-nowrap',
+                          CHECK_TONES[cdl.tone].pill,
+                        ]}
+                      >
+                        {cdl.text}
                       </span>
-                    ) : (
-                      <span class="text-ink-300">—</span>
                     )}
                   </td>
                   {/* SECOND ON A PHONE. "Is he still one of mine" comes before
