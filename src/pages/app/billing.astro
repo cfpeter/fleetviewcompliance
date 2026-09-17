@@ -21,6 +21,7 @@
  * each, every amount and every date said plainly. No jokes, no hedging, nothing
  * clever.
  */
+import ErrorSummary from '../../components/ui/ErrorSummary.astro'
 import App from '../../layouts/App.astro'
 import { canCheckout, readStripeConfig, runtimeEnv } from '../../lib/billing/config.ts'
 import { type BillingRow, planState, trialEndsAt } from '../../lib/billing/plan.ts'
@@ -49,8 +50,13 @@ const back = (query = '') => Astro.redirect(`/app/billing${query}`, 303)
  * from the query string. The same rule settings.astro documents: `?error=` text
  * printed verbatim lets anyone hand a customer a link to their own billing page
  * reading whatever they like, in our styling, on our domain.
+ *
+ * `#form-errors` is how the focus reaches the message with no script running:
+ * the box at the top of the page is `tabindex="-1"`, so a 303 to this fragment
+ * scrolls to it and focuses it. A fragment never reaches the server, so the
+ * destination is the same page it always was.
  */
-const fail = (code: string) => back(`?error=${code}`)
+const fail = (code: string) => back(`?error=${code}#form-errors`)
 
 /** The columns every branch of this page reads. One list, one shape. */
 const BILLING_COLUMNS =
@@ -214,14 +220,19 @@ function day(d: Date | null): string {
   return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
 }
 
+/**
+ * Each sentence says what is wrong AND what to do about it. A refusal a person
+ * cannot act on is the same to him as a button that does nothing, and this is
+ * the screen about his money.
+ */
 const errorMessage: Record<string, string> = {
-  stripe_off: 'Card payment is not switched on yet.',
-  no_account: 'You do not have a card on file yet.',
-  no_subscription: 'You are not paying yet. There is nothing to change.',
-  stripe_error: 'We could not reach Stripe. Please try again.',
-  portal_error: 'We could not open your card page. Please try again.',
-  load_failed: 'We could not read your trucks. Please try again.',
-  unknown_intent: 'That button did nothing. Please try again.',
+  stripe_off: 'Card payment is not switched on yet. Nothing is being charged. Your account keeps working — there is nothing for you to do.',
+  no_account: 'You do not have a card on file yet. Press "Pay with card" first, then this page opens.',
+  no_subscription: 'You are not paying yet, so there is no truck count to change. Press "Pay with card" first.',
+  stripe_error: 'We could not reach Stripe. Wait a minute and press the button again. Nothing was charged.',
+  portal_error: 'We could not open your card page. Wait a minute and press the button again.',
+  load_failed: 'We could not read your trucks, so we did not send a count to Stripe. Reload this page and press the button again.',
+  unknown_intent: 'That button is from an older version of this page. Reload the page and press it again.',
 }
 
 const savedMessage: Record<string, string> = {
@@ -234,18 +245,19 @@ const checkoutMessage: Record<string, string> = {
 }
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const primary =
-  'rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700'
-const secondary =
-  'rounded-lg border border-ink-100 px-4 py-2.5 text-sm font-medium transition hover:bg-ink-50'
 ---
 
 <App title="Billing" subtitle="What you pay, and when.">
   {
+    /* The designed error state, not a red line of text: the same box, the same
+       red, and the same `role="alert"` every rejected form in the app answers
+       with. `fail()` sends the browser to its id, which is what focuses it. */
     errorCode && errorMessage[errorCode] && (
-      <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
-        {errorMessage[errorCode]}
-      </p>
+      <ErrorSummary
+        class="mb-5"
+        title="We could not do that"
+        errors={[errorMessage[errorCode]]}
+      />
     )
   }
   {
@@ -269,9 +281,12 @@ const secondary =
   }
   {
     fleetError && (
-      <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
-        We could not read your trucks, so the price below may be wrong. Please reload.
-      </p>
+      <ErrorSummary
+        id="fleet-error"
+        class="mb-5"
+        title="We could not read your trucks"
+        errors={['The price below may be wrong. Reload this page and it will read them again.']}
+      />
     )
   }
 
@@ -282,16 +297,34 @@ const secondary =
       <h2 class="text-lg font-semibold tracking-tight">Your plan</h2>
 
       {/* The price, large, before any explanation of it. It is the thing the
-      page is opened for, and it is true in every plan state. */}
-      <p class="mt-3 text-4xl font-semibold tracking-tight tabular-nums">
-        {formatMoney(nowCents)}
-        <span class="text-base font-normal text-ink-500"> each month</span>
-      </p>
-      <p class="mt-1 text-sm text-ink-500">
-        {breakdown.billable}{' '}
-        {breakdown.billable === 1 ? 'truck' : 'trucks'} · ${site.pricing.perTruck} per truck · $
-        {site.pricing.floor} minimum
-      </p>
+      page is opened for, and it is true in every plan state.
+
+      EXCEPT ONE. When the truck read failed, `breakdown.billable` is 0 and the
+      arithmetic quietly returns the monthly minimum — a real, specific, wrong
+      amount, printed in the size this page reserves for the answer. A figure we
+      do not have is a dash and a sentence, never a number we made up. */}
+      {
+        fleetError ? (
+          <>
+            <p class="mt-3 text-4xl font-semibold tracking-tight text-ink-500">—</p>
+            <p class="mt-1 text-sm text-ink-700">
+              We could not read your trucks, so we cannot show your price. Reload this page.
+            </p>
+          </>
+        ) : (
+          <>
+            <p class="mt-3 text-4xl font-semibold tracking-tight tabular-nums">
+              {formatMoney(nowCents)}
+              <span class="text-base font-normal text-ink-500"> each month</span>
+            </p>
+            <p class="mt-1 text-sm text-ink-500">
+              {breakdown.billable}{' '}
+              {breakdown.billable === 1 ? 'truck' : 'trucks'} · ${site.pricing.perTruck} per truck ·
+              ${site.pricing.floor} minimum
+            </p>
+          </>
+        )
+      }
 
       {/* ------------------------------------------------ the state, in words */}
 
@@ -391,7 +424,7 @@ const secondary =
         {
           checkoutOn && (plan.state === 'trial' || plan.state === 'trial_over' || plan.state === 'ended') && (
             <form method="POST">
-              <button type="submit" name="intent" value="start_checkout" class={primary}>
+              <button type="submit" name="intent" value="start_checkout" class="btn btn-primary">
                 Pay with card
               </button>
             </form>
@@ -400,18 +433,19 @@ const secondary =
         {
           stripe.secretKey && row?.stripe_customer_id && (
             <form method="POST">
-              <button type="submit" name="intent" value="open_portal" class={secondary}>
+              <button type="submit" name="intent" value="open_portal" class="btn btn-secondary btn-sm">
                 Card, invoices and cancel
               </button>
             </form>
           )
         }
-        <a href="/app/vehicles" class={secondary}>See my trucks</a>
+        {/* This only navigates, so it is the quietest of the three. */}
+        <a href="/app/vehicles" class="btn btn-tertiary btn-sm">See my trucks</a>
       </div>
 
       {
         checkoutOn && (plan.state === 'trial' || plan.state === 'trial_over') && (
-          <p class="mt-3 text-xs text-ink-500">
+          <p class="mt-3 text-xs text-ink-700">
             You pay by card. You can stop any month. There is no contract.
           </p>
         )
@@ -428,13 +462,16 @@ const secondary =
               have {breakdown.billable}. Press the button to make your bill{' '}
               {formatMoney(nowCents)} each month.
             </p>
+            {/*
+              Brand blue, not amber. Amber is the colour of the box because a
+              stale count is a clock the owner is losing money on; the button
+              inside it is the one action on this view, and inside /app the
+              action colour is blue. It cannot collide with "Pay with card"
+              either — that button only appears while the plan is trial, trial
+              over or ended, and this block only appears while it is paying.
+            */}
             <form method="POST" class="mt-3">
-              <button
-                type="submit"
-                name="intent"
-                value="update_trucks"
-                class="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-700"
-              >
+              <button type="submit" name="intent" value="update_trucks" class="btn btn-primary btn-sm">
                 Bill me for {breakdown.billable} {breakdown.billable === 1 ? 'truck' : 'trucks'}
               </button>
             </form>
@@ -448,21 +485,30 @@ const secondary =
     <div class="grid gap-4">
       <section class={card}>
         <h2 class="font-medium tracking-tight">Which trucks you pay for</h2>
+        {/* A count we could not read is a dash, for the same reason the price
+            above is: a 0 here reads as "you have no trucks", which is an answer
+            rather than the absence of one. */}
         <dl class="mt-3 divide-y divide-ink-100 text-sm">
           <div class="flex justify-between gap-4 py-2.5">
             <dt class="text-ink-500">Active power units — you pay for these</dt>
-            <dd class="text-right font-medium tabular-nums">{breakdown.billable}</dd>
+            <dd class="text-right font-medium tabular-nums">
+              {fleetError ? '—' : breakdown.billable}
+            </dd>
           </div>
           <div class="flex justify-between gap-4 py-2.5">
             <dt class="text-ink-500">Trucks not Active — free</dt>
-            <dd class="text-right font-medium tabular-nums">{breakdown.notActive}</dd>
+            <dd class="text-right font-medium tabular-nums">
+              {fleetError ? '—' : breakdown.notActive}
+            </dd>
           </div>
           <div class="flex justify-between gap-4 py-2.5">
             <dt class="text-ink-500">Trailers — free</dt>
-            <dd class="text-right font-medium tabular-nums">{breakdown.trailers}</dd>
+            <dd class="text-right font-medium tabular-nums">
+              {fleetError ? '—' : breakdown.trailers}
+            </dd>
           </div>
         </dl>
-        <p class="mt-3 text-xs text-ink-500">
+        <p class="mt-3 text-xs text-ink-700">
           You pay for power units: trucks with an engine. Trailers are free. Drivers are free. Extra
           users are free.
         </p>
@@ -473,7 +519,7 @@ const secondary =
           same breath that we stop watching its dates. src/lib/fleet/active.ts
           is where the rule lives; this is where he reads it.
         */}
-        <p class="mt-2 text-xs text-ink-500">
+        <p class="mt-2 text-xs text-ink-700">
           Only <span class="font-medium">Active</span> trucks count. Sold, Out of service and
           Inactive trucks are free — and we stop watching their dates. Change the status on the
           truck page. Your bill goes down by ${site.pricing.perTruck} and that truck leaves your

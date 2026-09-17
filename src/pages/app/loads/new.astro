@@ -18,6 +18,7 @@
 import App from '../../../layouts/App.astro'
 import {
   EQUIPMENT_TYPES,
+  loadLabel,
   matchCustomerName,
   parseMoneyToCents,
   parseOptionalInt,
@@ -55,11 +56,57 @@ const CARRY = [
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/** The load a rejected save points at, so the reader can go and read it. */
+interface Duplicate {
+  id: string
+  /** What that load is called on screen — its own number, or the broker's. */
+  name: string
+}
+
+type NumberColumn = 'load_number' | 'broker_reference'
+
+interface DuplicateHit extends Duplicate {
+  column: NumberColumn
+  /** The number she typed, echoed back so the message names it. */
+  value: string
+}
+
+/**
+ * A load in this carrier's account already carrying one of the two numbers.
+ *
+ * Two queries rather than one `or=` filter. PostgREST parses an `or=` string as
+ * SYNTAX, so a comma or a bracket inside a broker reference becomes extra
+ * filters and a 400 instead of a check — see `referenceSearchFilter` in
+ * lib/loads.ts, which strips those characters precisely because of it. A value
+ * handed to `.eq()` is escaped by the client and stays the value she typed.
+ */
+async function findDuplicate(
+  loadNumber: string | null,
+  brokerReference: string | null,
+  excludeId?: string,
+): Promise<{ ok: true; hit: DuplicateHit | null } | { ok: false; message: string }> {
+  const pairs: [NumberColumn, string | null][] = [
+    ['load_number', loadNumber],
+    ['broker_reference', brokerReference],
+  ]
+  for (const [column, value] of pairs) {
+    if (!value) continue
+    let q = supabase.from('loads').select('id, load_number, broker_reference').eq(column, value)
+    // The load being edited is not its own duplicate.
+    if (excludeId) q = q.neq('id', excludeId)
+    const { data, error } = await q.limit(1)
+    if (error) return { ok: false, message: error.message }
+    const row = data?.[0]
+    if (row) return { ok: true, hit: { id: row.id, name: loadLabel(row), column, value } }
+  }
+  return { ok: true, hit: null }
+}
+
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData()
   const intent = String(form.get('intent') ?? '')
 
-  const reject = (message: string) => {
+  const reject = (message: string, duplicate?: Duplicate) => {
     const next = new URLSearchParams({ error: message })
     for (const key of CARRY) {
       const v = String(form.get(key) ?? '').trim()
@@ -68,7 +115,14 @@ if (Astro.request.method === 'POST') {
     // Checkboxes are absent when unticked, so this is only ever set when she
     // ticked it — which is the state worth preserving across a rejection.
     if (form.get('detention_requires_preapproval')) next.set('preapproval', '1')
-    return Astro.redirect(`/app/loads/new?${next.toString()}`, 303)
+    if (duplicate) {
+      next.set('dup', duplicate.id)
+      next.set('dup_name', duplicate.name)
+    }
+    // The fragment is the whole focus mechanism on a page that runs no script:
+    // the browser scrolls to the box and, because it carries tabindex="-1",
+    // hands it the focus too. See src/components/ui/ErrorSummary.astro.
+    return Astro.redirect(`/app/loads/new?${next.toString()}#form-errors`, 303)
   }
 
   if (intent !== 'create') {
@@ -88,6 +142,36 @@ if (Astro.request.method === 'POST') {
   if (!loadNumber && !brokerReference) {
     return reject(
       'Enter a load number or a broker reference. You can fill in everything else later. Without one of these two numbers you cannot find this load again.',
+    )
+  }
+
+  /**
+   * THE SAME NUMBER TWICE, CAUGHT BEFORE THE ROW EXISTS.
+   *
+   * Neither column has a unique index, so two loads can carry one broker
+   * reference — and two do, today. What that costs is the thing the two numbers
+   * are for: the broker rings about TEST-BRKR-003, the search box returns two
+   * rows, and the one she opens is a coin toss. Rates, stops and pay then get
+   * typed onto whichever copy she opened that day.
+   *
+   * Checked here, before the insert, because afterwards the only cure is a
+   * delete — and a delete takes the stops and the pay lines with it.
+   *
+   * No .eq('carrier_id', ...): RLS already scopes every read to the signed-in
+   * carrier, so another carrier's TEST-BRKR-003 is invisible to this query and
+   * cannot block her save.
+   *
+   * `.eq` and not `.ilike`: ilike reads % and _ inside a reference as wildcards,
+   * which would refuse a number nobody else is using. A wrong refusal, while a
+   * broker waits on the phone, is worse than a second copy she can merge later.
+   */
+  const duplicate = await findDuplicate(loadNumber, brokerReference)
+  if (!duplicate.ok) return reject(duplicate.message)
+  if (duplicate.hit) {
+    const { hit } = duplicate
+    return reject(
+      `${hit.column === 'load_number' ? 'Load number' : 'Broker reference'} ${hit.value} is already on another load. Two loads with the same number cannot be told apart. Change the number here, or open that load and work on it.`,
+      { id: hit.id, name: hit.name },
     )
   }
 
@@ -245,6 +329,16 @@ const params = Astro.url.searchParams
 const error = params.get('error')
 const prior = (key: string): string => params.get(key) ?? ''
 
+/**
+ * The load a refused save is pointing at.
+ *
+ * The id is checked against the uuid shape before it becomes an href. It came
+ * off the address bar, and an address bar is a place anybody can type.
+ */
+const dupId = params.get('dup') ?? ''
+const duplicateHref = UUID.test(dupId) ? `/app/loads/${dupId}` : null
+const duplicateName = (params.get('dup_name') ?? '').trim()
+
 // The customer list for the dropdown. RLS scopes it to this carrier; no
 // .eq('carrier_id', ...) belongs here.
 const { data: customerRows } = await supabase
@@ -253,11 +347,17 @@ const { data: customerRows } = await supabase
   .order('name', { ascending: true })
 const customers = (customerRows ?? []) as { id: string; name: string | null }[]
 
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
-const moneyWrap =
-  'mt-1 flex items-center rounded-lg border border-ink-100 bg-white focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20'
-const moneyInput = 'w-full bg-transparent px-2 py-2 text-base tabular-nums outline-none'
+/**
+ * The shared field construction from src/styles/global.css, not a local copy.
+ *
+ * The local one was 40px tall and drew its border in ink-100, which is 1.2:1
+ * against white — a box a reader in a cab in daylight cannot see the edge of.
+ * `.field-input` is 46px, so every box on this form clears the 44px target, and
+ * its border is ink-500.
+ */
+const field = 'field-input mt-1'
+const moneyWrap = 'field-affix mt-1'
+const moneyInput = 'field-affix-input tabular-nums'
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
 ---
 
@@ -266,7 +366,27 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
   subtitle="You only need the broker&#8217;s reference number to start. Add the rest later."
 >
   <div class="max-w-3xl">
-    {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+    {
+      /* The shared error box: role="alert" for a reader already on the page,
+         tabindex="-1" so the 303's #form-errors gives it the focus, and the
+         link to the load that already holds the number — the one thing she
+         needs next and cannot get from a sentence. */
+      error && (
+        <div id="form-errors" role="alert" tabindex="-1" class="error-summary mb-5">
+          <p class="font-semibold">
+            <span aria-hidden="true">⚠</span> Fix this before saving
+          </p>
+          <p class="mt-1.5">{error}</p>
+          {duplicateHref && (
+            <p class="mt-2">
+              <a href={duplicateHref} class="font-semibold">
+                Open {duplicateName ? `load ${duplicateName}` : 'that load'}
+              </a>
+            </p>
+          )}
+        </div>
+      )
+    }
 
     <form method="POST" class="space-y-4">
       <div class={card}>
@@ -283,7 +403,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
                than any other on this form gets skipped. */
           }
           <label class="block">
-            <span class="text-sm font-medium">Broker reference</span>
+            <span class="field-label">Broker reference</span>
             <input
               type="text"
               name="broker_reference"
@@ -292,14 +412,14 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
               placeholder="From the rate confirmation"
               class={`${field} tabular-nums`}
             />
-            <span class="mt-1 block text-xs text-ink-500">
+            <span class="field-hint block">
               The broker's own number for this load. Search by this number when the broker calls.
             </span>
           </label>
 
           <label class="block">
-            <span class="text-sm font-medium">
-              Load number <span class="font-normal text-ink-300">(ours)</span>
+            <span class="field-label">
+              Load number <span class="font-normal text-ink-500">(ours)</span>
             </span>
             <input
               type="text"
@@ -307,7 +427,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
               value={prior('load_number')}
               class={`${field} tabular-nums`}
             />
-            <span class="mt-1 block text-xs text-ink-500">
+            <span class="field-hint block">
               Your own number, if you use one. Leave it blank if you do not.
             </span>
           </label>
@@ -319,7 +439,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
 
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
           <label class="block">
-            <span class="text-sm font-medium">Existing customer</span>
+            <span class="field-label">Existing customer</span>
             <select name="customer_id" class={field}>
               <option value="">—</option>
               {
@@ -333,7 +453,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
           </label>
 
           <label class="block">
-            <span class="text-sm font-medium">…or type a new one</span>
+            <span class="field-label">…or type a new one</span>
             <input
               type="text"
               name="customer_name"
@@ -341,7 +461,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
               placeholder="e.g. TQL"
               class={field}
             />
-            <span class="mt-1 block text-xs text-ink-500">
+            <span class="field-hint block">
               We save this as a customer you can use again. If the name is already on the list, we
               use that one instead of making a second one. If you also pick from the list, the list
               wins.
@@ -355,7 +475,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
 
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
           <label class="block">
-            <span class="text-sm font-medium">Equipment</span>
+            <span class="field-label">Equipment</span>
             {
               /* A datalist suggests without constraining, and it is plain HTML
                  with no script behind it. A closed <select> guarantees a wrong
@@ -376,7 +496,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
           </label>
 
           <label class="block">
-            <span class="text-sm font-medium">Commodity</span>
+            <span class="field-label">Commodity</span>
             <input
               type="text"
               name="commodity"
@@ -387,7 +507,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
           </label>
 
           <label class="block">
-            <span class="text-sm font-medium">Weight (lb)</span>
+            <span class="field-label">Weight (lb)</span>
             <input
               type="text"
               inputmode="numeric"
@@ -399,7 +519,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
           </label>
 
           <label class="block">
-            <span class="text-sm font-medium">Pieces</span>
+            <span class="field-label">Pieces</span>
             <input
               type="text"
               inputmode="numeric"
@@ -420,9 +540,9 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
 
         <div class="mt-4 grid gap-4 sm:grid-cols-3">
           <label class="block">
-            <span class="text-sm font-medium">Linehaul</span>
+            <span class="field-label">Linehaul</span>
             <div class={moneyWrap}>
-              <span class="pl-3 text-ink-300">$</span>
+              <span class="pl-3 text-ink-500">$</span>
               <input
                 type="text"
                 name="linehaul"
@@ -435,9 +555,9 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
           </label>
 
           <label class="block">
-            <span class="text-sm font-medium">Fuel surcharge</span>
+            <span class="field-label">Fuel surcharge</span>
             <div class={moneyWrap}>
-              <span class="pl-3 text-ink-300">$</span>
+              <span class="pl-3 text-ink-500">$</span>
               <input
                 type="text"
                 name="fuel_surcharge"
@@ -449,9 +569,9 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
           </label>
 
           <label class="block">
-            <span class="text-sm font-medium">Accessorials</span>
+            <span class="field-label">Accessorials</span>
             <div class={moneyWrap}>
-              <span class="pl-3 text-ink-300">$</span>
+              <span class="pl-3 text-ink-500">$</span>
               <input
                 type="text"
                 name="accessorials"
@@ -460,7 +580,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
                 class={moneyInput}
               />
             </div>
-            <span class="mt-1 block text-xs text-ink-500">
+            <span class="field-hint block">
               On a load, money taken off goes in as a negative. A lumper or a fuel advance looks
               like -150.00. Money the broker adds goes in as a plain positive number.
             </span>
@@ -477,7 +597,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
 
         <div class="mt-4 grid gap-4 sm:grid-cols-3">
           <label class="block">
-            <span class="text-sm font-medium">Free hours at pickup</span>
+            <span class="field-label">Free hours at pickup</span>
             <input
               type="text"
               inputmode="numeric"
@@ -489,7 +609,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
           </label>
 
           <label class="block">
-            <span class="text-sm font-medium">Free hours at delivery</span>
+            <span class="field-label">Free hours at delivery</span>
             <input
               type="text"
               inputmode="numeric"
@@ -501,9 +621,9 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
           </label>
 
           <label class="block">
-            <span class="text-sm font-medium">Detention rate (per hour)</span>
+            <span class="field-label">Detention rate (per hour)</span>
             <div class={moneyWrap}>
-              <span class="pl-3 text-ink-300">$</span>
+              <span class="pl-3 text-ink-500">$</span>
               <input
                 type="text"
                 name="detention_rate"
@@ -516,17 +636,20 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
           </label>
         </div>
 
-        <label class="mt-4 flex items-start gap-3">
+        {/* .check-row is the 44px tap target the whole row shares, so the box
+            and its sentence are one control. The 20px box itself comes from
+            global.css, which sizes every checkbox in the app. */}
+        <label class="check-row mt-4 items-start py-2">
           <input
             type="checkbox"
             name="detention_requires_preapproval"
             value="1"
             checked={params.get('preapproval') === '1'}
-            class="mt-0.5 size-4 rounded border-ink-300"
+            class="mt-0.5"
           />
           <span>
-            <span class="text-sm font-medium">The broker must pre-approve detention</span>
-            <span class="mt-1 block text-xs text-ink-500">
+            <span class="field-label">The broker must pre-approve detention</span>
+            <span class="field-hint block">
               Tick this if the driver must call the broker before the free hours run out. If he
               does not call, you cannot bill the wait, however long he sits. If you leave it
               unticked we record "not known yet". We do not record "not needed". You set a clear
@@ -537,16 +660,14 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
       </div>
 
       <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-        <button
-          type="submit"
-          name="intent"
-          value="create"
-          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-        >
+        {/* The one Primary on this page. Everything else here is a link. */}
+        <button type="submit" name="intent" value="create" class="btn btn-primary">
           Add load
         </button>
-        <a href="/app/loads" class="text-sm font-medium text-brand-600 hover:underline">
-          Back to loads
+        {/* ml-0: .link-back pulls itself left by 12px so it can line up under a
+            heading, and this one is the second thing in a row. */}
+        <a href="/app/loads" class="link-back ml-0">
+          <span aria-hidden="true">←</span> Back to loads
         </a>
       </div>
     </form>

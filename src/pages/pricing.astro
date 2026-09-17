@@ -39,11 +39,13 @@ const typed =
 // would leave that question hanging with nowhere to tap.
 const fewer = estimate.state === 'priced' && estimate.trucks > 1 ? estimate.trucks - 1 : null
 
-const stepOn =
-  'flex size-10 shrink-0 items-center justify-center rounded-lg border border-ink-100 bg-white text-xl font-medium transition hover:bg-ink-50'
+// The stepper is two icon-only controls, so it takes the icon-only button: the
+// glyph stays at text-xl, the hit area is the full 44px `.btn-icon` gives it.
+// The dead end of the range is a span with the disabled look — disabled is the
+// one state the contrast floor does not apply to.
+const stepOn = 'btn btn-secondary btn-icon shrink-0 text-xl'
 const stepOff =
-  'flex size-10 shrink-0 items-center justify-center rounded-lg border border-ink-100 text-xl text-ink-300'
-const pill = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
+  'inline-flex size-11 shrink-0 items-center justify-center rounded-lg border border-ink-200 text-xl text-ink-300'
 
 const included = [
   'Every federal and California deadline we track',
@@ -135,44 +137,38 @@ const faqs = [
               required
               inputmode="numeric"
               placeholder="10"
-              class="mt-1 block w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+              class="field-input mt-1 tabular-nums"
             />
           </label>
-          <button
-            type="submit"
-            class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-          >
-            Show me
-          </button>
+          <button type="submit" class="btn btn-primary">Show me</button>
         </form>
       </div>
 
       {/* One tap answers it for most visitors, so the common sizes are links and
-      nobody has to type anything at all. */}
-      <div class="mt-5 flex flex-wrap items-center gap-1.5">
+      nobody has to type anything at all.
+
+      `.filter-tab` and `.is-current` from global.css: the same 44px target and
+      the same tinted-pill selected mark every other filter row in the product
+      uses. `aria-current` says the same thing to a screen reader, so the pill is
+      never the only signal. `gap-2` is the floor between two 44px targets — at
+      the old 6px a thumb aimed at "5 trucks" landed on "10 trucks". */}
+      <div class="mt-5 flex flex-wrap items-center gap-2">
         <span class="mr-1 text-sm text-ink-500">Common fleets</span>
         {
-          examples.map((n) => (
-            <a
-              href={pricingHref(n)}
-              class:list={[
-                pill,
-                estimate.state === 'priced' && estimate.trucks === n
-                  ? 'bg-brand-500/10 text-brand-700'
-                  : 'text-ink-500 hover:bg-ink-50 hover:text-ink-900',
-              ]}
-            >
-              {n} trucks
-            </a>
-          ))
+          examples.map((n) => {
+            const here = estimate.state === 'priced' && estimate.trucks === n
+            return (
+              <a
+                href={pricingHref(n)}
+                aria-current={here ? 'page' : undefined}
+                class:list={['filter-tab', here && 'is-current']}
+              >
+                {n} trucks
+              </a>
+            )
+          })
         }
-        {
-          estimate.state !== 'none' && (
-            <a href="/pricing" class:list={[pill, 'text-ink-500 hover:bg-ink-50']}>
-              Clear
-            </a>
-          )
-        }
+        {estimate.state !== 'none' && <a href="/pricing" class="filter-tab">Clear</a>}
       </div>
 
       {
@@ -214,22 +210,19 @@ const faqs = [
                 : ` Each truck after this adds $${site.pricing.perTruck}. There are no tiers on the
                   way up.`}
             </p>
-            <p class="mt-2 text-xs text-ink-500">
+            <p class="mt-2 text-xs text-ink-700">
               That is the whole bill at that size. Unlimited users, unlimited drivers and trailers,
               no setup fee, no contract.
             </p>
             {/* The one thing this page does NOT know, said next to the number
             rather than under the fold: we priced a number he typed, and the
             bill follows the units actually on the account. */}
-            <p class="mt-1 text-xs text-ink-500">
+            <p class="mt-1 text-xs text-ink-700">
               This price is for the number you typed. Your real bill counts the power units on your
               account. Add or remove one and the bill changes by ${site.pricing.perTruck} that
               month. Nothing is charged for the first {site.pricing.trialDays} days.
             </p>
-            <a
-              href="/check"
-              class="mt-4 inline-block text-sm font-medium text-brand-600 hover:underline"
-            >
+            <a href="/check" class="btn btn-tertiary btn-sm mt-3 -ml-3">
               Start your {site.pricing.trialDays} free days →
             </a>
           </div>
@@ -253,7 +246,10 @@ const faqs = [
             </p>
             <p class="mt-3 text-sm text-blue-900/80">
               Start with your DOT number and we will talk before anything is billed, or{' '}
-              <a href={pricingHref(maxQuoted)} class="font-medium text-blue-900 underline">
+              <a
+                href={pricingHref(maxQuoted)}
+                class="font-medium text-blue-900 underline underline-offset-2"
+              >
                 see the price at {maxQuoted} trucks
               </a>
               .
@@ -296,20 +292,19 @@ const faqs = [
         <p class="mt-2 text-sm text-ink-500">
           Billed monthly. Minimum ${site.pricing.floor}/month.
         </p>
-        <a
-          href="/check"
-          class="mt-6 inline-block rounded-xl bg-brand-600 px-7 py-3.5 font-semibold text-white transition hover:bg-brand-700"
-        >
+        <a href="/check" class="btn btn-primary mt-6 rounded-xl px-7 py-3.5 font-semibold">
           Start with your DOT number →
         </a>
-        <p class="mt-3 text-xs text-ink-500">No card needed. Nothing to cancel if you walk away.</p>
+        <p class="mt-3 text-xs text-ink-700">No card needed. Nothing to cancel if you walk away.</p>
       </div>
 
       <div class={card}>
         <p class="font-medium">What that works out to</p>
         <div class="mt-4 overflow-x-auto">
           <table class="w-full text-sm">
-            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+            {/* ink-700, not ink-500: a column head is text somebody reads, and
+                at 12px the floor is ink-700 whatever it sits on. */}
+            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase">
               <tr>
                 <th class="py-2 font-medium">Trucks</th>
                 <th class="py-2 text-right font-medium">Per month</th>
@@ -327,7 +322,13 @@ const faqs = [
                   return (
                     <tr class:list={[here && 'bg-brand-500/[0.06]']}>
                       <td class="py-2.5 tabular-nums">
-                        <a href={pricingHref(n, { fromBelow: true })} class="font-medium text-brand-600 hover:underline">
+                        {/* Underlined at rest, and the full row height to tap.
+                            A blue number with no underline is a link half this
+                            audience never sees. */}
+                        <a
+                          href={pricingHref(n, { fromBelow: true })}
+                          class="link inline-flex min-h-11 items-center font-medium"
+                        >
                           {n}
                         </a>
                       </td>
@@ -342,7 +343,7 @@ const faqs = [
             </tbody>
           </table>
         </div>
-        <p class="mt-4 text-xs text-ink-500">
+        <p class="mt-4 text-xs text-ink-700">
           Small fleets pay the ${site.pricing.floor} minimum, so the price per truck starts higher
           and comes down to ${site.pricing.perTruck}.
         </p>
@@ -371,7 +372,7 @@ const faqs = [
             ))
           }
         </ul>
-        <p class="mt-4 text-xs text-ink-500">
+        <p class="mt-4 text-xs text-ink-700">
           Every size gets the same product. Nothing is locked behind a bigger plan.
         </p>
       </div>
@@ -389,7 +390,10 @@ const faqs = [
           You probably already pay $25 to $40 per truck each month for ELDs. This costs less than
           a quarter of that.
         </p>
-        <p class="mt-4 text-xs text-ink-300">
+        {/* This was ink-300, which is 1.85:1 — the sentence that says where the
+            comparison above came from, present and unreadable. At 12px the
+            floor is ink-700. */}
+        <p class="mt-4 text-xs text-ink-700">
           Competitor prices come from published rate cards and public reviews, as of September
           2026. If a vendor shows us a price is out of date, we will fix it.
         </p>

@@ -72,6 +72,24 @@ const insuranceShort =
 const title = carrier
   ? `USDOT ${dot} · ${carrier.legal_name ?? 'Carrier'}`
   : 'Check your USDOT number'
+
+/**
+ * The shared badge, picked from the colour pair the library hands back.
+ *
+ * `statusLabel` and the authority rows still return a bare `bg-… text-…` pair,
+ * which is a second badge construction living beside `.badge` in global.css —
+ * different radius, different weight, and in the grey case `text-ink-500` on a
+ * tint, which is under the floor. This maps the pair onto the shared set so a
+ * status reads the same here as it does on every screen inside the app.
+ */
+const badgeFor = (tone: string): string =>
+  tone.includes('emerald')
+    ? 'badge badge-success'
+    : tone.includes('red')
+      ? 'badge badge-danger'
+      : tone.includes('amber')
+        ? 'badge badge-warning'
+        : 'badge badge-neutral'
 ---
 
 <Public
@@ -91,10 +109,7 @@ const title = carrier
         aria-label="USDOT number"
         class="w-full rounded-xl border border-ink-100 bg-white px-4 py-3 text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
       />
-      <button
-        type="submit"
-        class="shrink-0 rounded-xl bg-brand-600 px-6 py-3 font-medium text-white transition hover:bg-brand-700"
-      >
+      <button type="submit" class="btn btn-primary shrink-0 rounded-xl px-6">
         Check
       </button>
     </form>
@@ -143,9 +158,7 @@ const title = carrier
               )}
             </p>
           </div>
-          <span class:list={['rounded-md px-2.5 py-1 text-sm font-medium', status.tone]}>
-            {status.label}
-          </span>
+          <span class={badgeFor(status.tone)}>{status.label}</span>
         </div>
 
         {carrier.status_code === 'I' && (
@@ -157,23 +170,23 @@ const title = carrier
 
         <div class="mt-6 grid gap-4 sm:grid-cols-3">
           <div class={card}>
-            <div class="text-xs tracking-wide text-ink-500 uppercase">Trucks</div>
+            <div class="text-xs tracking-wide text-ink-700 uppercase">Trucks</div>
             <div class="mt-1 text-3xl font-semibold tabular-nums">{num(carrier.power_units)}</div>
           </div>
           <div class={card}>
-            <div class="text-xs tracking-wide text-ink-500 uppercase">Drivers</div>
+            <div class="text-xs tracking-wide text-ink-700 uppercase">Drivers</div>
             <div class="mt-1 text-3xl font-semibold tabular-nums">{num(carrier.total_drivers)}</div>
-            <div class="mt-1 text-xs text-ink-500">{num(carrier.total_cdl)} have a CDL</div>
+            <div class="mt-1 text-xs text-ink-700">{num(carrier.total_cdl)} have a CDL</div>
           </div>
           <div class={card}>
-            <div class="text-xs tracking-wide text-ink-500 uppercase">Operation</div>
+            <div class="text-xs tracking-wide text-ink-700 uppercase">Operation</div>
             <div class="mt-1 text-lg font-semibold">
               {/* operationLabel, not a ternary. A blank field in the federal file is
                   not a statement that he runs intrastate only, and that distinction
                   decides which half of the rule catalogue he is shown. */}
               {operationLabel(carrier.carrier_operation)}
             </div>
-            <div class="mt-1 text-xs text-ink-500">
+            <div class="mt-1 text-xs text-ink-700">
               {carrier.hm_ind === 'Y'
                 ? 'Carries hazardous materials'
                 : 'No hazardous materials on file'}
@@ -199,12 +212,12 @@ const title = carrier
                 <p class="font-medium">MCS-150 update (every 2 years)</p>
                 <span
                   class:list={[
-                    'rounded-md px-2 py-0.5 text-xs font-medium',
+                    'badge',
                     mcs150.state === 'overdue'
-                      ? 'bg-red-100 text-red-700'
+                      ? 'badge-danger'
                       : mcs150.state === 'unknown'
-                        ? 'bg-ink-100 text-ink-500'
-                        : 'bg-emerald-100 text-emerald-800',
+                        ? 'badge-neutral'
+                        : 'badge-success',
                   ]}
                 >
                   {mcs150.state === 'overdue'
@@ -247,7 +260,7 @@ const title = carrier
                 </>
               )}
 
-              <p class="mt-3 text-xs text-ink-500">
+              <p class="mt-3 text-xs text-ink-700">
                 Your filing month comes from the last digit of your USDOT number. The year comes
                 from the digit before it. You file in {mcs150.oddYears ? 'odd' : 'even'}-numbered
                 years. Rule: 49 CFR 390.19T(b). If you miss it, FMCSA can fine you and turn off
@@ -266,10 +279,8 @@ const title = carrier
                     <span class="text-ink-500">{a.op_auth_type}</span>
                     <span
                       class:list={[
-                        'rounded-md px-2 py-0.5 text-xs font-medium',
-                        a.op_auth_status === 'Active'
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : 'bg-amber-100 text-amber-800',
+                        'badge',
+                        a.op_auth_status === 'Active' ? 'badge-success' : 'badge-warning',
                       ]}
                     >
                       {a.op_auth_status}
@@ -320,15 +331,15 @@ const title = carrier
             dates are only in your office. These are the dates that stop a truck. We set them up
             with you one time, then we watch them for you.
           </p>
-          <a
-            href="/pricing"
-            class="mt-5 inline-block rounded-xl bg-ink-900 px-7 py-3.5 font-semibold text-white transition hover:bg-ink-700"
-          >
+          {/* Marketing chrome keeps the dark button. */}
+          <a href="/pricing" class="btn btn-dark mt-5 rounded-xl px-7 py-3.5 font-semibold">
             See the price →
           </a>
         </div>
 
-        <p class="mt-8 text-xs text-ink-300">
+        {/* Was ink-300 at 1.85:1 — the line that says we are not the government,
+            which is the one sentence on this page nobody may miss. */}
+        <p class="mt-8 text-xs text-ink-700">
           This carrier data comes live from the FMCSA public census and authority files. FleetView
           Compliance is not part of FMCSA, the DOT, or any government agency.
         </p>

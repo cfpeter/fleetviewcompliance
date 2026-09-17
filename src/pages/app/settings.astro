@@ -33,6 +33,7 @@
  * has to do next, because getting either of those half-right locks somebody out
  * of the account they are paying for.
  */
+import ErrorSummary from '../../components/ui/ErrorSummary.astro'
 import App from '../../layouts/App.astro'
 import { formText, formatDate, todayInCalifornia } from '../../lib/drivers.ts'
 import {
@@ -77,7 +78,13 @@ const back = (query = '') => Astro.redirect(`/app/settings${query}`, 303)
  * Raw database messages went the same way: a Postgres error string is written
  * for an operator, can name columns and constraints, and is not ours to show.
  */
-const fail = (code: string) => back(`?error=${code}`)
+/**
+ * `#form-errors` is how the focus reaches the message with no script on the
+ * page: the summary box is `tabindex="-1"`, so a 303 to its id both scrolls to
+ * it and focuses it, and each line inside it is a link to the box it is about.
+ * A fragment never reaches the server, so the destination is unchanged.
+ */
+const fail = (code: string) => back(`?error=${code}#form-errors`)
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -816,17 +823,25 @@ function stamp(value: string): string {
   }
 }
 
+/**
+ * The shared badge from global.css, so a delivery result reads the same here as
+ * a compliance standing does on the dashboard. It used to hand back a bare
+ * colour pair — a second badge construction beside `.badge`, and in the grey
+ * case `text-ink-500` on a tint, which is under the contrast floor.
+ */
 function statusPill(status: string): string {
   switch (status) {
     case 'sent':
-      return 'bg-emerald-100 text-emerald-800'
+    case 'delivered':
+      return 'badge badge-success'
     case 'failed':
     case 'not delivered':
-      return 'bg-red-100 text-red-700'
+    case 'marked as spam':
+      return 'badge badge-danger'
     case 'skipped':
-      return 'bg-ink-100 text-ink-500'
+      return 'badge badge-neutral'
     default:
-      return 'bg-amber-100 text-amber-800'
+      return 'badge badge-warning'
   }
 }
 
@@ -890,6 +905,43 @@ const ERRORS: Record<string, string> = {
 // with a function, which renders as source code across the top of the page.
 const errorCode = params.get('error')
 const error = errorCode && Object.hasOwn(ERRORS, errorCode) ? ERRORS[errorCode] : null
+
+/**
+ * Which box the refusal is about.
+ *
+ * The summary line at the top becomes a link to that box, and the box itself
+ * carries `aria-invalid` and points back at its own message through
+ * `aria-describedby`. Six forms share this page, so a message with no field
+ * attached is a message the reader has to go and find; a name here is what
+ * makes it one tap on a phone instead.
+ *
+ * Codes that belong to no single box — `save_failed`, `channels_failed`,
+ * `snooze_unknown` — map to null and ErrorSummary prints them without a link.
+ */
+const ERROR_FIELD: Record<string, string> = {
+  dot_digits: 'dot_number',
+  dot_present: 'dot_number',
+  dot_taken: 'dot_number',
+  phone_bad: 'phone',
+  tz_unknown: 'timezone',
+  email_shape: 'new_email',
+  email_same: 'new_email',
+  email_failed: 'new_email',
+  password_wrong: 'current_password',
+  password_short: 'new_password',
+  password_mismatch: 'new_password_again',
+  password_same: 'new_password',
+  password_failed: 'new_password',
+  quiet_pair: 'quiet_from',
+  quiet_same: 'quiet_from',
+}
+const errorField = error && errorCode ? (ERROR_FIELD[errorCode] ?? null) : null
+
+/** The three attributes a rejected box needs, written once so none goes missing. */
+const invalid = (name: string) =>
+  errorField === name
+    ? { 'aria-invalid': 'true' as const, 'aria-describedby': `${name}-error` }
+    : {}
 const saved = params.get('saved')
 
 const savedMessage: Record<string, string> = {
@@ -914,9 +966,12 @@ const savedMessage: Record<string, string> = {
 }
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
-const checkbox = 'size-4 rounded border-ink-300'
+// The shared field construction. The local one it replaces was 40px tall and
+// bordered ink-100, which is 1.35:1 against the card it sits on.
+const field = 'field-input mt-1'
+// No `size-4`. The base rule in global.css sizes every checkbox and radio at
+// 20px for a thumb; a 16px utility over the top of it was undoing that.
+const checkbox = 'rounded'
 const th = 'px-4 py-3 font-medium'
 
 /**
@@ -939,15 +994,23 @@ const th = 'px-4 py-3 font-medium'
 const cell = 'block px-4 py-1 sm:table-cell sm:py-3'
 /** The column name, carried into the block that no longer has a header row. */
 const colName = 'text-ink-500 sm:hidden'
-/** A checkbox with its name beside it on a phone, a bare box in a column from `sm`. */
-const boxRow = 'flex min-h-11 items-center gap-3 sm:block sm:min-h-0'
-const button =
-  'rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-brand-700'
-const help = 'mt-1 block text-xs text-ink-500'
+/**
+ * A checkbox with its name beside it on a phone, a centred box in a column from
+ * `sm`. The 44px row is kept at EVERY width now: `sm:min-h-0` used to drop the
+ * desktop target back to the 20px of the box itself, and a matrix of 20px
+ * targets is the hardest thing on this page to hit with any pointer.
+ */
+const boxRow = 'flex min-h-11 items-center gap-3 sm:justify-center'
+const button = 'btn btn-primary'
+const help = 'field-hint block'
 ---
 
 <App title="Settings" subtitle="Your details, your password, and who gets told what.">
-  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {/* The designed error state. `fail()` redirects to this box's id, so the
+      browser scrolls to it and focuses it with no script running, and the line
+      inside is a link to the box the refusal is about — which matters here,
+      where six forms share one page. */}
+  {error && <ErrorSummary class="mb-5" errors={[{ message: error, field: errorField ?? undefined }]} />}
   {
     saved && savedMessage[saved] && (
       <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -969,20 +1032,22 @@ const help = 'mt-1 block text-xs text-ink-500'
       <form method="POST" class={card}>
         <h3 class="text-sm font-semibold tracking-tight">Your details</h3>
 
-        <label class="mt-3 block">
-          <span class="text-sm font-medium">Your name</span>
+        <div class="mt-3">
+          <label class="field-label" for="full_name">Your name</label>
           <input
             type="text"
+            id="full_name"
             name="full_name"
             value={profile?.full_name ?? ''}
             autocomplete="name"
             class={field}
+            aria-describedby="full_name-hint"
           />
-          <span class={help}>You can leave this blank.</span>
-        </label>
+          <span class={help} id="full_name-hint">You can leave this blank.</span>
+        </div>
 
-        <label class="mt-3 block">
-          <span class="text-sm font-medium">Your phone</span>
+        <div class="mt-3">
+          <label class="field-label" for="phone">Your phone</label>
           {/*
             Shown the way a person reads it, stored as E.164. The two are
             deliberately different, and the save compares what was typed against
@@ -991,27 +1056,37 @@ const help = 'mt-1 block text-xs text-ink-500'
           */}
           <input
             type="tel"
+            id="phone"
             name="phone"
             value={formatPhone(profile?.phone)}
             placeholder="(818) 334-0168"
             autocomplete="tel"
             class={`${field} tabular-nums`}
+            {...invalid('phone')}
           />
+          {
+            errorField === 'phone' && (
+              <p class="field-error" id="phone-error">
+                <span aria-hidden="true">⚠</span>
+                <span>{error}</span>
+              </p>
+            )
+          }
           <span class={help}>
             10 digits. You can leave this blank. We do not send text messages yet.
           </span>
           {
             phoneUndialable && (
-              <span class="mt-1.5 inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
-                We cannot text this number. Please type 10 digits. We saved it anyway.
+              <span class="badge badge-warning mt-1.5">
+                We cannot text this number. Type 10 digits. We saved it anyway.
               </span>
             )
           }
-        </label>
+        </div>
 
-        <label class="mt-3 block">
-          <span class="text-sm font-medium">Your timezone</span>
-          <select name="timezone" class={field}>
+        <div class="mt-3">
+          <label class="field-label" for="timezone">Your timezone</label>
+          <select id="timezone" name="timezone" class={field} {...invalid('timezone')}>
             {
               timezoneOptions(timezone).map((tz) => (
                 <option value={tz.value} selected={tz.value === timezone}>
@@ -1020,6 +1095,14 @@ const help = 'mt-1 block text-xs text-ink-500'
               ))
             }
           </select>
+          {
+            errorField === 'timezone' && (
+              <p class="field-error" id="timezone-error">
+                <span aria-hidden="true">⚠</span>
+                <span>{error}</span>
+              </p>
+            )
+          }
           {/*
             This control used to live in the carrier block. It is a setting about
             the PERSON — it decides what time their own email arrives and what
@@ -1031,7 +1114,7 @@ const help = 'mt-1 block text-xs text-ink-500'
             quiet hours mean, and how times are printed on this page. Until you pick one, we use
             the company's.
           </span>
-        </label>
+        </div>
 
         <button type="submit" name="intent" value="save_profile" class={`${button} mt-4`}>
           Save my details
@@ -1045,28 +1128,51 @@ const help = 'mt-1 block text-xs text-ink-500'
           <h3 class="text-sm font-semibold tracking-tight">Your email</h3>
           <p class="mt-3 text-sm text-ink-500">You sign in with this email:</p>
           <p class="mt-1 text-base font-medium break-all">
-            {signInEmail || <span class="font-normal text-ink-300">not known</span>}
+            {signInEmail || <span class="font-normal text-ink-500">not known</span>}
           </p>
           <p class="mt-2 text-sm text-ink-500">
             Your morning compliance email goes to this address too.
           </p>
 
           <form method="POST" class="mt-4 border-t border-ink-100 pt-4">
-            <label class="block">
-              <span class="text-sm font-medium">New email</span>
-              <input type="email" name="new_email" required autocomplete="email" class={field} />
-            </label>
-            <label class="mt-3 block">
-              <span class="text-sm font-medium">Your password</span>
+            <div>
+              <label class="field-label" for="new_email">New email</label>
+              <input
+                type="email"
+                id="new_email"
+                name="new_email"
+                required
+                autocomplete="email"
+                class={field}
+                {...invalid('new_email')}
+              />
+              {
+                errorField === 'new_email' && (
+                  <p class="field-error" id="new_email-error">
+                    <span aria-hidden="true">⚠</span>
+                    <span>{error}</span>
+                  </p>
+                )
+              }
+            </div>
+            <div class="mt-3">
+              {/* The id is scoped to this form: the password block below has a
+                  box with the same `name`, and two elements cannot share an id
+                  on one page — which is what `aria-describedby` resolves. */}
+              <label class="field-label" for="email_current_password">Your password</label>
               <input
                 type="password"
+                id="email_current_password"
                 name="current_password"
                 required
                 autocomplete="current-password"
                 class={field}
+                aria-describedby="email_current_password-hint"
               />
-              <span class={help}>We ask for it so nobody else can change your email.</span>
-            </label>
+              <span class={help} id="email_current_password-hint">
+                We ask for it so nobody else can change your email.
+              </span>
+            </div>
 
             {/*
               Said BEFORE the button, not after it. `updateUser({ email })` does
@@ -1122,45 +1228,89 @@ const help = 'mt-1 block text-xs text-ink-500'
             <p class="mt-2">
               The link goes to the email you sign in with, so keep that email working. If you
               cannot get into that email, write to{' '}
-              <a href={`mailto:${site.email}`} class="font-medium underline">{site.email}</a>.
+              <a href={`mailto:${site.email}`} class="link font-medium">{site.email}</a>.
             </p>
           </div>
 
           <form method="POST" class="mt-4">
-            <label class="block">
-              <span class="text-sm font-medium">Password you use now</span>
+            <div>
+              <label class="field-label" for="current_password">Password you use now</label>
               <input
                 type="password"
+                id="current_password"
                 name="current_password"
                 required
                 autocomplete="current-password"
                 class={field}
+                {...invalid('current_password')}
               />
-            </label>
-            <label class="mt-3 block">
-              <span class="text-sm font-medium">New password</span>
+              {
+                errorField === 'current_password' && (
+                  <p class="field-error" id="current_password-error">
+                    <span aria-hidden="true">⚠</span>
+                    <span>{error}</span>
+                  </p>
+                )
+              }
+            </div>
+            <div class="mt-3">
+              <label class="field-label" for="new_password">New password</label>
               <input
                 type="password"
+                id="new_password"
                 name="new_password"
                 required
                 minlength={MIN_PASSWORD}
                 autocomplete="new-password"
                 class={field}
+                aria-invalid={errorField === 'new_password' ? 'true' : undefined}
+                aria-describedby={
+                  errorField === 'new_password'
+                    ? 'new_password-error new_password-hint'
+                    : 'new_password-hint'
+                }
               />
-              <span class={help}>Use {MIN_PASSWORD} letters or numbers or more.</span>
-            </label>
-            <label class="mt-3 block">
-              <span class="text-sm font-medium">New password again</span>
+              {
+                errorField === 'new_password' && (
+                  <p class="field-error" id="new_password-error">
+                    <span aria-hidden="true">⚠</span>
+                    <span>{error}</span>
+                  </p>
+                )
+              }
+              <span class={help} id="new_password-hint">
+                Use {MIN_PASSWORD} letters or numbers or more.
+              </span>
+            </div>
+            <div class="mt-3">
+              <label class="field-label" for="new_password_again">New password again</label>
               <input
                 type="password"
+                id="new_password_again"
                 name="new_password_again"
                 required
                 minlength={MIN_PASSWORD}
                 autocomplete="new-password"
                 class={field}
+                aria-invalid={errorField === 'new_password_again' ? 'true' : undefined}
+                aria-describedby={
+                  errorField === 'new_password_again'
+                    ? 'new_password_again-error new_password_again-hint'
+                    : 'new_password_again-hint'
+                }
               />
-              <span class={help}>Type the same new password one more time.</span>
-            </label>
+              {
+                errorField === 'new_password_again' && (
+                  <p class="field-error" id="new_password_again-error">
+                    <span aria-hidden="true">⚠</span>
+                    <span>{error}</span>
+                  </p>
+                )
+              }
+              <span class={help} id="new_password_again-hint">
+                Type the same new password one more time.
+              </span>
+            </div>
 
             <p class="mt-3 text-sm text-ink-500">
               You stay signed in on this computer. Use the new password next time you sign in.
@@ -1202,14 +1352,12 @@ const help = 'mt-1 block text-xs text-ink-500'
             <li class="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-ink-100 bg-white px-4 py-3">
               <div class="min-w-0 flex-1">
                 <p class="font-medium">
-                  {m.full_name || <span class="font-normal text-ink-300">No name yet</span>}
+                  {m.full_name || <span class="font-normal text-ink-500">No name yet</span>}
                   {/* The signed-in person is marked, because a list of email
                       addresses with no "you" in it is a list somebody has to
                       read carefully to place themselves in. */}
                   {m.user_id === userId && (
-                    <span class="ml-2 rounded-md bg-brand-500/[0.12] px-2 py-0.5 text-xs font-medium text-brand-700">
-                      This is you
-                    </span>
+                    <span class="badge badge-info ml-2">This is you</span>
                   )}
                 </p>
                 <p class="mt-0.5 text-sm break-all text-ink-500">{m.email ?? '—'}</p>
@@ -1235,7 +1383,7 @@ const help = 'mt-1 block text-xs text-ink-500'
       <p>
         <span class="font-medium">Adding and removing people is not built yet.</span> To add
         someone, or to remove someone, email{' '}
-        <a href={`mailto:${site.email}`} class="font-medium underline">{site.email}</a> with the
+        <a href={`mailto:${site.email}`} class="link font-medium">{site.email}</a> with the
         name and email and we will do it.
       </p>
       <p class="mt-2">
@@ -1276,24 +1424,29 @@ const help = 'mt-1 block text-xs text-ink-500'
             from FMCSA like everything else above.
           </p>
           <div class="mt-3 flex flex-wrap items-end gap-3">
-            <label class="block">
-              <span class="text-sm font-medium">USDOT number</span>
+            <div>
+              <label class="field-label" for="dot_number">USDOT number</label>
               <input
                 type="text"
+                id="dot_number"
                 name="dot_number"
                 inputmode="numeric"
                 pattern="[0-9]{1,8}"
                 required
                 autocomplete="off"
                 class={`${field} w-48 tabular-nums`}
+                {...invalid('dot_number')}
               />
-            </label>
-            <button
-              type="submit"
-              name="intent"
-              value="set_dot_number"
-              class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-            >
+              {
+                errorField === 'dot_number' && (
+                  <p class="field-error" id="dot_number-error">
+                    <span aria-hidden="true">⚠</span>
+                    <span>{error}</span>
+                  </p>
+                )
+              }
+            </div>
+            <button type="submit" name="intent" value="set_dot_number" class="btn btn-primary">
               Save it
             </button>
           </div>
@@ -1313,7 +1466,7 @@ const help = 'mt-1 block text-xs text-ink-500'
           <div class="flex justify-between gap-4 py-2.5">
             <dt class="text-ink-500">Doing business as</dt>
             <dd class="text-right font-medium">
-              {carrier?.dba_name || <span class="font-normal text-ink-300">none on file</span>}
+              {carrier?.dba_name || <span class="font-normal text-ink-500">none on file</span>}
             </dd>
           </div>
           <div class="flex justify-between gap-4 py-2.5">
@@ -1327,7 +1480,7 @@ const help = 'mt-1 block text-xs text-ink-500'
                 addressLines.length > 0 ? (
                   addressLines.map((line) => <div class="tabular-nums">{line}</div>)
                 ) : (
-                  <span class="font-normal text-ink-300">none on file</span>
+                  <span class="font-normal text-ink-500">none on file</span>
                 )
               }
             </dd>
@@ -1361,8 +1514,10 @@ const help = 'mt-1 block text-xs text-ink-500'
         <table class="w-full text-sm sm:min-w-[56rem]">
           {/* No header line on a phone. Every box below carries its own name
               and its own caveat instead. */}
+          {/* ink-700: a column head is text a reader reads, and at 12px that
+              is the floor whatever it sits on. */}
           <thead
-            class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group"
+            class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group"
           >
             <tr>
               <th class={th}>What</th>
@@ -1373,8 +1528,8 @@ const help = 'mt-1 block text-xs text-ink-500'
                     {c.note && (
                       <div
                         class:list={[
-                          'mt-0.5 text-[11px] normal-case',
-                          c.live ? 'text-ink-300' : 'text-amber-700',
+                          'mt-0.5 text-xs normal-case',
+                          c.live ? 'text-ink-700' : 'text-amber-700',
                         ]}
                       >
                         {c.note}
@@ -1389,7 +1544,7 @@ const help = 'mt-1 block text-xs text-ink-500'
                   before they reach for the control. */}
               <th class={`${th} text-center`}>
                 <div>Roll into one daily message</div>
-                <div class="mt-0.5 text-[11px] normal-case text-amber-700">
+                <div class="mt-0.5 text-xs normal-case text-amber-700">
                   always on, not yours to change yet
                 </div>
               </th>
@@ -1401,7 +1556,7 @@ const help = 'mt-1 block text-xs text-ink-500'
                 <tr class="block py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
                   <td class={`${cell} sm:align-top`}>
                     <div class="font-medium">{category.label}</div>
-                    <div class="mt-0.5 max-w-xs text-xs text-ink-500">{category.blurb}</div>
+                    <div class="mt-0.5 max-w-xs text-xs text-ink-700">{category.blurb}</div>
                     {!category.live && (
                       <div class="mt-1 max-w-xs text-xs text-amber-700">
                         Nothing is sent for this yet — the job that watches for it is not written.
@@ -1449,7 +1604,7 @@ const help = 'mt-1 block text-xs text-ink-500'
                             <span
                               class:list={[
                                 'ml-1 text-xs',
-                                channel.live ? 'text-ink-300' : 'text-amber-700',
+                                channel.live ? 'text-ink-700' : 'text-amber-700',
                               ]}
                             >
                               {channel.note}
@@ -1468,9 +1623,9 @@ const help = 'mt-1 block text-xs text-ink-500'
                          wants a month, a callback wants a day — so a box here
                          would be a control that changed nothing. Say where the
                          setting actually is instead. */
-                      <span class="block max-w-[14rem] text-xs text-ink-500">
+                      <span class="block max-w-[14rem] text-xs text-ink-700">
                         You choose the days on each reminder.{' '}
-                        <a href="/app/reminders" class="font-medium text-brand-600 hover:underline">
+                        <a href="/app/reminders" class="link font-medium">
                           My reminders
                         </a>
                       </span>
@@ -1478,13 +1633,14 @@ const help = 'mt-1 block text-xs text-ink-500'
                       <>
                         <input
                           type="text"
+                          id={`lead_${category.value}`}
                           name={`lead_${category.value}`}
                           value={formatLeadDays(leadDaysFor(category.value))}
                           inputmode="text"
                           class={`${field} w-full tabular-nums sm:w-44`}
                           aria-label={`Lead times for ${category.label}`}
                         />
-                        <span class="mt-1 block text-xs text-ink-500 sm:max-w-[14rem]">
+                        <span class="mt-1 block text-xs text-ink-700 sm:max-w-[14rem]">
                           {describeLeadDays(leadDaysFor(category.value))}
                         </span>
                       </>
@@ -1526,7 +1682,7 @@ const help = 'mt-1 block text-xs text-ink-500'
                          The row survives the save untouched, so say so here
                          rather than showing a ticked box over a stored `false`
                          and letting them find out the day the choice is real. */
-                      <div class="mt-1 text-[11px] text-amber-700">
+                      <div class="mt-1 text-xs text-amber-700">
                         You turned this off before we could honour it. Still on file.
                       </div>
                     )}
@@ -1539,7 +1695,7 @@ const help = 'mt-1 block text-xs text-ink-500'
       </div>
 
       <div class="mt-4 grid gap-4 lg:grid-cols-2">
-        <div class="rounded-xl border border-ink-100 bg-white p-4 text-sm text-ink-500">
+        <div class="rounded-xl border border-ink-100 bg-white p-4 text-sm text-ink-700">
           <p class="font-medium text-ink-900">About those numbers</p>
           <p class="mt-1">
             Days before the deadline, separated by commas. <span class="tabular-nums">30, 7, 1</span
@@ -1594,12 +1750,7 @@ const help = 'mt-1 block text-xs text-ink-500'
           lead times are written first; if anything goes wrong after that, the message says so
           rather than leaving you to guess which half landed.
         </span>
-        <button
-          type="submit"
-          name="intent"
-          value="save_alerts"
-          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-        >
+        <button type="submit" name="intent" value="save_alerts" class="btn btn-primary">
           Save alert settings
         </button>
       </div>
@@ -1617,33 +1768,46 @@ const help = 'mt-1 block text-xs text-ink-500'
 
     <form method="POST" class={`${card} mt-3 max-w-2xl`}>
       <div class="grid gap-4 sm:grid-cols-2">
-        <label class="block">
-          <span class="text-sm font-medium">Quiet from</span>
+        <div>
+          <label class="field-label" for="quiet_from">Quiet from</label>
           <input
             type="time"
+            id="quiet_from"
             name="quiet_from"
             value={timeForInput(profile?.quiet_from)}
             class={`${field} tabular-nums`}
+            {...invalid('quiet_from')}
           />
-        </label>
-        <label class="block">
-          <span class="text-sm font-medium">Quiet until</span>
+          {
+            errorField === 'quiet_from' && (
+              <p class="field-error" id="quiet_from-error">
+                <span aria-hidden="true">⚠</span>
+                <span>{error}</span>
+              </p>
+            )
+          }
+        </div>
+        <div>
+          <label class="field-label" for="quiet_to">Quiet until</label>
           <input
             type="time"
+            id="quiet_to"
             name="quiet_to"
             value={timeForInput(profile?.quiet_to)}
             class={`${field} tabular-nums`}
+            aria-invalid={errorField === 'quiet_from' ? 'true' : undefined}
+            aria-describedby={errorField === 'quiet_from' ? 'quiet_from-error' : undefined}
           />
-        </label>
+        </div>
       </div>
-      <p class="mt-2 text-xs text-ink-500">
+      <p class="mt-2 text-xs text-ink-700">
         Leave both blank for no quiet hours. A window that runs past midnight —
         <span class="tabular-nums">22:00</span> to <span class="tabular-nums">07:00</span> — is the
         normal one and works correctly. Filling in only one of the two is refused, because half a
         window silences nothing while looking like it does.
       </p>
 
-      <label class="mt-4 flex items-start gap-3 border-t border-ink-100 pt-4">
+      <label class="check-row mt-4 items-start border-t border-ink-100 px-2 pt-4">
         <input
           type="checkbox"
           name="quiet_allow_critical"
@@ -1683,12 +1847,7 @@ const help = 'mt-1 block text-xs text-ink-500'
       </p>
 
       <div class="mt-4 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-        <button
-          type="submit"
-          name="intent"
-          value="save_quiet"
-          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-        >
+        <button type="submit" name="intent" value="save_quiet" class="btn btn-primary">
           Save quiet hours
         </button>
       </div>
@@ -1735,9 +1894,11 @@ const help = 'mt-1 block text-xs text-ink-500'
                         string actually stored in the row, and it is what
                         support has to match on when the title and the row
                         disagree — which happens the moment a rule is renamed. */}
-                    <span class="text-ink-300"> · {s.rule_code}</span>
+                    {/* The stored rule code. It was ink-300 — the string
+                        support has to match on, present and unreadable. */}
+                    <span class="text-ink-500"> · {s.rule_code}</span>
                   </p>
-                  {s.reason && <p class="mt-0.5 text-xs text-ink-300">{s.reason}</p>}
+                  {s.reason && <p class="mt-0.5 text-xs text-ink-700">{s.reason}</p>}
                 </div>
                 <div class="text-sm whitespace-nowrap">
                   <span class="text-ink-500">Quiet until</span>{' '}
@@ -1745,11 +1906,13 @@ const help = 'mt-1 block text-xs text-ink-500'
                 </div>
                 <form method="POST" class="shrink-0">
                   <input type="hidden" name="snooze_id" value={s.id} />
+                  {/* Secondary, not red: putting an item back into the alerts
+                      destroys nothing. 44px, where it used to be 36px. */}
                   <button
                     type="submit"
                     name="intent"
                     value="unsnooze"
-                    class="rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
+                    class="btn btn-secondary btn-sm"
                   >
                     Un-snooze
                   </button>
@@ -1786,7 +1949,7 @@ const help = 'mt-1 block text-xs text-ink-500'
         <div class="mt-3 overflow-x-auto rounded-xl border border-ink-100 bg-white">
           <table class="w-full text-sm sm:min-w-[48rem]">
             {/* No header line on a phone. Each block says what it is instead. */}
-            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
               <tr>
                 <th class={th}>When</th>
                 <th class={th}>How</th>
@@ -1813,26 +1976,21 @@ const help = 'mt-1 block text-xs text-ink-500'
                     {row.destination}
                   </td>
                   <td class={`${cell} order-1 font-medium sm:font-normal`}>
-                    {row.subject ?? <span class="text-ink-300">no subject line</span>}
+                    {row.subject ?? <span class="text-ink-500">no subject line</span>}
                   </td>
                   <td class={`${cell} order-3`}>
-                    <span
-                      class:list={[
-                        'rounded-md px-2 py-0.5 text-xs font-medium',
-                        statusPill(deliveryLabel(row)),
-                      ]}
-                    >
-                      {deliveryLabel(row)}
-                    </span>
+                    {/* `statusPill` hands back the shared `badge badge-*` pair,
+                        so there is no second construction over the top of it. */}
+                    <span class={statusPill(deliveryLabel(row))}>{deliveryLabel(row)}</span>
                     {/* A message we tried and failed to send is exactly the
                         thing somebody will ask about, so the reason is on the
                         row rather than in a log only we can read. The provider's
                         own word is there too when we have it: "bounced" and
                         "suppressed" both mean it never arrived and have entirely
                         different fixes. */}
-                    {row.error && <div class="mt-1 text-xs text-ink-500">{row.error}</div>}
+                    {row.error && <div class="mt-1 text-xs text-ink-700">{row.error}</div>}
                     {row.delivery_detail && row.delivery_state !== 'delivered' && (
-                      <div class="mt-1 text-xs text-ink-500">{row.delivery_detail}</div>
+                      <div class="mt-1 text-xs text-ink-700">{row.delivery_detail}</div>
                     )}
                   </td>
                 </tr>

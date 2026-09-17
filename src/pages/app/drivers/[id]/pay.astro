@@ -287,11 +287,13 @@ const endedNotice = params.has('ended')
 const removed = params.has('removed')
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
-const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
-const primary =
-  'rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700'
+/*
+  The `field`, `tab` and `primary` strings are gone. Every box wears
+  `.field-input` (or `.field-affix` where it holds a $ or a %), every method tab
+  is a `.filter-tab`, and the one action on the form is `.btn .btn-primary` —
+  all of them from global.css, all of them 44px, all of them corrected in one
+  place rather than in four strings on four pages.
+*/
 ---
 
 <App
@@ -352,9 +354,7 @@ const primary =
                       <div class="min-w-0 flex-1">
                         <div class="flex flex-wrap items-center gap-2">
                           <span class="font-medium">{a.label}</span>
-                          <span class="rounded-md bg-ink-100 px-2 py-0.5 text-xs font-medium text-ink-500">
-                            {payMethodLabel(a.method)}
-                          </span>
+                          <span class="badge badge-neutral">{payMethodLabel(a.method)}</span>
                         </div>
                         <div class="mt-1 text-2xl font-semibold tabular-nums">
                           {rateSummary(asAgreement(a))}
@@ -362,7 +362,7 @@ const primary =
                         {termsSummary(asAgreement(a)) && (
                           <p class="mt-0.5 text-sm text-ink-500">{termsSummary(asAgreement(a))}</p>
                         )}
-                        <p class="mt-2 text-xs text-ink-500 tabular-nums">
+                        <p class="mt-2 text-xs text-ink-700 tabular-nums">
                           From {formatDate(a.effective_on)}
                           {a.ends_on ? ` until ${formatDate(a.ends_on)}` : ''}
                         </p>
@@ -375,11 +375,15 @@ const primary =
                       </div>
                       <form method="POST" class="flex shrink-0 flex-col items-end gap-2">
                         <input type="hidden" name="agreement_id" value={a.id} />
+                        {/* Two targets, 8px apart, both 44px. "End today" is an
+                            ordinary act — the rate stops applying and stays on
+                            the record — so it is not red. "Remove" deletes the
+                            row, so it is. */}
                         <button
                           type="submit"
                           name="intent"
                           value="end_agreement"
-                          class="rounded-lg border border-ink-100 px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50"
+                          class="btn btn-secondary btn-sm"
                         >
                           End today
                         </button>
@@ -387,7 +391,7 @@ const primary =
                           type="submit"
                           name="intent"
                           value="delete_agreement"
-                          class="text-xs text-red-600 hover:underline"
+                          class="btn btn-danger-text btn-sm"
                         >
                           Remove (typed in error)
                         </button>
@@ -409,23 +413,19 @@ const primary =
 
         {/* Links, not a script. The chosen method is a GET parameter, so the
             half-filled form survives a back button and can be reached by URL. */}
-        <div class="mt-3 flex flex-wrap gap-1">
+        <nav aria-label="How the agreement pays" class="mt-3 flex flex-wrap gap-2">
           {
             PAY_METHODS.map((m) => (
               <a
                 href={`/app/drivers/${id}/pay?add=${m.value}`}
-                class:list={[
-                  tab,
-                  adding === m.value
-                    ? 'bg-brand-500/10 text-brand-700'
-                    : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
-                ]}
+                aria-current={adding === m.value ? 'page' : undefined}
+                class:list={['filter-tab', adding === m.value && 'is-current']}
               >
                 {m.label}
               </a>
             ))
           }
-        </div>
+        </nav>
 
         {
           adding && (
@@ -437,7 +437,7 @@ const primary =
               </p>
 
               <label class="block">
-                <span class="text-sm font-medium">
+                <span class="field-label">
                   What to call it <span class="text-red-600">*</span>
                 </span>
                 <input
@@ -445,9 +445,9 @@ const primary =
                   name="label"
                   required
                   placeholder={adding === 'flat_per_trip' ? 'Stop pay' : 'Linehaul'}
-                  class={field}
+                  class="field-input mt-1"
                 />
-                <span class="mt-1 block text-xs text-ink-500">
+                <span class="field-hint block">
                   This prints on the settlement line, so the driver can see which agreement made
                   each number.
                 </span>
@@ -456,38 +456,38 @@ const primary =
               {adding === 'per_mile' && (
                 <div class="grid gap-4 sm:grid-cols-2">
                   <label class="block">
-                    <span class="text-sm font-medium">
+                    <span class="field-label">
                       Rate per mile <span class="text-red-600">*</span>
                     </span>
-                    <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
-                      <span class="pl-3 text-ink-300">$</span>
+                    <div class="field-affix mt-1">
+                      <span class="pl-3 text-ink-700">$</span>
                       <input
                         name="rate_mills"
                         required
                         inputmode="decimal"
                         placeholder="0.585"
-                        class="w-full bg-transparent px-2 py-2 text-base tabular-nums outline-none"
+                        class="field-affix-input tabular-nums"
                       />
                     </div>
-                    <span class="mt-1 block text-xs text-ink-500">
+                    <span class="field-hint block">
                       We keep three decimals. Half cents are real: 0.585 is not 0.58.
                     </span>
                   </label>
 
                   <label class="block">
-                    <span class="text-sm font-medium">
+                    <span class="field-label">
                       Which miles <span class="text-red-600">*</span>
                     </span>
                     {/* No option is preselected, and there is no default on the
                         column either. The whole point of this field is that
                         somebody answered it. */}
-                    <select name="mileage_basis" required class={field}>
+                    <select name="mileage_basis" required class="field-input mt-1">
                       <option value="">— choose —</option>
                       {MILEAGE_BASES.map((b) => (
                         <option value={b.value}>{b.label}</option>
                       ))}
                     </select>
-                    <ul class="mt-2 space-y-1 text-xs text-ink-500">
+                    <ul class="mt-2 space-y-1 text-xs text-ink-700">
                       {MILEAGE_BASES.map((b) => (
                         <li>
                           <span class="font-medium text-ink-700">{b.label}</span> — {b.help}
@@ -501,20 +501,20 @@ const primary =
               {adding === 'percentage' && (
                 <div class="space-y-4">
                   <label class="block sm:max-w-xs">
-                    <span class="text-sm font-medium">
+                    <span class="field-label">
                       Share of the load <span class="text-red-600">*</span>
                     </span>
-                    <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
+                    <div class="field-affix mt-1">
                       <input
                         name="percent_bp"
                         required
                         inputmode="decimal"
                         placeholder="68"
-                        class="w-full bg-transparent px-3 py-2 text-base tabular-nums outline-none"
+                        class="field-affix-input tabular-nums"
                       />
-                      <span class="pr-3 text-ink-300">%</span>
+                      <span class="pr-3 text-ink-700">%</span>
                     </div>
-                    <span class="mt-1 block text-xs text-ink-500">
+                    <span class="field-hint block">
                       Owner-operators leased on run 65–75% in 2026.
                     </span>
                   </label>
@@ -541,7 +541,7 @@ const primary =
                         carrier's side of the argument. */}
                     <div class="mt-4 grid gap-4 sm:grid-cols-2">
                       <div>
-                        <span class="text-sm font-medium">
+                        <span class="field-label">
                           Fuel surcharge <span class="text-red-600">*</span>
                         </span>
                         <div class="mt-2">
@@ -560,7 +560,7 @@ const primary =
                         </div>
                       </div>
                       <div>
-                        <span class="text-sm font-medium">
+                        <span class="field-label">
                           Accessorials <span class="text-red-600">*</span>
                         </span>
                         <div class="mt-2">
@@ -581,21 +581,21 @@ const primary =
 
               {(adding === 'hourly' || adding === 'flat_per_trip') && (
                 <label class="block sm:max-w-xs">
-                  <span class="text-sm font-medium">
+                  <span class="field-label">
                     {adding === 'hourly' ? 'Rate per hour' : 'Flat rate'}{' '}
                     <span class="text-red-600">*</span>
                   </span>
-                  <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
-                    <span class="pl-3 text-ink-300">$</span>
+                  <div class="field-affix mt-1">
+                    <span class="pl-3 text-ink-700">$</span>
                     <input
                       name="rate_cents"
                       required
                       inputmode="decimal"
                       placeholder={adding === 'hourly' ? '28.50' : '25.00'}
-                      class="w-full bg-transparent px-2 py-2 text-base tabular-nums outline-none"
+                      class="field-affix-input tabular-nums"
                     />
                   </div>
-                  <span class="mt-1 block text-xs text-ink-500">
+                  <span class="field-hint block">
                     {adding === 'hourly'
                       ? 'Local and drayage work. Part hours count: 7.5 is seven and a half hours.'
                       : 'Per trip, or per stop. Put which one it is in the name above.'}
@@ -605,44 +605,43 @@ const primary =
 
               <div class="grid gap-4 sm:grid-cols-2">
                 <label class="block">
-                  <span class="text-sm font-medium">Starts</span>
+                  <span class="field-label">Starts</span>
                   <input
                     type="date"
                     name="effective_on"
                     value={today}
-                    class={`${field} tabular-nums`}
+                    class="field-input mt-1 tabular-nums"
                   />
-                  <span class="mt-1 block text-xs text-ink-500">
+                  <span class="field-hint block">
                     This does not change settlements before this date.
                   </span>
                 </label>
                 <label class="block">
-                  <span class="text-sm font-medium">
-                    Ends <span class="font-normal text-ink-300">(optional)</span>
+                  <span class="field-label">
+                    Ends <span class="font-normal text-ink-500">(optional)</span>
                   </span>
-                  <input type="date" name="ends_on" class={`${field} tabular-nums`} />
+                  <input type="date" name="ends_on" class="field-input mt-1 tabular-nums" />
                 </label>
               </div>
 
               <label class="block">
-                <span class="text-sm font-medium">
-                  Note <span class="font-normal text-ink-300">(optional)</span>
+                <span class="field-label">
+                  Note <span class="font-normal text-ink-500">(optional)</span>
                 </span>
                 <input
                   type="text"
                   name="note"
                   placeholder="What was agreed, in your own words."
-                  class={field}
+                  class="field-input mt-1"
                 />
               </label>
 
               <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-                <button type="submit" name="intent" value="add_agreement" class={primary}>
+                <button type="submit" name="intent" value="add_agreement" class="btn btn-primary">
                   Add {payMethodLabel(adding).toLowerCase()} agreement
                 </button>
-                <a href={`/app/drivers/${id}/pay`} class="text-sm font-medium text-brand-600 hover:underline">
-                  Cancel
-                </a>
+                {/* Cancel is tertiary, never red: it writes nothing. */}
+                <a href={`/app/drivers/${id}/pay`} class="btn btn-tertiary">Cancel</a>
               </div>
             </form>
           )
@@ -659,7 +658,7 @@ const primary =
             </p>
             <div class="mt-4 overflow-x-auto rounded-xl border border-ink-100 bg-white">
               <table class="w-full text-sm">
-                <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+                <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase">
                   <tr>
                     <th class="px-4 py-3 font-medium">Agreement</th>
                     <th class="px-4 py-3 text-right font-medium">Rate</th>
@@ -672,7 +671,7 @@ const primary =
                     <tr class="hover:bg-ink-50/60">
                       <td class="px-4 py-3">
                         <span class="font-medium">{a.label}</span>
-                        <span class="block text-xs text-ink-300">{payMethodLabel(a.method)}</span>
+                        <span class="block text-xs text-ink-700">{payMethodLabel(a.method)}</span>
                       </td>
                       <td class="px-4 py-3 text-right tabular-nums">
                         {rateSummary(asAgreement(a))}
@@ -693,7 +692,7 @@ const primary =
 
     <aside class="space-y-4">
       <div class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">Agreements active now</div>
+        <div class="text-xs tracking-wide text-ink-700 uppercase">Agreements active now</div>
         <div class="mt-1 text-3xl font-semibold tabular-nums">{live.length}</div>
         <p class="mt-2 text-sm text-ink-500">
           We apply all of them when a settlement is built. Most carriers mix methods, and a driver
@@ -702,7 +701,7 @@ const primary =
       </div>
 
       <div class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">2026 going rates</div>
+        <div class="text-xs tracking-wide text-ink-700 uppercase">2026 going rates</div>
         <dl class="mt-2 divide-y divide-ink-100 text-sm">
           <div class="flex justify-between gap-4 py-2">
             <dt class="text-ink-500">Per mile, solo OTR</dt>
@@ -721,19 +720,19 @@ const primary =
             <dd class="text-right tabular-nums">65% – 75%</dd>
           </div>
         </dl>
-        <p class="mt-3 text-xs text-ink-500">
+        <p class="mt-3 text-xs text-ink-700">
           Flatbed and tanker run 5–10¢ above the solo range. These are a check on a number you
           typed, not advice.
         </p>
       </div>
 
       <div class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">Elsewhere</div>
-        <div class="mt-2 space-y-2 text-sm">
-          <a href={`/app/drivers/${id}`} class="block font-medium text-brand-600 hover:underline">
-            Driver record →
-          </a>
-          <a href={`/app/settlements?driver=${id}`} class="block font-medium text-brand-600 hover:underline">
+        <div class="text-xs tracking-wide text-ink-700 uppercase">Elsewhere</div>
+        {/* Tertiary buttons rather than two 20px lines of blue text, stacked
+            8px apart so neither is a mis-tap on the other. */}
+        <div class="mt-2 flex flex-col items-start gap-2">
+          <a href={`/app/drivers/${id}`} class="btn btn-tertiary btn-sm -ml-3">Driver record →</a>
+          <a href={`/app/settlements?driver=${id}`} class="btn btn-tertiary btn-sm -ml-3">
             His settlements →
           </a>
         </div>

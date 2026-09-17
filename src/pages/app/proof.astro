@@ -17,6 +17,7 @@
  * says in plain words that the link is shown one time.
  */
 import Figure from '../../components/charts/Figure.astro'
+import ErrorSummary from '../../components/ui/ErrorSummary.astro'
 import App from '../../layouts/App.astro'
 import { TONES } from '../../lib/charts/tones.ts'
 import { hashProofToken, newProofToken } from '../../lib/proof/token.ts'
@@ -52,14 +53,29 @@ if (Astro.request.method === 'POST') {
   const intent = String(form.get('intent') ?? '')
   const back = (q: string) => Astro.redirect(`/app/proof?${q}`, 303)
 
+  /**
+   * A refusal travels as a CODE, never as text, and lands on the summary box.
+   *
+   * This page used to put `e.message` — a raw PostgREST string — into the query
+   * string and print it at the top of the page. settings.astro, billing.astro
+   * and reminders/index.astro all document why that is not allowed: anybody can
+   * hand this owner a link to his own proof page reading whatever they like, in
+   * our styling, on our domain, behind our padlock. Astro escapes it, so it is
+   * not script injection; the text IS the attack and escaping does nothing to
+   * it. A database error string is also written for an operator and can name
+   * columns and constraints.
+   *
+   * `#form-errors` is how the focus gets there with no script running: the box
+   * carries `tabindex="-1"`, so a 303 to its id scrolls to it and focuses it.
+   */
+  const fail = (code: string) => back(`error=${code}#form-errors`)
+
   if (intent === 'create') {
     const scope = String(form.get('scope') ?? 'carrier_summary')
     const subjectId = String(form.get('subject_id') ?? '').trim() || null
     const days = Number(form.get('days') ?? 30)
 
-    if (scope === 'driver_file' && !subjectId) {
-      return back('error=' + encodeURIComponent('Choose which driver the link is for.'))
-    }
+    if (scope === 'driver_file' && !subjectId) return fail('driver_needed')
     // Clamped rather than trusted: a hand-edited form must not mint a link that
     // outlives the conversation it was made for.
     const validDays = Number.isFinite(days) && days > 0 && days <= 365 ? days : 30
@@ -78,7 +94,7 @@ if (Astro.request.method === 'POST') {
       expires_at: expires.toISOString(),
       created_by: userId,
     })
-    if (e) return back('error=' + encodeURIComponent(e.message))
+    if (e) return fail('not_made')
 
     // Falls through to the render rather than redirecting: this response is the
     // only chance the owner gets to copy the address, and a 303 could only hand
@@ -95,12 +111,12 @@ if (Astro.request.method === 'POST') {
       .from('share_links')
       .update({ revoked_at: new Date().toISOString() })
       .eq('id', id)
-    return e ? back('error=' + encodeURIComponent(e.message)) : back('created=revoked')
+    return e ? fail('not_revoked') : back('created=revoked')
   }
 
   // Not an `else`: a successful create deliberately falls out of this block
   // without redirecting, so it must not be mistaken for an unknown intent.
-  if (!createdUrl) return back('error=' + encodeURIComponent('We did not understand that button. Try again.'))
+  if (!createdUrl) return fail('unknown_intent')
 }
 
 const [{ data: links }, { data: drivers }] = await Promise.all([
@@ -192,9 +208,27 @@ const lifeLeft = (l: LinkRow) => {
 
 const openedWord = (n: number) => (n === 1 ? 'time opened' : 'times opened')
 
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2.5 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+// The shared field construction from global.css: 44px minimum for a select as
+// well as an input, and a border that is actually visible against the card.
+const field = 'field-input mt-1'
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
+
+/**
+ * The sentence behind each refusal code. Each one says what is wrong AND what
+ * to do next — a refusal the owner cannot act on is the same to him as a button
+ * that does nothing.
+ */
+const ERRORS: Record<string, string> = {
+  driver_needed: 'Pick which driver the link is for, from the "Which driver" list.',
+  not_made: 'We could not make the link. Wait a moment and press "Create the link" again. Nothing was sent to anybody.',
+  not_revoked: 'We could not turn that link off, so it is still working. Wait a moment and press the button again.',
+  unknown_intent: 'That button is from an older version of this page. Reload the page and press it again.',
+}
+// `Object.hasOwn`, not a plain lookup: `ERRORS['toString']` finds a function on
+// the prototype, which would render as source code across the top of the page.
+const errorMessage = error && Object.hasOwn(ERRORS, error) ? ERRORS[error] : null
+/** The one refusal that is about a box on the form rather than the whole form. */
+const badField = error === 'driver_needed' ? 'subject_id' : null
 const when = (v: string) =>
   new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 const driverName = (id: string | null) => {
@@ -209,7 +243,14 @@ const driverName = (id: string | null) => {
       {notice === 'revoked' ? 'Link turned off. It stopped working right away.' : 'Link created.'}
     </p>
   )}
-  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {
+    errorMessage && (
+      <ErrorSummary
+        class="mb-5"
+        errors={[{ message: errorMessage, field: badField ?? undefined }]}
+      />
+    )
+  }
 
   {/*
     The only time this address is ever on screen. Short sentences, because the
@@ -226,12 +267,16 @@ const driverName = (id: string | null) => {
         words, which is also what a reader on a phone needs: a tap there opens a
         cursor, not a selection, script or no script.
       */}
+      {/* text-base, not the 11-12px it was. iOS zooms the whole page when it
+          focuses an input under 16px, and this box is autofocused — so the
+          reader arrived at the one address he gets one chance to copy, zoomed
+          in, with the rest of the page off screen. */}
       <input
         readonly
         autofocus
         value={createdUrl}
         aria-label="Your new proof link"
-        class="mt-3 w-full rounded-lg border border-emerald-300 bg-white px-3 py-2 font-mono text-xs"
+        class="field-input mt-3 border-emerald-300 font-mono"
       />
       <p class="mt-3 text-sm text-emerald-900">
         Press and hold the box, choose Select all, then Copy.
@@ -256,14 +301,26 @@ const driverName = (id: string | null) => {
 
       <label class="mt-4 block">
         <span class="text-sm font-medium">
-          Which driver <span class="font-normal text-ink-300">(only for a driver file)</span>
+          Which driver <span class="font-normal text-ink-500">(only for a driver file)</span>
         </span>
-        <select name="subject_id" class={field}>
+        <select
+          id="subject_id"
+          name="subject_id"
+          class={field}
+          aria-invalid={badField === 'subject_id' ? 'true' : undefined}
+          aria-describedby={badField === 'subject_id' ? 'subject_id-error' : undefined}
+        >
           <option value="">—</option>
           {(drivers ?? []).map((d) => (
             <option value={d.id}>{`${d.first_name} ${d.last_name}`.trim()}</option>
           ))}
         </select>
+        {badField === 'subject_id' && (
+          <span class="field-error" id="subject_id-error">
+            <span aria-hidden="true">⚠</span>
+            <span>{errorMessage}</span>
+          </span>
+        )}
       </label>
 
       <label class="mt-4 block">
@@ -272,7 +329,7 @@ const driverName = (id: string | null) => {
       </label>
 
       <label class="mt-4 block">
-        <span class="text-sm font-medium">Label <span class="font-normal text-ink-300">(optional)</span></span>
+        <span class="text-sm font-medium">Label <span class="font-normal text-ink-500">(optional)</span></span>
         <input name="label" placeholder="e.g. insurance renewal" class={field} />
       </label>
 
@@ -283,17 +340,12 @@ const driverName = (id: string | null) => {
           <option value="30" selected>30 days</option>
           <option value="90">90 days</option>
         </select>
-        <span class="mt-1 block text-xs text-ink-500">
+        <span class="field-hint block">
           Every link expires. A record from today should not still be answering questions next year.
         </span>
       </label>
 
-      <button
-        type="submit"
-        name="intent"
-        value="create"
-        class="mt-5 w-full rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-      >
+      <button type="submit" name="intent" value="create" class="btn btn-primary mt-5 w-full">
         Create the link
       </button>
     </form>
@@ -343,12 +395,15 @@ const driverName = (id: string | null) => {
                     <div
                       class:list={[
                         'text-3xl leading-none font-semibold tabular-nums',
-                        l.view_count > 0 ? 'text-ink-900' : 'text-ink-300',
+                        // ink-500, not ink-300: the zero is the answer he came
+                        // for as often as a three is, and 1.85:1 is not an
+                        // answer he can read. Quiet, not invisible.
+                        l.view_count > 0 ? 'text-ink-900' : 'text-ink-500',
                       ]}
                     >
                       {l.view_count}
                     </div>
-                    <div class="mt-1 text-[11px] leading-tight text-ink-500">
+                    <div class="mt-1 text-xs leading-tight text-ink-700">
                       {openedWord(l.view_count)}
                     </div>
                   </div>
@@ -358,13 +413,13 @@ const driverName = (id: string | null) => {
                       {l.label ||
                         (l.scope === 'driver_file' ? driverName(l.subject_id) : 'Fleet summary')}
                     </p>
-                    <p class="mt-1 text-xs text-ink-500">
+                    <p class="mt-1 text-xs text-ink-700">
                       {l.scope === 'driver_file'
                         ? `Driver file · ${driverName(l.subject_id)}`
                         : 'Fleet summary'}
                       {l.recipient && <> · for {l.recipient}</>}
                     </p>
-                    <p class="mt-0.5 text-xs text-ink-500 tabular-nums">
+                    <p class="mt-0.5 text-xs text-ink-700 tabular-nums">
                       {l.last_viewed_at ? (
                         <>Last opened {when(l.last_viewed_at)}</>
                       ) : (
@@ -379,7 +434,7 @@ const driverName = (id: string | null) => {
                 <div class="mt-3">
                   <div class="flex flex-wrap items-baseline justify-between gap-x-3 text-xs">
                     <span class="font-medium tabular-nums">{stopsIn(l)}</span>
-                    <span class="text-ink-500 tabular-nums">{when(l.expires_at)}</span>
+                    <span class="text-ink-700 tabular-nums">{when(l.expires_at)}</span>
                   </div>
                   <div
                     class:list={['mt-1.5 h-2 overflow-hidden rounded-full', TONES.brand.track]}
@@ -399,21 +454,25 @@ const driverName = (id: string | null) => {
                   honest version — a "Copy link" button that produced anything at
                   all would mean the token was still stored somewhere.
                 */}
-                <p class="mt-3 rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-500">
+                {/* On a tint and at 12px, both of which put the floor at
+                    ink-700. */}
+                <p class="mt-3 rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-700">
                   The link is not shown here. We show a link one time only, when you make it. If you
                   lost it, turn this one off and make a new link.
                 </p>
 
-                {/* A bordered button, not a text link. It is the only control on
-                    the card and it is pressed with a thumb, so it gets a target
-                    a thumb can hit. */}
+                {/* Red, and it has earned it: this is destructive and it is
+                    irreversible — the link stops working for whoever is holding
+                    it, right away, and there is no way to switch it back on.
+                    `.btn-danger-text` is the shared red text variant, 44px like
+                    every other control in the app. */}
                 <form method="POST" class="mt-3">
                   <input type="hidden" name="id" value={l.id} />
                   <button
                     type="submit"
                     name="intent"
                     value="revoke"
-                    class="rounded-lg border border-red-200 px-4 py-3 text-sm leading-tight font-medium text-red-700 transition hover:bg-red-50"
+                    class="btn btn-danger-text btn-sm -ml-3"
                   >
                     Turn off this link
                   </button>
@@ -433,7 +492,8 @@ const driverName = (id: string | null) => {
                 <span class="font-medium">
                   {l.label || (l.scope === 'driver_file' ? driverName(l.subject_id) : 'Fleet summary')}
                 </span>
-                <span class="text-ink-500">
+                {/* The row sits on `bg-ink-50/60`, so the floor is ink-700. */}
+                <span class="text-ink-700">
                   {' '}— {l.revoked_at ? `turned off ${when(l.revoked_at)}` : `expired ${when(l.expires_at)}`}
                   {l.recipient && <> · was for {l.recipient}</>}
                   {' '}· opened <span class="tabular-nums">{l.view_count}</span>{' '}

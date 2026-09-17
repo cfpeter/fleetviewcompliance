@@ -29,6 +29,7 @@
  * is `options: { data: { full_name } }` on the signUp below plus a field on the
  * settings page — one line each, and the trigger is already waiting for it.
  */
+import ErrorSummary from '../components/ui/ErrorSummary.astro'
 import Public from '../layouts/Public.astro'
 import { normalizeDot } from '../lib/fmcsa.ts'
 import {
@@ -54,7 +55,17 @@ const nextPath = safeNext(params.get('next'))
  */
 const carriedDot = normalizeDot(params.get('dot') ?? '')
 
-/** Rebuild this page's URL, keeping everything that must survive a round trip. */
+/**
+ * Rebuild this page's URL, keeping everything that must survive a round trip.
+ *
+ * A REFUSAL ALSO CARRIES `#form-errors`, and that fragment is the whole of how
+ * the focus moves on a page that runs no script. The redirect is a 303 to this
+ * same address, so the browser scrolls to the summary box and — because the box
+ * is `tabindex="-1"` — hands it the focus, and the next Tab is the email field.
+ * Only an error-toned notice gets it: "check your email" is good news and must
+ * not jump anybody into a red box. Nothing else about the destination changes;
+ * a fragment is never sent to the server.
+ */
 function loginHref(to: AuthMode, code: string | null, dot: string | null): string {
   const q = new URLSearchParams()
   if (to === 'signup') q.set('mode', 'signup')
@@ -65,7 +76,8 @@ function loginHref(to: AuthMode, code: string | null, dot: string | null): strin
   if (nextPath !== '/app') q.set('next', nextPath)
   if (dot) q.set('dot', dot)
   const s = q.toString()
-  return s ? `/login?${s}` : '/login'
+  const hash = code && notice(code)?.tone === 'error' ? '#form-errors' : ''
+  return s ? `/login?${s}${hash}` : `/login${hash}`
 }
 
 /**
@@ -162,15 +174,27 @@ if (Astro.request.method === 'POST') {
 const msg = notice(params.get('notice'))
 const signup = mode === 'signup'
 
-const tone =
-  msg?.tone === 'ok'
-    ? 'bg-emerald-50 text-emerald-800'
-    : msg?.tone === 'info'
-      ? 'bg-sky-50 text-sky-900'
-      : 'bg-red-50 text-red-700'
+/**
+ * A refusal is a form error, so it is drawn as one: the summary box at the top
+ * of the form, with the field it is about marked invalid and pointing back at
+ * the message. Good news and standing information stay a plain notice line —
+ * neither is something to fix.
+ */
+const problem = msg?.tone === 'error' ? msg.text : null
 
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2.5 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+/** Which box the refusal is about, so `aria-describedby` has somewhere to point. */
+const badField: 'email' | 'password' | 'terms' | null =
+  problem === null
+    ? null
+    : params.get('notice') === 'credentials' || params.get('notice') === 'bad_email'
+      ? 'email'
+      : params.get('notice') === 'weak_password'
+        ? 'password'
+        : params.get('notice') === 'terms_required'
+          ? 'terms'
+          : 'email'
+
+const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 text-sky-900'
 ---
 
 <Public title={signup ? 'Create your account' : 'Sign in'} noindex>
@@ -198,18 +222,35 @@ const field =
       )
     }
 
-    {msg && <p class:list={['mt-5 rounded-lg px-4 py-3 text-sm', tone]}>{msg.text}</p>}
+    {msg && !problem && <p class:list={['mt-5 rounded-lg px-4 py-3 text-sm', tone]}>{msg.text}</p>}
 
     <form method="POST" class="mt-6 space-y-4">
+      {problem && <ErrorSummary errors={[{ message: problem, field: badField ?? undefined }]} />}
       {carriedDot && <input type="hidden" name="dot" value={carriedDot} />}
 
-      <label class="block">
-        <span class="text-sm font-medium">Email</span>
-        <input type="email" name="email" autocomplete="email" required autofocus class={field} />
-      </label>
+      <div>
+        <label class="field-label" for="email">Email</label>
+        <input
+          type="email"
+          id="email"
+          name="email"
+          autocomplete="email"
+          required
+          autofocus
+          class="field-input mt-1"
+          aria-invalid={badField === 'email' ? 'true' : undefined}
+          aria-describedby={badField === 'email' ? 'email-error' : undefined}
+        />
+        {badField === 'email' && (
+          <p class="field-error" id="email-error">
+            <span aria-hidden="true">⚠</span>
+            <span>{problem}</span>
+          </p>
+        )}
+      </div>
 
-      <label class="block">
-        <span class="text-sm font-medium">Password</span>
+      <div>
+        <label class="field-label" for="password">Password</label>
         {/*
           `minlength` only on sign-up. On sign-in it blocks the submit button for
           anybody whose existing password is shorter than this build's rule — the
@@ -219,16 +260,29 @@ const field =
         */}
         <input
           type="password"
+          id="password"
           name="password"
           autocomplete={signup ? 'new-password' : 'current-password'}
           required
           minlength={signup ? MIN_PASSWORD : undefined}
-          class={field}
+          class="field-input mt-1"
+          aria-invalid={badField === 'password' ? 'true' : undefined}
+          aria-describedby={
+            [badField === 'password' && 'password-error', signup && 'password-hint']
+              .filter(Boolean)
+              .join(' ') || undefined
+          }
         />
-        {signup && (
-          <span class="mt-1 block text-xs text-ink-500">Use {MIN_PASSWORD} characters or more.</span>
+        {badField === 'password' && (
+          <p class="field-error" id="password-error">
+            <span aria-hidden="true">⚠</span>
+            <span>{problem}</span>
+          </p>
         )}
-      </label>
+        {signup && (
+          <p class="field-hint" id="password-hint">Use {MIN_PASSWORD} characters or more.</p>
+        )}
+      </div>
 
       {/*
         THE WAY BACK IN, and until today there was not one. This link had no
@@ -243,8 +297,11 @@ const field =
       */}
       {
         !signup && (
-          <p class="text-sm">
-            <a href="/auth/forgot-password" class="font-medium text-brand-600 hover:underline">
+          <p>
+            {/* A button, not a bare link. It is pressed by somebody who is
+                already locked out, often on a phone, and a 20px line of text is
+                not a target. */}
+            <a href="/auth/forgot-password" class="btn btn-tertiary btn-sm -ml-3">
               Forgot your password?
             </a>
           </p>
@@ -253,13 +310,16 @@ const field =
 
       {
         signup && (
-          <label class="flex items-start gap-3">
+          <label class="check-row items-start py-2" for="terms">
             <input
               type="checkbox"
+              id="terms"
               name="terms"
               value="yes"
               required
-              class="mt-0.5 h-5 w-5 shrink-0 rounded border-ink-100 text-brand-600 focus:ring-2 focus:ring-brand-500/20"
+              class="mt-0.5"
+              aria-invalid={badField === 'terms' ? 'true' : undefined}
+              aria-describedby={badField === 'terms' ? 'terms-error' : undefined}
             />
             <span class="text-sm text-ink-700">
               {ASSENT.lead}{' '}
@@ -267,7 +327,7 @@ const field =
                 href={ASSENT.termsHref}
                 target="_blank"
                 rel="noopener"
-                class="font-medium text-brand-600 hover:underline"
+                class="link font-medium"
               >
                 {ASSENT.terms}
               </a>{' '}
@@ -276,10 +336,16 @@ const field =
                 href={ASSENT.privacyHref}
                 target="_blank"
                 rel="noopener"
-                class="font-medium text-brand-600 hover:underline"
+                class="link font-medium"
               >
                 {ASSENT.privacy}
               </a>{ASSENT.stop}
+              {badField === 'terms' && (
+                <span class="field-error" id="terms-error">
+                  <span aria-hidden="true">⚠</span>
+                  <span>{problem}</span>
+                </span>
+              )}
             </span>
           </label>
         )
@@ -289,7 +355,7 @@ const field =
         type="submit"
         name="intent"
         value={signup ? 'signup' : 'signin'}
-        class="w-full rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+        class="btn btn-primary w-full"
       >
         {signup ? 'Create account' : 'Sign in'}
       </button>
@@ -299,19 +365,19 @@ const field =
       One link, not a second button. Two equally weighted buttons under one pair
       of boxes is what made the old screen ambiguous in the first place.
     */}
-    <p class="mt-6 text-center text-sm text-ink-500">
+    <p class="mt-6 flex flex-wrap items-center justify-center gap-1 text-sm text-ink-500">
       {
         signup ? (
           <>
             Already have an account?{' '}
-            <a href={loginHref('signin', null, carriedDot)} class="font-medium text-brand-600 hover:underline">
+            <a href={loginHref('signin', null, carriedDot)} class="btn btn-tertiary btn-sm">
               Sign in
             </a>
           </>
         ) : (
           <>
             First time here?{' '}
-            <a href={loginHref('signup', null, carriedDot)} class="font-medium text-brand-600 hover:underline">
+            <a href={loginHref('signup', null, carriedDot)} class="btn btn-tertiary btn-sm">
               Create an account
             </a>
           </>
@@ -321,7 +387,7 @@ const field =
 
     {
       signup && (
-        <p class="mt-8 border-t border-ink-100 pt-6 text-xs text-ink-500">
+        <p class="mt-8 border-t border-ink-100 pt-6 text-xs text-ink-700">
           We ask for your email first on purpose. A USDOT number is public. Anyone can read it off
           the side of a truck. So you claim your number after you sign in, not before.
         </p>

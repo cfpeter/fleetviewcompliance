@@ -9,6 +9,8 @@
 import Bars from '../../../components/charts/Bars.astro'
 import Figure from '../../../components/charts/Figure.astro'
 import {
+  type DatedLoad,
+  agingSource,
   daysWord,
   receivablesAging,
   receivablesByCustomer,
@@ -77,27 +79,48 @@ function build(select: string) {
  */
 const unfiltered = q === ''
 
+// `billing` and `created_at` ride along for the receivables bands below. One
+// query, two findings: the ranking reads the money columns and the aging reads
+// the billing state and the date. A second request for the same rows would be a
+// second population to keep in step, and the two charts would eventually
+// disagree.
+const LOAD_COLUMNS =
+  'customer_id, status, exception, billing, linehaul_cents, fuel_surcharge_cents, accessorials_cents, created_at'
+// The two dates 0029_load_invoice_dates.sql adds. Asked for first, because the
+// invoice date is the day the receivables clock ACTUALLY starts.
+const LOAD_COLUMNS_WITH_DATES = `${LOAD_COLUMNS}, invoiced_on, paid_on`
+
+/**
+ * The revenue rows, asked for with the invoice dates and again without them.
+ *
+ * 0029 IS WRITTEN AND NOT YET APPLIED, so on this database the two columns do
+ * not exist and PostgREST answers the first request with "column loads.
+ * invoiced_on does not exist" — which would take the ranking, the concentration
+ * finding and the whole receivables section off this page over a column that is
+ * an improvement rather than a requirement. So it asks again without them and
+ * everything ages from the day the load was entered exactly as it did before,
+ * with `agingSource` saying so on screen. The same fallback is what makes the
+ * day the migration IS applied a silent improvement rather than a deployment.
+ *
+ * The count is exact, so the ranking can tell whether PostgREST's row cap ate
+ * anything. A capped response makes every bar shorter than it should be and,
+ * worse, shifts the concentration share — with nothing on the page to say a
+ * load was missing.
+ */
+async function loadRows() {
+  if (!unfiltered) return null
+  const withDates = await supabase.from('loads').select(LOAD_COLUMNS_WITH_DATES, { count: 'exact' })
+  if (!withDates.error) return withDates
+  return await supabase.from('loads').select(LOAD_COLUMNS, { count: 'exact' })
+}
+
 const [first, { count: totalCount }, revenueResult] = await Promise.all([
   build(COLUMNS_WITH_COUNT),
   // The unfiltered count exists so the empty state can tell the truth. "No
   // customers yet" on a book of thirty, none of whom match the search, sends
   // her to the add form to re-type a broker who is already in here.
   supabase.from('customers').select('*', { count: 'exact', head: true }),
-  unfiltered
-    ? supabase.from('loads').select(
-        // `billing` and `created_at` ride along for the receivables bands below.
-        // One query, two findings: the ranking reads the money columns and the
-        // aging reads the billing state and the day the load was entered. A
-        // second request for the same rows would be a second population to keep
-        // in step, and the two charts would eventually disagree.
-        'customer_id, status, exception, billing, linehaul_cents, fuel_surcharge_cents, accessorials_cents, created_at',
-        // The exact count, so the ranking can tell whether PostgREST's row cap
-        // ate anything. A capped response makes every bar shorter than it
-        // should be and, worse, shifts the concentration share — with nothing
-        // on the page to say a load was missing.
-        { count: 'exact' },
-      )
-    : null,
+  loadRows(),
 ])
 
 /**
@@ -162,6 +185,13 @@ const missing = Math.max(
 /**
  * How a customer's terms read on one line under their bar.
  *
+ * "TERMS: NET 30", NOT "PAYS IN 30 DAYS". The old wording read as a measured
+ * fact about this broker's behaviour. It is nothing of the kind — it is the
+ * sentence on their rate confirmation, which is exactly the thing an owner
+ * needs to keep separate from what they actually do. "Net 30" is also what the
+ * industry says and what the rate confirmation itself says, so it is the phrase
+ * the reader already recognises.
+ *
  * NULL and 0 are different facts and get different sentences — 0 is payment on
  * delivery, the best terms in the industry, and NULL is a question nobody has
  * asked them. Collapsed into one number the broker who never answered would sit
@@ -169,8 +199,8 @@ const missing = Math.max(
  */
 const termsNote = (days: number | null): string => {
   if (days === null) return 'terms not recorded'
-  if (days === 0) return 'pays on delivery'
-  return `pays in ${days} days`
+  if (days === 0) return 'terms: on delivery'
+  return `terms: net ${days}`
 }
 
 /**
@@ -210,16 +240,17 @@ const rankingCoverage = ranking
  * the resting view only, for the same reason the ranking is: a receivables
  * total drawn from a search result is not a truncated answer, it is a wrong one.
  *
- * THE CLOCK STARTS THE DAY THE LOAD WAS ENTERED, NOT THE DAY THE INVOICE WENT
- * OUT, because 0009_loads.sql records no invoice date at all. That makes every
- * band OLDER than the invoice behind it, and the figure says so on screen —
- * see the coverage line and the sentence under the bars. An owner who reads
- * "more than 90 days" here and repeats it to a broker whose invoice went out
- * three weeks ago has been handed an argument he loses.
+ * THE CLOCK STARTS ON A DAY THIS SCREEN NAMES. A load that carries an invoice
+ * date is counted from that date; a load with none is counted from the day it
+ * was ENTERED, which is always older than the invoice behind it. `agingSource`
+ * writes out which rows are which and how many of each, and it leads the
+ * coverage note rather than sitting at the end of it — an owner who reads "more
+ * than 90 days" here and repeats it to a broker whose invoice went out three
+ * weeks ago has been handed an argument he loses.
  */
 const revenueLoads =
   revenueResult && !revenueResult.error
-    ? ((revenueResult.data ?? []) as unknown as RevenueLoad[])
+    ? ((revenueResult.data ?? []) as unknown as DatedLoad[])
     : null
 const now = new Date()
 const aging = revenueLoads ? receivablesAging(revenueLoads, now) : null
@@ -234,7 +265,7 @@ const chaseRows =
 
 const agingCoverage = aging
   ? [
-      'Counted from the day the load was entered, not the day the invoice went out. Nothing on a load records when it was invoiced or when the money arrived, so every figure here is older than the invoice behind it.',
+      agingSource(aging),
       'Only loads marked invoiced, with the factor, or funded. Anything you have not invoiced yet is not on these bars.',
       aging.unpricedLoads > 0 &&
         `${aging.unpricedLoads} ${loadWord(aging.unpricedLoads)} still out carry no rate yet, so the amounts are lower than the real figures. A load with no rate is not a $0 load.`,
@@ -351,7 +382,6 @@ const concentration =
         title="Who the money comes from"
         subtitle="Booked rates across every load on file, largest first"
         coverage={rankingCoverage}
-        action={{ href: '#customer-book', label: 'The whole book' }}
       >
         <Bars
           items={ranking.rows.map((r) => ({
@@ -374,6 +404,13 @@ const concentration =
              the sun by somebody who cannot separate two similar lengths. */
           <p class="mt-4 border-t border-ink-100 pt-3 text-sm text-ink-700">{concentration}</p>
         )}
+        {/* The way out of the chart and into the rows. A Tertiary button rather
+            than a 12px line of blue text in the figure header: it is an action,
+            it is tapped with a thumb, and 44px is the floor for anything that
+            is. */}
+        <a href="#customer-book" class="btn btn-tertiary btn-sm mt-2 -ml-3">
+          See the whole book <span aria-hidden="true">→</span>
+        </a>
       </Figure>
     )
   }
@@ -415,13 +452,18 @@ const concentration =
               not columns explain nothing — each block says what it is in its own
               words instead.
             */}
-            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+            {/* 12px type, so ink-700 and not ink-500: the floor rises at 12px
+                and under, and a column name nobody can read is a table with no
+                header at all. */}
+            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
               <tr>
                 <th class="px-4 py-3 font-medium">Customer</th>
                 <th class="px-4 py-3 font-medium">MC number</th>
                 <th class="px-4 py-3 font-medium">Contact</th>
                 <th class="px-4 py-3 font-medium">Phone</th>
-                <th class="px-4 py-3 text-right font-medium">Days to pay</th>
+                {/* "Terms", not "Days to pay". What is in this column is what
+                    they AGREED to, not what they have been measured doing. */}
+                <th class="px-4 py-3 text-right font-medium">Terms</th>
                 <th class="px-4 py-3 text-right font-medium">Loads</th>
               </tr>
             </thead>
@@ -469,15 +511,24 @@ const concentration =
                       /* Blank is "they never told us", and it stays blank. A
                          default of 30 here would be a payment term we invented
                          on a screen the owner uses to decide whether he can
-                         afford to take the load. */
+                         afford to take the load.
+
+                         "Net 30" and not "30 days": this is the agreed term off
+                         a rate confirmation, written the way the rate
+                         confirmation writes it, and it must not be read as how
+                         fast this broker has been measured paying. 0 is payment
+                         on delivery and gets its own words — "Net 0" is not a
+                         thing anybody says. */
                     }
-                    <span class={said}>{c.days_to_pay === null ? 'Days to pay ' : 'Pays in '}</span>
+                    <span class={said}>Terms </span>
                     {c.days_to_pay === null ? (
                       <span class="text-ink-500">—</span>
+                    ) : c.days_to_pay === 0 ? (
+                      <span>On delivery</span>
                     ) : (
                       <>
+                        <span class="text-ink-500">Net </span>
                         {c.days_to_pay}
-                        <span class="text-ink-500"> days</span>
                       </>
                     )}
                   </td>
@@ -551,9 +602,14 @@ const concentration =
                 invoiced and not paid, across {aging.countedLoads}{' '}
                 {loadWord(aging.countedLoads)}
                 {aging.oldestDays !== null && (
+                  /* "Has been out", not "was entered": some of these rows are
+                     now aged from an invoice date and some from the day the
+                     load was typed in. The coverage line above says exactly
+                     which, in numbers, and this sentence must not contradict
+                     it by naming one of the two. */
                   <>
-                    . The oldest load on it was entered{' '}
-                    <span class="tabular-nums">{daysWord(aging.oldestDays)}</span> ago
+                    . The oldest has been out{' '}
+                    <span class="tabular-nums">{daysWord(aging.oldestDays)}</span>
                   </>
                 )}
                 .
@@ -603,7 +659,8 @@ const concentration =
                answer "who do I ring" — this can, and it is the same population
                cut the other way. */
             <div class="mt-4 border-t border-ink-100 pt-3">
-              <h4 class="text-xs tracking-wide text-ink-500 uppercase">
+              {/* 12px, so ink-700. */}
+              <h4 class="text-xs tracking-wide text-ink-700 uppercase">
                 Out longest — ring these first
               </h4>
               <ul class="mt-2 divide-y divide-ink-100 text-sm">
@@ -618,11 +675,15 @@ const concentration =
                         {' '}
                         · oldest {r.oldestDays === null ? 'not known' : daysWord(r.oldestDays)}
                         {' · '}
+                        {/* The AGREED term, said the way the rate confirmation
+                            says it. Never "pays in 30 days", which reads as a
+                            measurement of this broker rather than a promise
+                            from them. */}
                         {r.daysToPay === null
                           ? 'terms not recorded'
                           : r.daysToPay === 0
-                            ? 'pays on delivery'
-                            : `agreed ${daysWord(r.daysToPay)}`}
+                            ? 'terms: on delivery'
+                            : `terms: net ${r.daysToPay}`}
                       </span>
                     </span>
                   </li>

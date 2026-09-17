@@ -159,8 +159,6 @@ function withParam(key: string, value: string): string {
 }
 
 const tabs = [{ value: 'all', label: 'All' }, ...LOAD_STATUSES]
-const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
-const pill = 'rounded-md px-2 py-0.5 text-xs font-medium'
 
 /**
  * HOW MANY LOADS HAVE A PROBLEM, and one press to see them.
@@ -452,7 +450,6 @@ const showGoalLine = goalPercent !== null && drawnMonths >= 2
 const goalNotes =
   goalCents !== null
     ? [
-        'We do not save this goal yet. It stays in the address of this page. Bookmark the page to keep it.',
         `The month you are in now is not finished, so it is not marked green or red.${
           unjudgedMonths > 0
             ? ` ${unjudgedMonths} earlier ${monthWord(unjudgedMonths)} had no rate on any load, so ${unjudgedMonths === 1 ? 'it is' : 'they are'} not marked either.`
@@ -460,15 +457,51 @@ const goalNotes =
         }`,
       ]
     : []
+
+/**
+ * EVERY MONTH'S FIGURE, IN FULL, UNDER THE PLOT.
+ *
+ * The number printed above a column is the exact amount — THE MONEY RULE in
+ * src/lib/charts/scale.ts leaves no room for a rounded value label — but those
+ * numbers are hidden below 640px, because twelve amounts across a phone is a
+ * grey smear. On the device this page is most often read on, the plot would
+ * then carry no figures at all.
+ *
+ * So the figures are written out here as well: one line per month, full money,
+ * and a word for each of the two absences so a month nobody priced cannot be
+ * read as a month with no work in it. This is the "table directly under the
+ * chart" the axis rule allows the compact tick against.
+ */
+const monthFigures = months
+  ? months.columns.map((c) => ({
+      label: c.label,
+      display:
+        c.value !== null
+          ? formatCents(c.value)
+          : c.unpricedLoads > 0
+            ? 'no rate typed'
+            : 'no loads',
+      known: c.value !== null,
+      isCurrent: c.isCurrent,
+    }))
+  : []
 ---
 
 <App title="Loads" subtitle="Where each load is, and where its money is. Those are two different questions.">
-  {notice && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{notice}</p>}
+  {
+    /* The shared error box from global.css, with role="alert" so a reader
+       already on the page hears it arrive. */
+    notice && (
+      <p role="alert" class="error-summary mb-5">
+        {notice}
+      </p>
+    )
+  }
 
   <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
     <form method="GET" class="relative flex-1">
       <svg
-        class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-300"
+        class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-500"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
@@ -483,13 +516,16 @@ const goalNotes =
            holding is usually the broker's, and a box that appears to only want
            ours is a box she does not bother typing into. */
       }
+      {/* .field-input from global.css: 46px tall, a border in ink-500 the
+          reader can actually see, and the one focus ring. The utilities only
+          round the corners and make room for the icon. */}
       <input
         type="search"
         name="q"
         value={q}
         placeholder="Search by load number or broker reference"
         aria-label="Search loads by load number or broker reference"
-        class="w-full rounded-xl border border-ink-100 bg-white py-3 pr-4 pl-10 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+        class="field-input rounded-xl py-3 pr-4 pl-10"
       />
       {
         /* Carries the current tab, the problem filter and the goal through the
@@ -500,31 +536,36 @@ const goalNotes =
       {exception && <input type="hidden" name="exception" value={exception} />}
       {goalRaw !== '' && <input type="hidden" name="goal" value={goalRaw} />}
     </form>
-    <a
-      href="/app/loads/new"
-      class="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-center font-medium text-white transition hover:bg-brand-700"
-    >
-      Add a load
-    </a>
+    {/* A link, because it goes somewhere. It wears the one Primary on this
+        screen: adding a load is what this page is opened to do. */}
+    <a href="/app/loads/new" class="btn btn-primary shrink-0">Add a load</a>
   </div>
 
-  <div class="-mx-4 mb-4 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
+  {/*
+    .filter-tab is 44px tall — the old tab was 30px — and .is-current is the one
+    selected metaphor in this app: a tinted pill plus semibold, which survives
+    colour blindness and a phone screen in the sun. aria-current is what a screen
+    reader gets, so the colour never carries it alone.
+  */}
+  <nav
+    aria-label="Filter loads by status"
+    class="-mx-4 mb-4 flex items-center gap-2 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0"
+  >
     {
-      tabs.map((t) => (
-        <a
-          href={withParam('status', t.value === 'all' ? '' : t.value)}
-          class:list={[
-            tab,
-            status === t.value
-              ? 'bg-brand-500/10 text-brand-700'
-              : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
-          ]}
-        >
-          {t.label}
-        </a>
-      ))
+      tabs.map((t) => {
+        const here = status === t.value
+        return (
+          <a
+            href={withParam('status', t.value === 'all' ? '' : t.value)}
+            aria-current={here ? 'page' : undefined}
+            class:list={['filter-tab shrink-0', here && 'is-current']}
+          >
+            {t.label}
+          </a>
+        )
+      })
     }
-  </div>
+  </nav>
 
   {
     /*
@@ -542,13 +583,15 @@ const goalNotes =
     (totalCount ?? 0) === 0 ? null : problemLoads > 0 ? (
       <div class="-mx-4 mb-4 px-4 sm:mx-0 sm:px-0">
         <div class="flex flex-wrap items-center gap-2">
-          <span class="text-xs tracking-wide text-ink-500 uppercase">Problems</span>
+          <span class="text-xs tracking-wide text-ink-700 uppercase">Problems</span>
           {problemPills.map((p) =>
             p.count === 0 ? (
               /* Nothing to filter to, so it is not a link. It stays on the row
                  because "no breakdowns this week" is worth reading, and a
-                 control that comes and goes is one nobody learns. */
-              <span class="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-ink-50 px-3 text-sm font-medium text-ink-300">
+                 control that comes and goes is one nobody learns. ink-700
+                 because the pill is a tint, and a count of zero is a fact to
+                 read rather than a greyed-out control. */
+              <span class="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-ink-50 px-3 text-sm font-medium text-ink-700">
                 <span class="tabular-nums">0</span>
                 {p.label}
               </span>
@@ -569,10 +612,7 @@ const goalNotes =
             ),
           )}
           {exception && (
-            <a
-              href={withParam('exception', '')}
-              class="inline-flex min-h-11 items-center px-2 text-sm font-medium text-brand-600 hover:underline"
-            >
+            <a href={withParam('exception', '')} class="btn btn-tertiary btn-sm">
               Show every load
             </a>
           )}
@@ -585,7 +625,7 @@ const goalNotes =
         )}
       </div>
     ) : (
-      <p class="mb-4 text-sm text-ink-500">No load has a problem written on it right now.</p>
+      <p class="mb-4 text-sm text-ink-700">No load has a problem written on it right now.</p>
     )
   }
 
@@ -598,12 +638,14 @@ const goalNotes =
             Add the load you just booked. The broker's number from the rate confirmation is enough
             to start. You can add the rate and the stops later.
           </p>
-          <a
-            href="/app/loads/new"
-            class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
-          >
-            Add a load →
-          </a>
+          <a href="/app/loads/new" class="btn btn-primary btn-sm mt-4">Add a load</a>
+          {/* The goal line needs months of priced loads before it can be drawn,
+              so this says what the board will be able to answer rather than
+              offering a box that would draw nothing today. */}
+          <p class="mx-auto mt-4 max-w-md text-sm text-ink-500">
+            Once loads have rates on them, this page draws what you booked each month, and you can
+            type what you want to make in a month to see which months you hit.
+          </p>
         </div>
       ) : (
         <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
@@ -613,17 +655,12 @@ const goalNotes =
             everything you have turned on — the search box, the tab and the problem pill all narrow
             the list together.
           </p>
-          <a
-            href="/app/loads"
-            class="mt-4 inline-block rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
-          >
-            Show every load
-          </a>
+          <a href="/app/loads" class="btn btn-secondary btn-sm mt-4">Show every load</a>
         </div>
       )
     ) : (
       <>
-        <p class="mb-3 text-sm text-ink-500">
+        <p class="mb-3 text-sm text-ink-700">
           <span class="tabular-nums">{rows.length}</span>
           {rows.length === 1 ? ' load' : ' loads'}
         </p>
@@ -632,7 +669,7 @@ const goalNotes =
           <table class="w-full text-sm sm:min-w-[64rem]">
             {/* No header line on a phone. Seven column names above blocks that
                 are not columns explain nothing; each block says what it is. */}
-            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
               <tr>
                 <th class="px-4 py-3 font-medium">Load</th>
                 <th class="px-4 py-3 font-medium">Broker ref</th>
@@ -653,10 +690,9 @@ const goalNotes =
                     {/* THE LOAD NUMBER LEADS. It is never empty and it is what
                         she is holding the rate confirmation for. */}
                     <td class={`${cell} order-1`}>
-                      <a
-                        href={`/app/loads/${l.id}`}
-                        class="font-medium tabular-nums hover:text-brand-600 hover:underline"
-                      >
+                      {/* .link-row is 44px tall, so the number is a thumb
+                          target rather than a line of text to aim at. */}
+                      <a href={`/app/loads/${l.id}`} class="link-row tabular-nums">
                         {loadLabel(l)}
                       </a>
                     </td>
@@ -670,15 +706,12 @@ const goalNotes =
                       class:list={[cell, 'order-2', !l.broker_reference && 'hidden sm:table-cell']}
                     >
                       {l.broker_reference ? (
-                        <a
-                          href={`/app/loads/${l.id}`}
-                          class="font-medium tabular-nums hover:text-brand-600 hover:underline"
-                        >
-                          <span class="font-normal text-ink-500 sm:hidden">Broker ref </span>
+                        <a href={`/app/loads/${l.id}`} class="link-row tabular-nums">
+                          <span class="font-normal text-ink-700 sm:hidden">Broker ref&nbsp;</span>
                           {l.broker_reference}
                         </a>
                       ) : (
-                        <span class="text-ink-300">—</span>
+                        <span class="text-ink-500">—</span>
                       )}
                     </td>
 
@@ -688,11 +721,11 @@ const goalNotes =
                     <td class:list={[cell, 'order-7', !customer && 'hidden sm:table-cell']}>
                       {customer ? (
                         <>
-                          <span class="text-ink-500 sm:hidden">Customer </span>
+                          <span class="text-ink-700 sm:hidden">Customer </span>
                           {customer}
                         </>
                       ) : (
-                        <span class="text-ink-300">—</span>
+                        <span class="text-ink-500">—</span>
                       )}
                     </td>
 
@@ -701,12 +734,14 @@ const goalNotes =
                         is still at the shipper and that is where it has to be
                         looked for. */}
                     <td class={`${cell} order-5`}>
+                      {/* `statusPillClass` already returns `badge badge-*` from
+                          global.css. Nothing else is added to it: the local
+                          pill classes this used to carry were a second badge
+                          shape sitting on top of the shared one. */}
                       <div class="flex flex-wrap items-center gap-1">
-                        <span class:list={[pill, statusPillClass(l.status)]}>
-                          {loadStatusLabel(l.status)}
-                        </span>
+                        <span class={statusPillClass(l.status)}>{loadStatusLabel(l.status)}</span>
                         {l.exception && (
-                          <span class:list={[pill, exceptionPillClass(l.exception)]}>
+                          <span class={exceptionPillClass(l.exception)}>
                             {exceptionLabel(l.exception)}
                           </span>
                         )}
@@ -718,7 +753,7 @@ const goalNotes =
                         it sits beside the rate, because the two of them together
                         are the answer to "where is this load's money". */}
                     <td class={`${cell} order-4`}>
-                      <span class:list={[pill, billingPillClass(l.billing)]}>
+                      <span class={billingPillClass(l.billing)}>
                         {billingStatusLabel(l.billing)}
                       </span>
                     </td>
@@ -731,7 +766,10 @@ const goalNotes =
                       ]}
                     >
                       {total === null ? (
-                        <span class="text-ink-300">—</span>
+                        /* The dash holds the column open from `sm` up; the row
+                           drops the cell entirely on a phone. A load nobody has
+                           priced is not a load worth $0.00. */
+                        <span class="text-ink-500">—</span>
                       ) : (
                         <span class="font-medium">{formatCents(total)}</span>
                       )}
@@ -746,15 +784,20 @@ const goalNotes =
                       {lane.origin ? (
                         <span>
                           {lane.origin}
-                          <span class="mx-1.5 text-ink-300">→</span>
-                          {lane.destination ?? <span class="text-ink-300">no delivery stop</span>}
+                          <span class="mx-1.5 text-ink-500" aria-hidden="true">
+                            →
+                          </span>
+                          {lane.destination ?? <span class="text-ink-500">no delivery stop</span>}
                         </span>
                       ) : (
+                        /* The one link on this row that goes somewhere other
+                           than the load, so it is underlined at rest and 44px
+                           tall like every other target on the board. */
                         <a
                           href={`/app/loads/${l.id}/stops`}
-                          class="text-ink-300 hover:text-brand-600 hover:underline"
+                          class="link inline-flex min-h-11 items-center"
                         >
-                          no stops yet
+                          No stops yet — add them
                         </a>
                       )}
                     </td>
@@ -818,10 +861,23 @@ const goalNotes =
             component's `mt-1` and `h-28 sm:h-36`, spelled again.
           */}
           {revenueCeiling > 0 && drawnMonths >= 2 && (
-            /* Only when there is a plot. `Columns` prints a sentence instead of
-               bars when fewer than two months carry a figure, and an axis
-               ceiling above a sentence labels nothing. */
-            <div class="flex items-center gap-2 text-[10px] text-ink-300">
+            /*
+              Only when there is a plot. `Columns` prints a sentence instead of
+              bars when fewer than two months carry a figure, and an axis
+              ceiling above a sentence labels nothing.
+
+              THE ONE COMPACT FIGURE ON THIS PAGE, and it is the axis tick —
+              what full height on the plot is worth. THE MONEY RULE at the top
+              of src/lib/charts/scale.ts allows exactly this and only where the
+              exact figures are also on the same visual, which they are twice
+              over below: in full above every column, and in full again in the
+              month-by-month list under the plot. Nobody rings a broker about
+              the height of a bar.
+
+              ink-700, not ink-300: this is 10px type, and the floor at that
+              size is ink-700.
+            */
+            <div class="flex items-center gap-2 text-[10px] text-ink-700">
               <span class="tabular-nums">Full height {compactMoney(revenueCeiling)}</span>
               <span class="h-px flex-1 bg-ink-100" />
             </div>
@@ -832,7 +888,16 @@ const goalNotes =
               columns={months.columns.map((c) => ({
                 label: c.label,
                 value: c.value,
-                display: c.display,
+                /*
+                  THE FULL AMOUNT, not `compactMoney`. This string is printed
+                  above the column AND is the whole of what a screen reader is
+                  read for that month, so it is a figure the owner reads as an
+                  amount — "$14,250.00", never "$14.3k". See THE MONEY RULE in
+                  src/lib/charts/scale.ts. `c.display` is kept for the two
+                  absences, which are words rather than numbers: "no rate" for a
+                  month whose loads nobody priced, "—" for a month with none.
+                */
+                display: c.value === null ? c.display : formatCents(c.value),
                 // Green above the goal, red below it, and NEITHER on a month we
                 // cannot judge: the month still running, and any month with no
                 // priced load. Those keep the ordinary colour, which is what
@@ -874,7 +939,7 @@ const goalNotes =
             /* Colour is never the only carrier. The legend says in words what
                the green and the red mean, and the dash beside the goal ties the
                figure to the line drawn across the columns. */
-            <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-ink-500">
+            <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-ink-700">
               <li class="flex items-center gap-1.5">
                 <span class="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
                 <span>hit the goal</span>
@@ -890,8 +955,32 @@ const goalNotes =
             </ul>
           )}
 
+          {drawnMonths >= 2 && (
+            /* The figures the plot draws, written out. On a phone the numbers
+               above the columns are hidden, so this list is where the amounts
+               actually are. */
+            <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 border-t border-ink-100 pt-3 text-xs sm:grid-cols-3">
+              {monthFigures.map((m) => (
+                <div class="flex items-baseline justify-between gap-2">
+                  <dt class="text-ink-700">
+                    {m.label}
+                    {m.isCurrent && <span class="italic"> so far</span>}
+                  </dt>
+                  <dd
+                    class:list={[
+                      'shrink-0 tabular-nums',
+                      m.known ? 'font-medium text-ink-900' : 'text-ink-700 italic',
+                    ]}
+                  >
+                    {m.display}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+
           {months.window.countedLoads > 0 && (
-            <p class="mt-3 text-sm text-ink-500">
+            <p class="mt-3 text-sm text-ink-700">
               <span class="font-medium text-ink-900 tabular-nums">
                 {formatCents(months.window.totalCents)}
               </span>{' '}
@@ -902,44 +991,74 @@ const goalNotes =
           )}
 
           {/*
-            A GET form, like the search box above it. No intent, no POST and no
-            redirect, because nothing is written: pressing the button reloads
-            this same page with the goal in the address, which is a page she can
-            bookmark or send to whoever else works the board.
+            THE GOAL BOX, and why it is a plain GET form.
+
+            No intent, no POST and no redirect, because nothing is written:
+            pressing the button reloads this same page with the goal in the
+            address, which is a page she can bookmark or send to whoever else
+            works the board. It needs no hidden fields — the charts are only
+            drawn on the unfiltered board, so there is no search, tab or problem
+            pill to carry through.
+
+            The sentence saying it is not saved is printed whether or not a goal
+            is set. A number that vanishes on the next visit, silently, is worse
+            than no box at all.
           */}
-          <form method="GET" class="mt-4 flex flex-wrap items-end gap-3 border-t border-ink-100 pt-4">
-            <label class="block">
-              <span class="text-sm font-medium">What do you want to make in one month?</span>
-              <div class="mt-1 flex items-center rounded-lg border border-ink-100 bg-white focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
-                <span class="pl-3 text-ink-300">$</span>
-                <input
-                  type="text"
-                  name="goal"
-                  value={goalCents !== null ? centsToInput(goalCents) : goalRaw}
-                  inputmode="decimal"
-                  placeholder="25000"
-                  aria-label="Your goal for one month, in dollars"
-                  class="w-32 bg-transparent px-2 py-2 text-base tabular-nums outline-none"
-                />
-              </div>
-            </label>
-            <button
-              type="submit"
-              class="rounded-lg bg-ink-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-ink-700"
-            >
-              Draw the line
-            </button>
-            {goalCents !== null && (
-              <a
-                href={withParam('goal', '')}
-                class="py-2.5 text-sm font-medium text-brand-600 hover:underline"
-              >
-                Take the line off
-              </a>
+          <div class="mt-4 border-t border-ink-100 pt-4">
+            <form method="GET" class="flex flex-wrap items-end gap-3">
+              <label class="block">
+                <span class="field-label">What do you want to make in one month?</span>
+                <div class="field-affix mt-1">
+                  <span class="pl-3 text-ink-500" aria-hidden="true">$</span>
+                  <input
+                    type="text"
+                    name="goal"
+                    value={goalCents !== null ? centsToInput(goalCents) : goalRaw}
+                    inputmode="decimal"
+                    placeholder="25000"
+                    aria-label="Your goal for one month, in dollars"
+                    aria-invalid={goalError ? 'true' : undefined}
+                    aria-describedby={goalError ? 'goal-error' : 'goal-note'}
+                    class="field-affix-input w-36 tabular-nums"
+                  />
+                </div>
+              </label>
+              {/* Secondary. The one Primary on this screen is "Add a load" at
+                  the top, and drawing a line is not that. */}
+              <button type="submit" class="btn btn-secondary">
+                {goalCents === null ? 'Draw the line' : 'Move the line'}
+              </button>
+              {goalCents !== null && (
+                <a href={withParam('goal', '')} class="btn btn-tertiary">
+                  Take the line off
+                </a>
+              )}
+            </form>
+
+            {goalError && (
+              <p id="goal-error" class="field-error">
+                <span aria-hidden="true">⚠</span>
+                <span>{goalError}</span>
+              </p>
             )}
-          </form>
-          {goalError && <p class="mt-2 text-sm text-red-700">{goalError}</p>}
-          {goalNotes.map((note) => <p class="mt-2 text-xs text-ink-500">{note}</p>)}
+
+            {goalCents === null && !goalError && (
+              /* The invitation. Without it the box is an unlabelled number
+                 field under a chart, and nobody types into one of those. */
+              <p class="mt-2 text-sm text-ink-700">
+                Type the number you want to make in one month. We draw a dashed line across the
+                columns at that number, and mark each finished month green when it reached the line
+                and red when it did not.
+              </p>
+            )}
+
+            <p id="goal-note" class="mt-2 text-sm text-ink-700">
+              We do not save this number. It stays in the address of this page. Bookmark the page,
+              or send the address to whoever else works the board, to keep it.
+            </p>
+
+            {goalNotes.map((note) => <p class="mt-2 text-sm text-ink-700">{note}</p>)}
+          </div>
         </Figure>
       </div>
     )

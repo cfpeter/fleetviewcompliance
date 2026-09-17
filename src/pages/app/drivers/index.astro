@@ -188,7 +188,6 @@ function withParam(key: string, value: string): string {
 }
 
 const tabs = [...DRIVER_STATUSES, { value: 'all', label: 'All' }]
-const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
 const today = todayInCalifornia()
 
 /**
@@ -227,7 +226,7 @@ const said = 'text-ink-500 sm:hidden'
   <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
     <form method="GET" class="relative flex-1">
       <svg
-        class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-300"
+        class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-500"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
@@ -237,13 +236,17 @@ const said = 'text-ink-500 sm:hidden'
         <circle cx="11" cy="11" r="7"></circle>
         <path d="m20 20-3.5-3.5"></path>
       </svg>
+      {/* .field-input from global.css: a border a reader can see (ink-500, not
+          the old ink-100 that was invisible on a phone in daylight), 16px type
+          so iOS does not zoom the page on a tap, and the one focus ring. The
+          utilities only change the shape and make room for the icon. */}
       <input
         type="search"
         name="q"
         value={q}
         placeholder="Search by name or CDL number…"
         aria-label="Search drivers"
-        class="w-full rounded-xl border border-ink-100 bg-white py-3 pr-4 pl-10 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+        class="field-input rounded-xl py-3 pr-4 pl-10"
       />
       {
         /* Carries the current tab through the search, so searching from the
@@ -251,31 +254,37 @@ const said = 'text-ink-500 sm:hidden'
       }
       {status !== 'active' && <input type="hidden" name="status" value={status} />}
     </form>
-    <a
-      href="/app/drivers/new"
-      class="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-center font-medium text-white transition hover:bg-brand-700"
-    >
-      Add a driver
-    </a>
+    {/* A link, because it goes somewhere. It wears the Primary button because it
+        is the one action on this screen. */}
+    <a href="/app/drivers/new" class="btn btn-primary shrink-0">Add a driver</a>
   </div>
 
-  <div class="-mx-4 mb-4 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
+  {/*
+    .filter-tab is 44px tall — the old tab was 30px — and .is-current is the one
+    selected metaphor in this app: a tinted pill plus semibold, which survives
+    colour blindness and a phone screen in the sun. aria-current is what a screen
+    reader gets, so the colour is never carrying it alone. gap-2 keeps 8px
+    between two targets a thumb aims at.
+  */}
+  <nav
+    aria-label="Filter drivers by status"
+    class="-mx-4 mb-4 flex items-center gap-2 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0"
+  >
     {
-      tabs.map((t) => (
-        <a
-          href={withParam('status', t.value === 'active' ? '' : t.value)}
-          class:list={[
-            tab,
-            status === t.value
-              ? 'bg-brand-500/10 text-brand-700'
-              : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
-          ]}
-        >
-          {t.label}
-        </a>
-      ))
+      tabs.map((t) => {
+        const here = status === t.value
+        return (
+          <a
+            href={withParam('status', t.value === 'active' ? '' : t.value)}
+            aria-current={here ? 'page' : undefined}
+            class:list={['filter-tab shrink-0', here && 'is-current']}
+          >
+            {t.label}
+          </a>
+        )
+      })
     }
-  </div>
+  </nav>
 
   {
     rows.length === 0 ? (
@@ -286,10 +295,7 @@ const said = 'text-ink-500 sm:hidden'
             Add the people you dispatch. A name is enough to start. The dates can follow when the
             paperwork comes in.
           </p>
-          <a
-            href="/app/drivers/new"
-            class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
-          >
+          <a href="/app/drivers/new" class="btn btn-primary btn-sm mt-4">
             Add a driver →
           </a>
         </div>
@@ -300,12 +306,7 @@ const said = 'text-ink-500 sm:hidden'
             You have <span class="tabular-nums">{totalCount}</span> drivers on file. None of them
             match this search and this tab.
           </p>
-          <a
-            href="/app/drivers?status=all"
-            class="mt-4 inline-block rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
-          >
-            Show everyone
-          </a>
+          <a href="/app/drivers?status=all" class="btn btn-secondary btn-sm mt-4">Show everyone</a>
         </div>
       )
     ) : (
@@ -341,9 +342,14 @@ const said = 'text-ink-500 sm:hidden'
           The shape is taken in before any prose is read, so the caveat has to
           be where the shape is.
         */}
-        <p class="mb-3 text-xs text-ink-500">
-          The circle is the 8 items a driver file needs. It counts what you typed in. Nobody here
-          has seen the paper.
+        {/*
+          The full name, not an abbreviation. "DQ file" is how the trade says it
+          and it is not how most owners read it, so the words come first and the
+          short name can follow on the pages that need it.
+        */}
+        <p class="mb-3 text-xs text-ink-700">
+          The circle is the 8 items a driver qualification file needs — the folder of paperwork an
+          auditor asks to see. It counts what you typed in. Nobody here has seen the paper.
           {unchecked > 0 && (
             <span>
               {' '}
@@ -361,7 +367,7 @@ const said = 'text-ink-500 sm:hidden'
               not columns explain nothing — each block says what it is in its
               own words instead.
             */}
-            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
               <tr>
                 <th class="px-4 py-3 font-medium">Driver</th>
                 <th class="px-4 py-3 font-medium">CDL</th>
@@ -386,39 +392,42 @@ const said = 'text-ink-500 sm:hidden'
                         <Ring ring={ring} size={34} />
                       ) : (
                         <span
-                          class="flex size-[34px] shrink-0 items-center justify-center rounded-full border border-dashed border-ink-200 text-ink-300"
+                          class="flex size-[34px] shrink-0 items-center justify-center rounded-full border border-dashed border-ink-200 text-ink-500"
                           aria-hidden="true"
                         >
                           —
                         </span>
                       )}
                       <div class="min-w-0">
-                        <a
-                          href={`/app/drivers/${d.id}`}
-                          class="font-medium hover:text-brand-600 hover:underline"
-                        >
+                        {/* .link-row is 44px tall, so the name is a thumb
+                            target rather than a 20px line of text. */}
+                        <a href={`/app/drivers/${d.id}`} class="link-row">
                           {d.last_name}, {d.first_name}
                         </a>
-                        {/* The numbers, in words, under the name: the ring is
-                            never the only carrier. One man in twelve cannot
-                            separate the red arc from the amber one. */}
+                        {/*
+                          The numbers, in words, under the name: the ring is
+                          never the only carrier. One man in twelve cannot
+                          separate the red arc from the amber one.
+
+                          WORDS, NOT A SECOND LINK. This line used to link to the
+                          qualification file, which put a 20px target directly
+                          under the 44px name — two things to hit with one thumb,
+                          touching each other. The name is the row's target now
+                          and the file is one tap further on, from the driver's
+                          own page.
+                        */}
                         <div class="text-xs tabular-nums">
                           {ring ? (
-                            <a
-                              href={`/app/drivers/${d.id}/file`}
-                              class="text-ink-500 hover:text-brand-600 hover:underline"
-                            >
-                              {rowLine(ring)}
-                            </a>
+                            <span class="text-ink-700">{rowLine(ring)}</span>
                           ) : (
-                            <span class="text-ink-300">Not checked — off the active list</span>
+                            <span class="text-ink-700">Not checked — off the active list</span>
                           )}
                         </div>
                         {/* Stored as E.164, read the way a person reads it. A
                             roster of forty '+1818...' strings is a roster
                             nobody scans. */}
                         {(d.phone || d.email) && (
-                          <div class="text-xs text-ink-300 tabular-nums">
+                          <div class="text-xs text-ink-700 tabular-nums">
                             {d.phone ? formatPhone(d.phone) : d.email}
                           </div>
                         )}
@@ -432,10 +441,10 @@ const said = 'text-ink-500 sm:hidden'
                     {d.cdl_number ? (
                       <span class="tabular-nums">{d.cdl_number}</span>
                     ) : (
-                      <span class="text-ink-300">—</span>
+                      <span class="text-ink-500">—</span>
                     )}
                     {d.cdl_state && (
-                      <span class="text-xs text-ink-300 sm:block">
+                      <span class="text-xs text-ink-700 sm:block">
                         <span class="sm:hidden"> · </span>
                         {d.cdl_state}
                       </span>
@@ -460,7 +469,7 @@ const said = 'text-ink-500 sm:hidden'
                           {formatDate(d.cdl_expires_on)}
                         </span>
                       ) : (
-                        <span class="text-ink-300">—</span>
+                        <span class="text-ink-500">—</span>
                       )}
                     </span>
                     {/*
@@ -474,13 +483,12 @@ const said = 'text-ink-500 sm:hidden'
                       far out gets the date alone. The three states that need
                       him keep their pill: gone, coming up, and no date at all.
                     */}
+                    {/* One badge construction for the whole app — `.badge`
+                        carries the shape, the shared tone table carries the
+                        colour, so this licence is the same colour here as it is
+                        on his own page. */}
                     {cdl && cdl.tone !== 'ok' && cdl.tone !== 'read' && (
-                      <span
-                        class:list={[
-                          'ml-2 inline-block rounded-md px-1.5 py-0.5 text-xs font-medium whitespace-nowrap',
-                          CHECK_TONES[cdl.tone].pill,
-                        ]}
-                      >
+                      <span class:list={['badge ml-2', CHECK_TONES[cdl.tone].pill]}>
                         {cdl.text}
                       </span>
                     )}
@@ -489,19 +497,16 @@ const said = 'text-ink-500 sm:hidden'
                       any date on the row, and it was fourth — the bottom of the
                       block, and off the right edge of the old sideways scroll. */}
                   <td class={`${cell} order-2 mt-1.5 sm:mt-0`}>
-                    <span
-                      class:list={[
-                        'rounded-md px-2 py-0.5 text-xs font-medium',
-                        statusPillClass(d.status),
-                      ]}
-                    >
-                      {d.status}
-                    </span>
+                    {/* `statusPillClass` already returns a `badge badge-*`
+                        pair, so there is no padding or radius to repeat here —
+                        the utilities that used to sit beside it were quietly
+                        overriding the shared badge. */}
+                    <span class={statusPillClass(d.status)}>{d.status}</span>
                   </td>
                   {/* Last. The hire date is for the file, not for the roster. */}
                   <td class={`${cell} order-5 mt-1 whitespace-nowrap tabular-nums sm:mt-0`}>
                     <span class={said}>Hired </span>
-                    {d.hired_on ? formatDate(d.hired_on) : <span class="text-ink-300">—</span>}
+                    {d.hired_on ? formatDate(d.hired_on) : <span class="text-ink-500">—</span>}
                   </td>
                 </tr>
                 )

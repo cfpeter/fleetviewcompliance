@@ -34,6 +34,7 @@
  * only door left, and a rule that lived only in this page is a rule a curl
  * command would walk past.
  */
+import ErrorSummary from '../../components/ui/ErrorSummary.astro'
 import App from '../../layouts/App.astro'
 import {
   attemptsLeft,
@@ -145,7 +146,17 @@ const go = (params: Record<string, string | null | undefined>) => {
   const query = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) if (value) query.set(key, value)
   const search = query.toString()
-  return Astro.redirect(`/app/setup${search ? `?${search}` : ''}`, 303)
+  /**
+   * A REFUSAL ALSO CARRIES `#form-errors`, and that fragment is the whole of how
+   * the focus moves on a page that runs no script: the summary box is
+   * `tabindex="-1"`, so a 303 to its id scrolls to it and focuses it. Only an
+   * error-toned notice gets it — "the code is on its way" is good news, and
+   * jumping somebody into a red box is not how to deliver it. A fragment is
+   * never sent to the server, so nothing about the destination changes.
+   */
+  const code = params.notice
+  const hash = code && notice(code)?.tone === 'error' ? '#form-errors' : ''
+  return Astro.redirect(`/app/setup${search ? `?${search}` : ''}${hash}`, 303)
 }
 
 const fail = (code: string, dot?: string | null) => go({ notice: code, dot })
@@ -694,23 +705,43 @@ const subtitle =
             : 'Start with your USDOT number. We fill in what the federal record knows.'
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2.5 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
-const primary =
-  'w-full rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700'
-const secondary =
-  'w-full rounded-lg border border-ink-100 px-5 py-2.5 font-medium transition hover:bg-ink-50'
-const tone =
-  msg?.tone === 'ok'
-    ? 'bg-emerald-50 text-emerald-800'
-    : msg?.tone === 'info'
-      ? 'bg-sky-50 text-sky-900'
-      : 'bg-red-50 text-red-700'
+// The shared field and button constructions from global.css. The local ones
+// these replace bordered ink-100, which is 1.35:1 against the card.
+const field = 'field-input mt-1'
+const primary = 'btn btn-primary w-full'
+const secondary = 'btn btn-secondary w-full'
+/** A standalone text link on this page is a 44px control, not a line of words. */
+const quiet = 'btn btn-tertiary btn-sm'
+
+/**
+ * A refusal is drawn as a form error — the summary box, in the form it belongs
+ * to. Good news and standing information stay a notice line: neither is
+ * something the reader can go and fix.
+ */
+const problem = msg?.tone === 'error' ? msg.text : null
+
+/** The one refusal that is about a box on this page rather than about the flow. */
+const badField = problem && params.get('notice') === 'dot_invalid' ? 'dot' : null
+
+const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 text-sky-900'
 ---
 
 <App title={title} subtitle={subtitle}>
   <div class="max-w-2xl">
-    {msg && <p class:list={['mb-5 rounded-lg px-4 py-3 text-sm', tone]}>{msg.text}</p>}
+    {msg && !problem && <p class:list={['mb-5 rounded-lg px-4 py-3 text-sm', tone]}>{msg.text}</p>}
+    {
+      /* The designed error state: `go()` redirects to this box's id, so the
+         browser scrolls to it and focuses it with no script running. It sits
+         above the step rather than inside one form, because the six steps on
+         this page render one at a time and a refusal can arrive on any of them. */
+      problem && (
+        <ErrorSummary
+          class="mb-5"
+          title="We could not do that"
+          errors={[{ message: problem, field: badField ?? undefined }]}
+        />
+      )
+    }
 
     {/* ============================================================ ask */}
     {

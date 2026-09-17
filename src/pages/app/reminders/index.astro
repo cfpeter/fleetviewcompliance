@@ -16,6 +16,7 @@
  * sentences. "Write what you need to do." is an instruction; "Please provide a
  * valid value" teaches nothing.
  */
+import ErrorSummary from '../../../components/ui/ErrorSummary.astro'
 import App from '../../../layouts/App.astro'
 import { formatDate, todayInCalifornia } from '../../../lib/drivers.ts'
 import {
@@ -58,7 +59,11 @@ const go = (query = '') => Astro.redirect(`/app/reminders${query}`, 303)
  * styling, on our domain, behind our padlock.
  */
 const fail = (code: string, editId = '') =>
-  go(`?error=${code}${editId ? `&edit=${editId}` : ''}`)
+  // `#form-errors` is how the focus reaches the summary box with no script on
+  // the page: the box is `tabindex="-1"`, so a 303 to its id both scrolls to it
+  // and focuses it, and the next Tab is the first field. A fragment is never
+  // sent to the server, so nothing about where this goes changes.
+  go(`?error=${code}${editId ? `&edit=${editId}` : ''}#form-errors`)
 
 /** The drivers and trucks a reminder may be attached to. */
 const [{ data: driverRows }, { data: vehicleRows }] = await Promise.all([
@@ -285,17 +290,37 @@ if (showDone) {
  * one says what to do rather than what went wrong.
  */
 const ERRORS: Record<string, string> = {
-  title: 'Write what you need to do.',
-  date: 'Pick a date.',
-  days: 'Days must be a number, 0 to 365.',
-  note: 'The note is too long.',
-  repeat: 'Pick how often it repeats.',
-  subject: 'Pick a driver or a truck from the list.',
-  gone: 'That reminder is gone.',
-  save: 'Not saved. Try again.',
+  title: 'Write what you need to do — a few words, like "Pay truck insurance".',
+  date: `Pick the day it must be done. Type it like ${todayField}, or use the calendar.`,
+  days: 'Type how many days before, as a whole number from 0 to 365. 7 means one week before.',
+  note: `The note is too long. Cut it to ${MAX_NOTE} letters or fewer.`,
+  repeat: 'Pick how often it repeats from the list. Pick "Does not repeat" if it is a one-time job.',
+  subject: 'Pick a driver or a truck from the list, or pick "Whole company".',
+  gone: 'That reminder is gone. Somebody deleted it, or it was already finished.',
+  save: 'We could not save it. Wait a moment and press the button again.',
 }
 const errorCode = params.get('error') ?? ''
 const errorMessage = errorCode ? (ERRORS[errorCode] ?? ERRORS.save) : null
+
+/**
+ * Which box the refusal is about, so the summary line jumps to it and the box
+ * itself carries `aria-invalid`. `gone` and `save` are about the whole form and
+ * belong to no field — ErrorSummary prints those without a link.
+ */
+const FIELD_OF: Record<string, string> = {
+  title: 'title',
+  date: 'due_on',
+  days: 'lead_days',
+  note: 'note',
+  repeat: 'repeat_months',
+  subject: 'subject',
+}
+const badField = errorMessage ? (FIELD_OF[errorCode] ?? null) : null
+/** The four attributes a rejected field needs, in one place so none goes missing. */
+const invalid = (name: string) =>
+  badField === name
+    ? { 'aria-invalid': 'true' as const, 'aria-describedby': `${name}-error` }
+    : {}
 
 const nextDate = params.get('next')
 const nextDateShown = nextDate && /^\d{4}-\d{2}-\d{2}$/.test(nextDate) ? formatDate(nextDate) : null
@@ -317,14 +342,12 @@ const good = params.has('added')
 /** The row being edited, if the URL names one that is still open. */
 const editing = open.find((r) => r.id === editId) ?? null
 
-const field =
-  'w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
-const label = 'block text-sm font-medium'
-const hint = 'mt-1 block text-xs text-ink-500'
-const primary =
-  'rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700'
-const secondary =
-  'rounded-lg border border-ink-100 bg-white px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50'
+// The shared field and button classes from global.css. The local ones this
+// replaces were 32px tall at `sm` and up — the row actions on this page are
+// pressed with a thumb in a yard, and 32px is a miss.
+const field = 'field-input'
+const label = 'field-label'
+const hint = 'field-hint block'
 
 /**
  * ON A PHONE THE ROWS ARE NOT ROWS.
@@ -344,7 +367,6 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
 ---
 
 <App title="My reminders" subtitle="Your own reminders. We email you before the date.">
-  {errorMessage && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</p>}
   {good && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{good}</p>}
 
   {/*
@@ -354,7 +376,7 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
   */}
   <p class="mb-5 max-w-2xl rounded-xl border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3 text-sm">
     These are your own reminders. They are <strong class="font-medium">not laws</strong>. The
-    deadlines on the <a href="/app" class="font-medium text-brand-600 hover:underline">Deadlines</a>
+    deadlines on the <a href="/app" class="link font-medium">Deadlines</a>
     page come from the rules. These come from you.
   </p>
 
@@ -366,42 +388,65 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
     </h2>
     {editing && <input type="hidden" name="id" value={editing.id} />}
 
+    {/* The designed error state. `fail()` redirects to this box's id, so the
+        browser scrolls to it and focuses it with no script running, and each
+        line is a link to the box it is about. */}
+    {
+      errorMessage && (
+        <ErrorSummary
+          class="mt-4"
+          errors={[{ message: errorMessage, field: badField ?? undefined }]}
+        />
+      )
+    }
+
     <div class="mt-4 grid gap-4 sm:grid-cols-2">
       <div class="sm:col-span-2">
-        <label class={label}>
-          What do you need to do?
-          <input
-            type="text"
-            name="title"
-            required
-            maxlength={MAX_TITLE}
-            value={editing?.title ?? ''}
-            placeholder="Pay truck insurance"
-            class={`${field} mt-1`}
-          />
-        </label>
+        <label class={label} for="title">What do you need to do?</label>
+        <input
+          type="text"
+          id="title"
+          name="title"
+          required
+          maxlength={MAX_TITLE}
+          value={editing?.title ?? ''}
+          placeholder="Pay truck insurance"
+          class={`${field} mt-1`}
+          {...invalid('title')}
+        />
+        {badField === 'title' && (
+          <p class="field-error" id="title-error">
+            <span aria-hidden="true">⚠</span>
+            <span>{errorMessage}</span>
+          </p>
+        )}
       </div>
 
       <div>
-        <label class={label}>
-          Date
-          <input
-            type="date"
-            name="due_on"
-            required
-            min="2000-01-01"
-            max="2100-12-31"
-            value={editing ? toDateOnly(editing.dueOn) : todayField}
-            class={`${field} mt-1 tabular-nums`}
-          />
-        </label>
+        <label class={label} for="due_on">Date</label>
+        <input
+          type="date"
+          id="due_on"
+          name="due_on"
+          required
+          min="2000-01-01"
+          max="2100-12-31"
+          value={editing ? toDateOnly(editing.dueOn) : todayField}
+          class={`${field} mt-1 tabular-nums`}
+          {...invalid('due_on')}
+        />
+        {badField === 'due_on' && (
+          <p class="field-error" id="due_on-error">
+            <span aria-hidden="true">⚠</span>
+            <span>{errorMessage}</span>
+          </p>
+        )}
         <span class={hint}>The day it must be done.</span>
       </div>
 
       <div>
-        <label class={label}>
-          How often?
-          <select name="repeat_months" class={`${field} mt-1`}>
+        <label class={label} for="repeat_months">How often?</label>
+        <select id="repeat_months" name="repeat_months" class={`${field} mt-1`} {...invalid('repeat_months')}>
             {
               REPEAT_OPTIONS.map((o) => (
                 <option value={o.value} selected={(editing?.repeatMonths ?? 0) === o.value}>
@@ -409,24 +454,35 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
                 </option>
               ))
             }
-          </select>
-        </label>
+        </select>
+        {badField === 'repeat_months' && (
+          <p class="field-error" id="repeat_months-error">
+            <span aria-hidden="true">⚠</span>
+            <span>{errorMessage}</span>
+          </p>
+        )}
         <span class={hint}>A repeating reminder moves to the next date when you press Done.</span>
       </div>
 
       <div>
-        <label class={label}>
-          Tell me this many days before
-          <input
-            type="number"
-            name="lead_days"
-            min="0"
-            max="365"
-            inputmode="numeric"
-            value={editing?.leadDays ?? DEFAULT_REMINDER_LEAD_DAYS}
-            class={`${field} mt-1 tabular-nums`}
-          />
-        </label>
+        <label class={label} for="lead_days">Tell me this many days before</label>
+        <input
+          type="number"
+          id="lead_days"
+          name="lead_days"
+          min="0"
+          max="365"
+          inputmode="numeric"
+          value={editing?.leadDays ?? DEFAULT_REMINDER_LEAD_DAYS}
+          class={`${field} mt-1 tabular-nums`}
+          {...invalid('lead_days')}
+        />
+        {badField === 'lead_days' && (
+          <p class="field-error" id="lead_days-error">
+            <span aria-hidden="true">⚠</span>
+            <span>{errorMessage}</span>
+          </p>
+        )}
         {/* Said out loud, because two of the three emails are not his setting.
             A reminder that warns a month early and then goes quiet on the day
             is worse than no reminder. */}
@@ -434,9 +490,8 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
       </div>
 
       <div>
-        <label class={label}>
-          Who or what is it for?
-          <select name="subject" class={`${field} mt-1`}>
+        <label class={label} for="subject">Who or what is it for?</label>
+        <select id="subject" name="subject" class={`${field} mt-1`} {...invalid('subject')}>
             <option value="" selected={!editing?.subject.id}>Whole company</option>
             {
               drivers.length > 0 && (
@@ -466,23 +521,38 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
                 </optgroup>
               )
             }
-          </select>
-        </label>
+        </select>
+        {badField === 'subject' && (
+          <p class="field-error" id="subject-error">
+            <span aria-hidden="true">⚠</span>
+            <span>{errorMessage}</span>
+          </p>
+        )}
       </div>
 
       <div class="sm:col-span-2">
-        <label class={label}>
-          Note (you can leave this empty)
-          <textarea name="note" rows="2" maxlength={MAX_NOTE} class={`${field} mt-1`}>{editing?.note ?? ''}</textarea>
-        </label>
+        <label class={label} for="note">Note (you can leave this empty)</label>
+        <textarea id="note" name="note" rows="2" maxlength={MAX_NOTE} class={`${field} mt-1`} {...invalid('note')}>{editing?.note ?? ''}</textarea>
+        {badField === 'note' && (
+          <p class="field-error" id="note-error">
+            <span aria-hidden="true">⚠</span>
+            <span>{errorMessage}</span>
+          </p>
+        )}
       </div>
     </div>
 
     <div class="mt-4 flex flex-wrap items-center gap-3">
-      <button type="submit" name="intent" value={editing ? 'save_reminder' : 'add_reminder'} class={primary}>
+      <button
+        type="submit"
+        name="intent"
+        value={editing ? 'save_reminder' : 'add_reminder'}
+        class="btn btn-primary"
+      >
         {editing ? 'Save' : 'Add reminder'}
       </button>
-      {editing && <a href="/app/reminders" class={secondary}>Cancel</a>}
+      {/* Cancel is tertiary, never red. It throws nothing away. */}
+      {editing && <a href="/app/reminders" class="btn btn-tertiary">Cancel</a>}
     </div>
   </form>
 
@@ -515,7 +585,8 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
               down, so the second column is the second line — and what he wants
               under the title is when it is due, not who it is for.
             */}
-            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+            {/* ink-700: a column head is text, and at 12px that is the floor. */}
+            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
               <tr>
                 <th class="px-4 py-3 font-medium">What</th>
                 <th class="px-4 py-3 font-medium">Date</th>
@@ -539,25 +610,28 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
                       {r.note && <div class="mt-0.5 max-w-sm text-xs text-ink-500">{r.note}</div>}
                     </td>
                     <td class={`${cell} mt-1.5 whitespace-nowrap sm:mt-0`}>
-                      <span class:list={['rounded-md px-2 py-0.5 text-xs font-medium', pill.className]}>
-                        {pill.label}
-                      </span>
+                      {/* `standingPill` already hands back the shared
+                          `badge badge-*` pair, so there is no second
+                          construction to repeat over the top of it. */}
+                      <span class={pill.className}>{pill.label}</span>
                       <span class="ml-2 tabular-nums sm:mt-1 sm:ml-0 sm:block">{dueLine(r)}</span>
                     </td>
                     <td class={`${cell} mt-1 sm:mt-0`}>
                       <span class="text-ink-500 sm:hidden">For </span>
                       {r.subject.href ? (
-                        <a href={r.subject.href} class="font-medium hover:text-brand-600 hover:underline">
+                        <a href={r.subject.href} class="link-row">
                           {r.subject.label}
                         </a>
                       ) : (
                         <span class="text-ink-500">{r.subject.label}</span>
                       )}
                     </td>
-                    <td class={`${cell} mt-0.5 text-xs text-ink-500 sm:mt-0`}>
+                    <td class={`${cell} mt-0.5 text-xs text-ink-700 sm:mt-0`}>
                       {r.repeatMonths > 0 ? repeatLabel(r.repeatMonths) : '—'}
+                      {/* Was ink-300 — 1.85:1 on white. A "last done" date is a
+                          fact the owner reads, not a divider. */}
                       {r.lastDoneOn && (
-                        <span class="text-ink-300 sm:mt-0.5 sm:block">
+                        <span class="text-ink-700 sm:mt-0.5 sm:block">
                           <span class="sm:hidden"> · </span>
                           Last done {formatDate(toDateOnly(r.lastDoneOn))}
                         </span>
@@ -571,6 +645,12 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
                         pressed with a thumb in a yard; from `sm` they are the
                         small buttons at the end of the row again.
                       */}
+                      {/* 44px at every width now, not only below `sm`: the old
+                          desktop size was 32px. Done is the action, Change only
+                          opens a form, and Delete is the one that destroys
+                          something — so they are secondary, tertiary and the red
+                          text variant, in that order. `gap-2` is the floor
+                          between two 44px targets. */}
                       <div class="flex items-center gap-2 sm:flex-wrap sm:justify-end">
                         <form method="POST" class="flex-1 sm:flex-none">
                           <input type="hidden" name="id" value={r.id} />
@@ -578,14 +658,14 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
                             type="submit"
                             name="intent"
                             value="done_reminder"
-                            class={`${secondary} min-h-11 w-full sm:min-h-0 sm:w-auto`}
+                            class="btn btn-secondary btn-sm w-full sm:w-auto"
                           >
                             Done
                           </button>
                         </form>
                         <a
                           href={`/app/reminders?edit=${r.id}`}
-                          class={`${secondary} inline-flex min-h-11 flex-1 items-center justify-center sm:min-h-0 sm:flex-none`}
+                          class="btn btn-tertiary btn-sm w-full flex-1 sm:w-auto sm:flex-none"
                         >
                           Change
                         </a>
@@ -595,7 +675,7 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
                             type="submit"
                             name="intent"
                             value="delete_reminder"
-                            class={`${secondary} min-h-11 w-full sm:min-h-0 sm:w-auto`}
+                            class="btn btn-danger-text btn-sm w-full sm:w-auto"
                           >
                             Delete
                           </button>
@@ -617,7 +697,7 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
   <section class="mt-8">
     {
       !showDone ? (
-        <a href="/app/reminders?show=done" class={secondary}>
+        <a href="/app/reminders?show=done" class="btn btn-secondary btn-sm">
           Show finished reminders
         </a>
       ) : (
@@ -638,19 +718,29 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
                 <li class="flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white px-4 py-3">
                   <span class="min-w-0 flex-1">
                     <span class="block truncate font-medium">{r.title}</span>
-                    <span class="block text-xs text-ink-500 tabular-nums">
+                    <span class="block text-xs text-ink-700 tabular-nums">
                       {r.subject.label} · was due {formatDate(toDateOnly(r.dueOn))}
                     </span>
                   </span>
                   <form method="POST" class="shrink-0">
                     <input type="hidden" name="id" value={r.id} />
-                    <button type="submit" name="intent" value="reopen_reminder" class={secondary}>
+                    <button
+                      type="submit"
+                      name="intent"
+                      value="reopen_reminder"
+                      class="btn btn-secondary btn-sm"
+                    >
                       Open again
                     </button>
                   </form>
                   <form method="POST" class="shrink-0">
                     <input type="hidden" name="id" value={r.id} />
-                    <button type="submit" name="intent" value="delete_reminder" class={secondary}>
+                    <button
+                      type="submit"
+                      name="intent"
+                      value="delete_reminder"
+                      class="btn btn-danger-text btn-sm"
+                    >
                       Delete
                     </button>
                   </form>
@@ -659,7 +749,7 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
             </ul>
           )}
 
-          <a href="/app/reminders" class:list={['mt-4 inline-block', secondary]}>Hide finished</a>
+          <a href="/app/reminders" class="btn btn-secondary btn-sm mt-4">Hide finished</a>
         </>
       )
     }
@@ -669,8 +759,9 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
       dashboard prints where a regulation prints its CFR citation. */}
   <p class="mt-8 flex flex-wrap items-center gap-2 text-sm text-ink-500">
     On the Deadlines page your reminders carry this mark:
-    <span class:list={['rounded-md px-2 py-0.5 text-xs font-medium', REMINDER_ORIGIN.className]}>
-      {REMINDER_ORIGIN.label}
-    </span>
+    {/* The shared badge, not the bare colour pair `REMINDER_ORIGIN.className`
+        still carries — see the note in the report: that constant lives in
+        src/lib/reminders.ts and is read by the dashboard too. */}
+    <span class="badge badge-info">{REMINDER_ORIGIN.label}</span>
   </p>
 </App>

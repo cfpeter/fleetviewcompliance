@@ -73,12 +73,17 @@ const STATE_WORDS: Record<ItemState, string> = {
   unknown: 'Not known',
 }
 
+/**
+ * The shared badge set, so an item reads the same colour here as it does on the
+ * roster and on the driver's own page. Grey for `unknown` is the point of the
+ * table: a missing date is its own state, never green and never hidden.
+ */
 const STATE_CLASS: Record<ItemState, string> = {
-  present: 'bg-emerald-100 text-emerald-800',
-  expiring: 'bg-amber-100 text-amber-800',
-  expired: 'bg-red-100 text-red-700',
-  missing: 'bg-red-100 text-red-700',
-  unknown: 'bg-ink-100 text-ink-500',
+  present: 'badge badge-success',
+  expiring: 'badge badge-warning',
+  expired: 'badge badge-danger',
+  missing: 'badge badge-danger',
+  unknown: 'badge badge-neutral',
 }
 
 const longDate = (d?: Date) =>
@@ -96,25 +101,21 @@ const name = `${driver.first_name} ${driver.last_name}`.trim()
 
 <App title={`Driver file — ${name}`} subtitle="Laid out in the order 49 CFR 391.51(b) lists it.">
   <div class="mb-5 flex flex-wrap gap-3" data-screen-only>
-    <button
-      type="button"
-      id="print"
-      class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-    >
-      Print / Save as PDF
-    </button>
-    <a
-      href={`/app/drivers/${id}`}
-      class="rounded-lg border border-ink-100 px-4 py-2.5 font-medium transition hover:bg-ink-50"
-    >
-      Back to the driver
-    </a>
+    <button type="button" id="print" class="btn btn-primary">Print / Save as PDF</button>
+    <a href={`/app/drivers/${id}`} class="btn btn-secondary">Back to the driver</a>
   </div>
 
   <article class="rounded-xl border border-ink-100 bg-white p-6 sm:p-8" id="binder">
     <!-- Header: who, and above all WHEN. This is a statement about a moment. -->
     <header class="border-b border-ink-100 pb-5">
       <h2 class="text-2xl font-semibold tracking-tight">Driver qualification file</h2>
+      {/* Said in plain words on the page that IS the thing, because the trade
+          calls it the DQ file and most owners have never been told what the two
+          letters stand for. The short name comes second, once. */}
+      <p class="mt-1 text-sm text-ink-700">
+        The folder of paperwork an auditor asks to see for one driver. Some people call it the DQ
+        file.
+      </p>
       <dl class="mt-4 grid gap-x-8 gap-y-1 text-sm sm:grid-cols-2">
         <div class="flex gap-2">
           <dt class="text-ink-500">Carrier</dt>
@@ -164,16 +165,11 @@ const name = `${driver.first_name} ${driver.last_name}`.trim()
                   </span>
                   <span class="ml-2 text-ink-500">— {STATE_WORDS[i.state]}</span>
                   {pill && (
-                    <span
-                      class:list={[
-                        'ml-2 rounded-md px-1.5 py-0.5 text-xs font-medium whitespace-nowrap',
-                        CHECK_TONES[pill.tone].pill,
-                      ]}
-                    >
+                    <span class:list={['badge ml-2', CHECK_TONES[pill.tone].pill]}>
                       {pill.text}
                     </span>
                   )}
-                  <div class="mt-0.5 text-xs text-ink-500">{i.citation}</div>
+                  <div class="mt-0.5 text-xs text-ink-700">{i.citation}</div>
                 </li>
               )
             })}
@@ -194,29 +190,15 @@ const name = `${driver.first_name} ${driver.last_name}`.trim()
               <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                 <span class="font-mono text-sm text-ink-500 tabular-nums">{i.paragraph}</span>
                 <span class="font-medium">{i.title}</span>
-                <span
-                  class:list={[
-                    'rounded-md px-2 py-0.5 text-xs font-medium',
-                    STATE_CLASS[i.state],
-                  ]}
-                >
-                  {STATE_WORDS[i.state]}
-                </span>
+                <span class={STATE_CLASS[i.state]}>{STATE_WORDS[i.state]}</span>
                 {/* How long, in words. Same function as the driver page and the
                     roster, and dropped whenever it would disagree with the
                     badge to its left — see `daysPill`. */}
                 {pill && (
-                  <span
-                    class:list={[
-                      'rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
-                      CHECK_TONES[pill.tone].pill,
-                    ]}
-                  >
-                    {pill.text}
-                  </span>
+                  <span class:list={['badge', CHECK_TONES[pill.tone].pill]}>{pill.text}</span>
                 )}
               </div>
-              <div class="mt-1 text-xs text-ink-500">{i.citation}</div>
+              <div class="mt-1 text-xs text-ink-700">{i.citation}</div>
               {i.detail && <div class="mt-2 text-sm text-ink-500">{i.detail}</div>}
               {i.note && (
                 <p class="mt-2 border-l-2 border-ink-100 pl-3 text-sm text-ink-500">{i.note}</p>
@@ -232,7 +214,7 @@ const name = `${driver.first_name} ${driver.last_name}`.trim()
       The footer is load-bearing. A document that states dated observations and
       omits this will be read as the thing it declines to be.
     -->
-    <footer class="mt-8 border-t border-ink-100 pt-5 text-xs text-ink-500">
+    <footer class="mt-8 border-t border-ink-100 pt-5 text-xs text-ink-700">
       <p>
         This is a record of what this carrier holds and what was observed on the date above. It is
         not a certification of compliance. It does not say that any document in it is genuine,
@@ -288,13 +270,19 @@ const name = `${driver.first_name} ${driver.last_name}`.trim()
     }
 
     /* Badges become outlined rather than filled: a tinted background is grey
-       mush on a monochrome printer, and grey mush all looks alike. */
-    [class*='bg-'] {
+       mush on a monochrome printer, and grey mush all looks alike.
+       `.badge` is named beside the utility match because the shared badge keeps
+       its fill in a class of its own — matching on `bg-` alone stopped covering
+       it the moment this page started using the app's badge set, and the miss
+       would only show on paper. */
+    [class*='bg-'],
+    .badge {
       background: transparent !important;
       color: #000 !important;
     }
 
-    .rounded-md[class*='bg-'] {
+    .rounded-md[class*='bg-'],
+    .badge {
       border: 1px solid #000;
     }
   }

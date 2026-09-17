@@ -590,8 +590,13 @@ const alsoGoes = removal ? remindersLine('driver', removal) : null
 const phoneUndialable = formatPhone(driver.phone) !== '' && toE164(driver.phone) === null
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+/*
+  There is no `field` string on this page any more. Every box wears
+  `.field-input` from global.css — 44px tall, a border at ink-500 rather than the
+  ink-100 that vanished on a phone in daylight, and the one focus ring the whole
+  app shares. Labels and help lines are `.field-label` and `.field-hint` for the
+  same reason: one construction, corrected in one place.
+*/
 
 /**
  * ONE HEADING SCALE, THREE STEPS, THE SAME ON EVERY SCREEN IN THIS APP.
@@ -676,9 +681,15 @@ const historyOpen = withdrew || error !== null
 
 /** The summary line on each fold: a chevron that turns, drawn once. */
 const chevron = 'size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180'
-/** A fold's summary row. `list-none` because the default triangle is not ours. */
+/**
+ * A fold's summary row. `list-none` because the default triangle is not ours.
+ *
+ * `min-h-11` because the summary IS the control — the whole row opens and closes
+ * the fold — and a control a thumb has to hit is 44px tall whatever its text
+ * happens to measure.
+ */
 const summaryRow =
-  'flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-2 select-none [&::-webkit-details-marker]:hidden'
+  'flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-2 select-none [&::-webkit-details-marker]:hidden'
 
 /**
  * Where a checklist row sends him to answer it.
@@ -799,21 +810,18 @@ const ICONS = {
     <div id="record" class="rounded-xl border border-ink-100 bg-white p-5">
       <details open={recordOpen} class="group">
         <summary
-          class="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-3 select-none [&::-webkit-details-marker]:hidden"
+          class="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-3 select-none [&::-webkit-details-marker]:hidden"
         >
           <h2 class="text-lg font-semibold tracking-tight">Driver record</h2>
           {/* The status, beside his name rather than in a card on the other
               side of the screen. "Is he still one of mine" is the first thing
               read about a driver, and it decides whether anything else on this
               page is being watched at all. */}
-          <span
-            class:list={[
-              'rounded-md px-2 py-0.5 text-xs font-medium',
-              statusPillClass(driver.status),
-            ]}
-          >
-            {driver.status}
-          </span>
+          {/* `statusPillClass` already returns a `badge badge-*` pair, so the
+              utilities that used to sit beside it were quietly overriding the
+              shared badge — the same status is now the same shape and the same
+              colour here as it is on the roster. */}
+          <span class={statusPillClass(driver.status)}>{driver.status}</span>
           <svg
             aria-hidden="true"
             viewBox="0 0 20 20"
@@ -828,7 +836,7 @@ const ICONS = {
           </svg>
           {/* One word, and it goes when the form is open, where the form itself
               says what it is for. */}
-          <span class="ml-auto text-sm font-medium text-brand-600 group-open:hidden">Change</span>
+          <span class="ml-auto text-sm font-medium text-brand-700 group-open:hidden">Change</span>
 
           <span class="flex w-full flex-wrap gap-x-6 gap-y-1 text-sm">
             <span class="whitespace-nowrap">
@@ -837,7 +845,7 @@ const ICONS = {
                 formatPhone(driver.phone) ? (
                   <span class="tabular-nums">{formatPhone(driver.phone)}</span>
                 ) : (
-                  <span class="text-ink-300">not on file</span>
+                  <span class="text-ink-500">not on file</span>
                 )
               }
             </span>
@@ -850,7 +858,7 @@ const ICONS = {
                     {driver.cdl_state && ` ${driver.cdl_state}`}
                   </span>
                 ) : (
-                  <span class="text-ink-300">not on file</span>
+                  <span class="text-ink-500">not on file</span>
                 )
               }
             </span>
@@ -860,7 +868,7 @@ const ICONS = {
                 driver.cdl_expires_on ? (
                   <span class="tabular-nums">{formatDate(driver.cdl_expires_on)}</span>
                 ) : (
-                  <span class="text-ink-300">not on file</span>
+                  <span class="text-ink-500">not on file</span>
                 )
               }
             </span>
@@ -874,9 +882,7 @@ const ICONS = {
           */}
           {
             phoneUndialable && (
-              <span class="w-full rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
-                We cannot text this number.
-              </span>
+              <span class="badge badge-warning">We cannot text this number.</span>
             )
           }
 
@@ -889,7 +895,7 @@ const ICONS = {
           */}
           {
             !isActiveDriver(driver) && (
-              <span class="w-full text-xs text-ink-500">
+              <span class="w-full text-xs text-ink-700">
                 {DRIVER_NOT_ACTIVE_MEANS} Set him back to Active to start again.
               </span>
             )
@@ -899,7 +905,7 @@ const ICONS = {
         <form method="POST" class="mt-5 space-y-4 border-t border-ink-100 pt-5">
           <div class="grid gap-4 sm:grid-cols-2">
             <label class="block">
-              <span class="text-sm font-medium">
+              <span class="field-label">
                 First name <span class="text-red-600">*</span>
               </span>
               <input
@@ -907,11 +913,11 @@ const ICONS = {
                 name="first_name"
                 value={driver.first_name}
                 required
-                class={field}
+                class="field-input mt-1"
               />
             </label>
             <label class="block">
-              <span class="text-sm font-medium">
+              <span class="field-label">
                 Last name <span class="text-red-600">*</span>
               </span>
               <input
@@ -919,14 +925,14 @@ const ICONS = {
                 name="last_name"
                 value={driver.last_name}
                 required
-                class={field}
+                class="field-input mt-1"
               />
             </label>
           </div>
 
           <div class="grid gap-4 sm:grid-cols-2">
             <label class="block">
-              <span class="text-sm font-medium">Phone</span>
+              <span class="field-label">Phone</span>
               {/*
                 Shown the way a person reads it, stored as E.164. The two are
                 deliberately different: '+18183340168' is what a provider needs and
@@ -938,11 +944,14 @@ const ICONS = {
                 name="phone"
                 value={formatPhone(driver.phone)}
                 placeholder="(818) 334-0168"
-                class={`${field} tabular-nums`}
+                class="field-input mt-1 tabular-nums"
               />
+              {/* A sentence, so not a badge: `.badge` never wraps, and this one
+                  runs to two lines on a phone. amber-900 on amber-100 is the
+                  darker pair, for text on a tint. */}
               {
                 phoneUndialable && (
-                  <span class="mt-1.5 inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                  <span class="mt-1.5 block rounded-lg bg-amber-100 px-3 py-2 text-sm text-amber-900">
                     We cannot text this number. Reminders for this driver have nowhere to go. We
                     saved it anyway.
                   </span>
@@ -950,24 +959,24 @@ const ICONS = {
               }
             </label>
             <label class="block">
-              <span class="text-sm font-medium">Email</span>
-              <input type="email" name="email" value={driver.email ?? ''} class={field} />
+              <span class="field-label">Email</span>
+              <input type="email" name="email" value={driver.email ?? ''} class="field-input mt-1" />
             </label>
           </div>
 
           <div class="grid gap-4 sm:grid-cols-2">
             <label class="block">
-              <span class="text-sm font-medium">CDL number</span>
+              <span class="field-label">CDL number</span>
               <input
                 type="text"
                 name="cdl_number"
                 value={driver.cdl_number ?? ''}
-                class={`${field} tabular-nums`}
+                class="field-input mt-1 tabular-nums"
               />
             </label>
             <label class="block">
-              <span class="text-sm font-medium">CDL state</span>
-              <select name="cdl_state" class={field}>
+              <span class="field-label">CDL state</span>
+              <select name="cdl_state" class="field-input mt-1">
                 <option value="">—</option>
                 {
                   US_STATE_CODES.map((code) => (
@@ -982,24 +991,24 @@ const ICONS = {
 
           <div class="grid gap-4 sm:grid-cols-2">
             <label class="block">
-              <span class="text-sm font-medium">CDL expires</span>
+              <span class="field-label">CDL expires</span>
               <input
                 type="date"
                 name="cdl_expires_on"
                 value={driver.cdl_expires_on ?? ''}
-                class={`${field} tabular-nums`}
+                class="field-input mt-1 tabular-nums"
               />
             </label>
             <label class="block">
-              <span class="text-sm font-medium">Hire date</span>
+              <span class="field-label">Hire date</span>
               <input
                 type="date"
                 name="hired_on"
                 value={driver.hired_on ?? ''}
                 max={today}
-                class={`${field} tabular-nums`}
+                class="field-input mt-1 tabular-nums"
               />
-              <span class="mt-1 block text-xs text-ink-500">
+              <span class="field-hint block">
                 Five federal deadlines are counted from this day, so do not leave it blank.
               </span>
             </label>
@@ -1007,18 +1016,18 @@ const ICONS = {
 
           <div class="grid gap-4 sm:grid-cols-2">
             <label class="block">
-              <span class="text-sm font-medium">Date of birth</span>
+              <span class="field-label">Date of birth</span>
               <input
                 type="date"
                 name="date_of_birth"
                 value={driver.date_of_birth ?? ''}
                 max={today}
-                class={`${field} tabular-nums`}
+                class="field-input mt-1 tabular-nums"
               />
             </label>
             <label class="block">
-              <span class="text-sm font-medium">Status</span>
-              <select name="status" class={field}>
+              <span class="field-label">Status</span>
+              <select name="status" class="field-input mt-1">
                 {
                   DRIVER_STATUSES.map((s) => (
                     <option value={s.value} selected={driver.status === s.value}>
@@ -1033,19 +1042,14 @@ const ICONS = {
                 status that quietly switches off the reminders is how a medical card
                 expires on a man somebody marked inactive and then re-hired.
               */}
-              <span class="mt-1 block text-xs text-ink-500">
+              <span class="field-hint block">
                 {DRIVER_NOT_ACTIVE_MEANS} His records stay on file.
               </span>
             </label>
           </div>
 
           <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-            <button
-              type="submit"
-              name="intent"
-              value="save_driver"
-              class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-            >
+            <button type="submit" name="intent" value="save_driver" class="btn btn-primary">
               Save driver
             </button>
           </div>
@@ -1056,7 +1060,7 @@ const ICONS = {
             driver to find out which day the row was typed — so they no longer
             take a card of their own in the rail.
           */}
-          <p class="text-xs text-ink-500 tabular-nums">
+          <p class="text-xs text-ink-700 tabular-nums">
             Added {formatDate(String(driver.created_at).slice(0, 10))} · from {driver.source}
           </p>
         </form>
@@ -1069,13 +1073,14 @@ const ICONS = {
         not active there is no ring card in the rail, so this is the only link to
         it on the screen.
       */}
-      <div class="mt-5 flex flex-wrap items-center gap-4 border-t border-ink-100 pt-4">
-        <a href={`/app/drivers/${id}/file`} class="text-sm font-medium text-brand-600 hover:underline">
+      {/* Tertiary buttons, not 20px lines of text: these are how you leave the
+          page and they are hit with a thumb. gap-3 keeps 12px between them, so
+          neither is a mis-tap on the other. */}
+      <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+        <a href={`/app/drivers/${id}/file`} class="btn btn-tertiary btn-sm -ml-3">
           Qualification file →
         </a>
-        <a href="/app/drivers" class="text-sm font-medium text-brand-600 hover:underline">
-          Back to drivers
-        </a>
+        <a href="/app/drivers" class="btn btn-tertiary btn-sm">Back to drivers</a>
       </div>
     </div>
 
@@ -1126,7 +1131,7 @@ const ICONS = {
                     <Row
                       href={href ?? undefined}
                       class:list={[
-                        'flex items-start gap-3 py-2.5',
+                        'flex min-h-11 items-start gap-3 py-2.5',
                         href && '-mx-2 rounded-lg px-2 hover:bg-ink-50/60',
                       ]}
                     >
@@ -1152,18 +1157,13 @@ const ICONS = {
                       <span class="min-w-0 flex-1">
                         <span class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                           <span class="font-medium">{row.title}</span>
-                          <span
-                            class:list={[
-                              'rounded-md px-1.5 py-0.5 text-xs font-medium whitespace-nowrap',
-                              CHECK_TONES[row.tone].pill,
-                            ]}
-                          >
+                          <span class:list={['badge', CHECK_TONES[row.tone].pill]}>
                             {row.text}
                           </span>
                         </span>
                         {/* Only where there is a date in it. See `hasDate`. */}
                         {row.hasDate && (
-                          <span class="mt-0.5 block text-xs text-ink-500 tabular-nums">
+                          <span class="mt-0.5 block text-xs text-ink-700 tabular-nums">
                             {row.due}
                           </span>
                         )}
@@ -1177,7 +1177,7 @@ const ICONS = {
                           stroke-width="2"
                           stroke-linecap="round"
                           stroke-linejoin="round"
-                          class="mt-1 size-4 shrink-0 text-ink-300"
+                          class="mt-1 size-4 shrink-0 text-ink-500"
                         >
                           <path d="M8 5l5 5-5 5" />
                         </svg>
@@ -1235,14 +1235,7 @@ const ICONS = {
                       </svg>
                     </span>
                     <span class="min-w-0 flex-1">{row.title}</span>
-                    <span
-                      class:list={[
-                        'rounded-md px-1.5 py-0.5 text-xs font-medium whitespace-nowrap',
-                        CHECK_TONES[row.tone].pill,
-                      ]}
-                    >
-                      {row.text}
-                    </span>
+                    <span class:list={['badge', CHECK_TONES[row.tone].pill]}>{row.text}</span>
                   </li>
                 ))}
               </ul>
@@ -1264,7 +1257,7 @@ const ICONS = {
             sight — a bare score is a number a broker quotes back at you.
           */
           <Figure
-            title="Driver file"
+            title="Driver qualification file"
             subtitle="The 8 items 49 CFR 391.51(b) asks for"
             coverage="Counted from what you typed in. Nobody here has seen the paper documents."
             action={{ href: `/app/drivers/${id}/file`, label: 'Open the file →' }}
@@ -1332,7 +1325,7 @@ const ICONS = {
         >
           <path d="M5 8l5 5 5-5"></path>
         </svg>
-        <span class="ml-auto text-sm font-medium text-brand-600 group-open:hidden">Change</span>
+        <span class="ml-auto text-sm font-medium text-brand-700 group-open:hidden">Change</span>
 
         {/*
           THE COUNT THE OLD SIDEBAR CARD CARRIED, SAID WHERE THE BOXES ARE.
@@ -1411,7 +1404,7 @@ const ICONS = {
                       <path d="M5 8l5 5 5-5"></path>
                     </svg>
                     {blankOptional && (
-                      <span class="ml-auto text-xs text-ink-500">
+                      <span class="ml-auto text-xs text-ink-700">
                         Leave blank unless he holds one
                       </span>
                     )}
@@ -1421,15 +1414,15 @@ const ICONS = {
                       /* The id is what "Add the date →" in the checklist lands
                          on, so the box a row asks for is the box he sees. */
                       <label id={`date_${anchor.key}`} class="block">
-                        <span class="text-sm font-medium">{anchor.label}</span>
+                        <span class="field-label">{anchor.label}</span>
                         <input
                           type="date"
                           name={`date_${anchor.key}`}
                           value={current.get(anchorSlot('driver', id, anchor.key))?.occurred_on ?? ''}
                           max={anchor.kind === 'last_done' ? today : undefined}
-                          class={`${field} tabular-nums`}
+                          class="field-input mt-1 tabular-nums"
                         />
-                        <span class="mt-1 block text-xs text-ink-500">{anchor.help}</span>
+                        <span class="field-hint block">{anchor.help}</span>
                       </label>
                     ))}
                   </div>
@@ -1445,12 +1438,7 @@ const ICONS = {
           <span class="flex-1 text-sm text-ink-500">
             Only the boxes you changed are written. Blank boxes are left alone.
           </span>
-          <button
-            type="submit"
-            name="intent"
-            value="save_dates"
-            class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-          >
+          <button type="submit" name="intent" value="save_dates" class="btn btn-primary">
             Save dates
           </button>
         </div>
@@ -1473,11 +1461,9 @@ const ICONS = {
         what a driver is on was to open a statement for a period he had already
         been paid for.
       */}
-      <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm font-medium">
-        <a href={`/app/drivers/${id}/pay`} class="text-brand-600 hover:underline">
-          Rates and terms →
-        </a>
-        <a href={`/app/settlements?driver=${id}`} class="text-brand-600 hover:underline">
+      <div class="flex flex-wrap items-center gap-2">
+        <a href={`/app/drivers/${id}/pay`} class="btn btn-tertiary btn-sm">Rates and terms →</a>
+        <a href={`/app/settlements?driver=${id}`} class="btn btn-tertiary btn-sm">
           All settlements →
         </a>
       </div>
@@ -1493,10 +1479,7 @@ const ICONS = {
           {/* His terms first, then the statement: a settlement built before the
               rate and the mileage basis are on file is a settlement somebody
               types the linehaul into by hand. */}
-          <a
-            href={`/app/drivers/${id}/pay`}
-            class="mt-3 inline-block rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
-          >
+          <a href={`/app/drivers/${id}/pay`} class="btn btn-secondary btn-sm mt-3">
             Set his rates →
           </a>
         </div>
@@ -1527,7 +1510,7 @@ const ICONS = {
                 axisLabel={compactMoney(monthlyCeiling)}
                 emptyMessage="Nothing marked paid in the last six months."
               />
-              <p class="mt-3 text-xs text-ink-500">
+              <p class="mt-3 text-xs text-ink-700">
                 {ytd.cents === null
                   ? `Nothing marked paid in ${payYear} yet.`
                   : `${formatCents(ytd.cents)} paid in ${payYear}, across ${ytd.settlements} ${ytd.settlements === 1 ? 'settlement' : 'settlements'}.`}
@@ -1545,33 +1528,26 @@ const ICONS = {
                      statement the driver was handed, and he rings about it. */
                   <tr class:list={[s.superseded_at && 'opacity-60']}>
                     <td class="py-2">
-                      <a
-                        href={`/app/settlements/${s.id}`}
-                        class="font-medium tabular-nums hover:text-brand-600 hover:underline"
-                      >
+                      {/* .link-row: the record name in a row is a 44px target. */}
+                      <a href={`/app/settlements/${s.id}`} class="link-row tabular-nums">
                         {formatDate(s.period_start)} – {formatDate(s.period_end)}
                       </a>
                       {/* `whitespace-nowrap` on the badge because this card is
                           three columns inside 301px on a phone, and without it
                           the badge broke across two lines as "rev" then "3". */}
                       {s.revision > 1 && (
-                        <span class="ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs whitespace-nowrap text-ink-500 tabular-nums">
-                          rev {s.revision}
-                        </span>
+                        <span class="badge badge-neutral ml-2 tabular-nums">rev {s.revision}</span>
                       )}
                       {s.superseded_at && (
-                        <span class="block text-xs text-ink-300">
+                        <span class="block text-xs text-ink-700">
                           Replaced by a later revision
                         </span>
                       )}
                     </td>
                     <td class="py-2">
-                      <span
-                        class:list={[
-                          'rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
-                          settlementStatusPillClass(s.status),
-                        ]}
-                      >
+                      {/* `settlementStatusPillClass` returns a `badge badge-*`
+                          pair of its own — one badge construction for the app. */}
+                      <span class={settlementStatusPillClass(s.status)}>
                         {settlementStatusLabel(s.status)}
                       </span>
                     </td>
@@ -1582,13 +1558,11 @@ const ICONS = {
                     */}
                     <td class="py-2 text-right whitespace-nowrap">
                       <span class="font-medium tabular-nums">{formatCents(s.net.cents)}</span>
-                      <span class="block text-xs text-ink-300">
+                      <span class="block text-xs text-ink-700">
                         {s.net.frozen ? 'as paid' : 'from the lines'}
                       </span>
                       {s.net.drift && (
-                        <span class="mt-1 block rounded-md bg-red-100 px-1.5 py-0.5 text-xs text-red-700">
-                          does not match its lines
-                        </span>
+                        <span class="badge badge-danger mt-1">does not match its lines</span>
                       )}
                     </td>
                   </tr>
@@ -1596,7 +1570,7 @@ const ICONS = {
               </tbody>
             </table>
             {settlements.length > recent.length && (
-              <p class="mt-3 text-xs text-ink-500">
+              <p class="mt-3 text-xs text-ink-700">
                 The six most recent. The rest are on the settlements list.
               </p>
             )}
@@ -1672,7 +1646,7 @@ const ICONS = {
                 are not columns explain nothing — each block says what it is in
                 its own words instead.
               */}
-              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
                 <tr>
                   <th class="px-4 py-3 font-medium">What</th>
                   <th class="px-4 py-3 font-medium">Date</th>
@@ -1701,21 +1675,15 @@ const ICONS = {
                     <tr class="block py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
                       <td class={cell}>
                         <span class="font-medium">{driverAnchorLabel(r.anchor_key)}</span>
-                        {r.note && <span class="mt-0.5 block text-xs text-ink-300">{r.note}</span>}
+                        {r.note && <span class="mt-0.5 block text-xs text-ink-700">{r.note}</span>}
                       </td>
                       <td class={`${cell} mt-1 whitespace-nowrap tabular-nums sm:mt-0`}>
-                        <span class:list={[r.superseded_at ? 'text-ink-300 line-through' : '']}>
+                        <span class:list={[r.superseded_at ? 'text-ink-500 line-through' : '']}>
                           {formatDate(r.occurred_on)}
                         </span>
-                        {inForce && (
-                          <span class="ml-2 rounded-md bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-800">
-                            in force
-                          </span>
-                        )}
+                        {inForce && <span class="badge badge-success ml-2">in force</span>}
                         {r.superseded_at && (
-                          <span class="ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs font-medium text-ink-500">
-                            withdrawn
-                          </span>
+                          <span class="badge badge-neutral ml-2">withdrawn</span>
                         )}
                       </td>
                       {/*
@@ -1725,7 +1693,7 @@ const ICONS = {
                         scroll, which is the whole bug in miniature.
                       */}
                       <td
-                        class={`${cell} mt-0.5 text-xs text-ink-500 tabular-nums sm:mt-0 sm:text-sm sm:whitespace-nowrap`}
+                        class={`${cell} mt-0.5 text-xs text-ink-700 tabular-nums sm:mt-0 sm:text-sm sm:whitespace-nowrap`}
                       >
                         <span class="whitespace-nowrap">
                           <span class={said}>Recorded </span>
@@ -1743,7 +1711,7 @@ const ICONS = {
                       {/* The source, on its own line from `sm` up and folded
                           into the line above on a phone: two words on a line of
                           their own is a line an owner skips. */}
-                      <td class="hidden px-4 text-ink-500 sm:table-cell sm:py-3">
+                      <td class="hidden px-4 text-ink-700 sm:table-cell sm:py-3">
                         {r.source === 'fmcsa' ? 'Federal record' : r.source === 'import' ? 'Import' : 'You'}
                       </td>
                       <td class={`${cell} sm:text-right sm:whitespace-nowrap`}>
@@ -1753,11 +1721,17 @@ const ICONS = {
                              right edge of the screen entirely. */
                           <form method="POST" class="mt-2 sm:mt-0">
                             <input type="hidden" name="record_id" value={r.id} />
+                            {/*
+                              Red, and red is right here: withdrawing a date is
+                              the one destructive thing in this table. It keeps
+                              the full 44px on every screen — the desktop rule
+                              used to shrink it to a bare line of text.
+                            */}
                             <button
                               type="submit"
                               name="intent"
                               value="withdraw_date"
-                              class="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-ink-100 px-3 text-sm font-medium text-red-600 hover:underline sm:min-h-0 sm:w-auto sm:rounded-none sm:border-0 sm:px-0 sm:font-normal"
+                              class="btn btn-danger-text btn-sm w-full sm:w-auto"
                             >
                               Withdraw
                             </button>
@@ -1795,10 +1769,12 @@ const ICONS = {
             Only for a driver you added by mistake. If he left, set his status to Terminated
             above. That takes him off your reminders and keeps his file.
           </p>
-          <a
-            href={`/app/drivers/${id}?confirm=delete#delete`}
-            class="mt-4 inline-block rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 transition hover:bg-red-50"
-          >
+          {/*
+            NOT RED. This link deletes nothing — it opens the panel that asks.
+            Red is kept for the button that actually removes him, two steps on,
+            so that when red does appear it still means something.
+          */}
+          <a href={`/app/drivers/${id}?confirm=delete#delete`} class="btn btn-secondary btn-sm mt-4">
             Delete this driver
           </a>
         </div>
@@ -1818,12 +1794,7 @@ const ICONS = {
           <p class="mt-3 text-sm text-amber-900">{refusal.why}</p>
           {/* The dead end is also the answer. */}
           <p class="mt-2 text-sm font-medium text-amber-900">{refusal.instead}</p>
-          <a
-            href={`/app/drivers/${id}`}
-            class="mt-4 inline-block rounded-lg border border-amber-300 px-4 py-2 text-sm font-medium text-amber-900 transition hover:bg-amber-100"
-          >
-            Go back
-          </a>
+          <a href={`/app/drivers/${id}`} class="btn btn-secondary btn-sm mt-4">Go back</a>
         </div>
       ) : (
         <div class="rounded-xl border border-red-200 bg-red-50 p-5">
@@ -1836,21 +1807,13 @@ const ICONS = {
           {alsoGoes && <p class="mt-2 text-sm font-medium text-red-700">{alsoGoes}</p>}
           <div class="mt-4 flex flex-wrap items-center gap-3">
             <form method="POST">
-              <button
-                type="submit"
-                name="intent"
-                value="delete"
-                class="rounded-lg bg-red-600 px-5 py-2.5 font-medium text-white transition hover:bg-red-700"
-              >
+              {/* The one irreversible button on the page, and the only red one. */}
+              <button type="submit" name="intent" value="delete" class="btn btn-danger">
                 Yes, delete {fullName(driver)}
               </button>
             </form>
-            <a
-              href={`/app/drivers/${id}`}
-              class="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 transition hover:bg-red-100"
-            >
-              Keep him
-            </a>
+            {/* The way out of a destructive panel is never red. */}
+            <a href={`/app/drivers/${id}`} class="btn btn-secondary">Keep him</a>
           </div>
         </div>
       )

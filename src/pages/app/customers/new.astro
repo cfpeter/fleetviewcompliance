@@ -96,8 +96,20 @@ if (Astro.request.method === 'POST') {
 
 const error = Astro.url.searchParams.get('error')
 
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+/**
+ * ONE FIELD CONSTRUCTION, AND IT LIVES IN global.css.
+ *
+ * This form used to carry its own: `border-ink-100`, which is 1.18:1 against
+ * white and therefore a border nobody can see, `py-2` which lands the box at
+ * 38px — six pixels under the 44px a thumb needs — and a hand-written
+ * `ring-brand-500/20` focus ring at 1.33:1, which fails WCAG 2.2 outright. All
+ * three are fixed by not writing them: `.field-input` is the visible ink-500
+ * border and 16px type so iOS does not zoom the page on a tap, and the focus
+ * ring is the single `:focus-visible` rule in global.css.
+ */
+const field = 'field-input mt-1'
+/** The word "(optional)" beside a label. ink-500 is the floor on white. */
+const optional = 'font-normal text-ink-500'
 ---
 
 <App title="Add a customer" subtitle="A company name is enough to start. The rest can follow the rate con.">
@@ -106,26 +118,26 @@ const field =
 
     <form method="POST" class="space-y-4 rounded-xl border border-ink-100 bg-white p-5">
       <label class="block">
-        <span class="text-sm font-medium">Company name <span class="text-red-600">*</span></span>
+        <span class="field-label">Company name <span class="text-red-600">*</span></span>
         <input type="text" name="name" required autofocus class={field} />
-        <span class="mt-1 block text-xs text-ink-500">
+        <span class="field-hint block">
           Use the name on the rate confirmation, not the name the dispatcher says on the phone.
         </span>
       </label>
 
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">
-            MC number <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            MC number <span class={optional}>(optional)</span>
           </span>
           <input type="text" name="mc_number" placeholder="MC123456" class={`${field} tabular-nums`} />
-          <span class="mt-1 block text-xs text-ink-500">
+          <span class="field-hint block">
             Keep the prefix if there is one. MC, MX and FF are three different kinds of authority.
           </span>
         </label>
         <label class="block">
-          <span class="text-sm font-medium">
-            USDOT number <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            USDOT number <span class={optional}>(optional)</span>
           </span>
           <input
             type="text"
@@ -134,7 +146,7 @@ const field =
             placeholder="1234567"
             class={`${field} tabular-nums`}
           />
-          <span class="mt-1 block text-xs text-ink-500">
+          <span class="field-hint block">
             Worth finding. With this number we can check their operating authority in the public
             federal record every time you open their page.
           </span>
@@ -143,14 +155,14 @@ const field =
 
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">
-            Contact name <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            Contact name <span class={optional}>(optional)</span>
           </span>
           <input type="text" name="contact_name" class={field} />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">
-            Phone <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            Phone <span class={optional}>(optional)</span>
           </span>
           <input
             type="tel"
@@ -163,17 +175,17 @@ const field =
 
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">
-            Email <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            Email <span class={optional}>(optional)</span>
           </span>
           <input type="email" name="email" class={field} />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">
-            Billing email <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            Billing email <span class={optional}>(optional)</span>
           </span>
           <input type="email" name="billing_email" class={field} />
-          <span class="mt-1 block text-xs text-ink-500">
+          <span class="field-hint block">
             Keep this separate from the dispatch email. Invoices sent to the dispatcher do not
             get paid.
           </span>
@@ -181,15 +193,20 @@ const field =
       </div>
 
       <label class="block">
-        <span class="text-sm font-medium">
-          Billing address <span class="font-normal text-ink-300">(optional)</span>
+        <span class="field-label">
+          Billing address <span class={optional}>(optional)</span>
         </span>
         <textarea name="billing_address" rows="3" class={field}></textarea>
       </label>
 
+      {/* "Payment terms", not "Days to pay". The number in this box is what
+          they AGREED to on the rate confirmation — "net 30" — and the app must
+          never present it as how fast they have been measured paying. The two
+          are different numbers and the gap between them is the whole reason a
+          small carrier cares. */}
       <label class="block">
-        <span class="text-sm font-medium">
-          Days to pay <span class="font-normal text-ink-300">(optional)</span>
+        <span class="field-label">
+          Payment terms <span class={optional}>(optional)</span>
         </span>
         <input
           type="text"
@@ -198,15 +215,16 @@ const field =
           placeholder="30"
           class={`${field} tabular-nums`}
         />
-        <span class="mt-1 block text-xs text-ink-500">
-          Their agreed terms, in days. If you leave it blank, it stays blank. We would rather show
-          nothing than guess 30 on the screen you use to decide if you can take the load.
+        <span class="field-hint block">
+          Days from a clean invoice, as agreed. Type 30 for net 30. If you leave it blank, it stays
+          blank — we would rather show nothing than guess 30 on the screen you use to decide if you
+          can take the load.
         </span>
       </label>
 
       <label class="block">
-        <span class="text-sm font-medium">
-          Notes <span class="font-normal text-ink-300">(optional)</span>
+        <span class="field-label">
+          Notes <span class={optional}>(optional)</span>
         </span>
         <textarea
           name="notes"
@@ -215,17 +233,17 @@ const field =
           class={field}></textarea>
       </label>
 
+      {/* The shared button pair. Both were hand-rolled here: the submit was a
+          one-off brand-600 box that happened to match .btn-primary and would
+          not have stayed matching, and "Back to customers" was a 20px line of
+          blue text — a link the thumb misses and the eye does not see, because
+          it was not underlined until the cursor was already on it. */}
       <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-        <button
-          type="submit"
-          name="intent"
-          value="create"
-          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-        >
+        <button type="submit" name="intent" value="create" class="btn btn-primary">
           Add customer
         </button>
-        <a href="/app/customers" class="text-sm font-medium text-brand-600 hover:underline">
-          Back to customers
+        <a href="/app/customers" class="btn btn-tertiary">
+          <span aria-hidden="true">←</span> Back to customers
         </a>
       </div>
     </form>

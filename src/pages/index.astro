@@ -120,14 +120,11 @@ const faqs = [
               aria-label="Your USDOT number"
               class="w-full rounded-xl bg-transparent px-4 py-3.5 text-base tabular-nums outline-none"
             />
-            <button
-              type="submit"
-              class="m-1 shrink-0 rounded-lg bg-brand-600 px-5 py-2.5 font-medium whitespace-nowrap text-white transition hover:bg-brand-700"
-            >
+            <button type="submit" class="btn btn-primary m-1 shrink-0">
               Check
             </button>
           </div>
-          <span class="mt-2 block text-xs text-ink-500">
+          <span class="mt-2 block text-xs text-ink-700">
             No account, no email, no card. We read the public federal record.
           </span>
         </label>
@@ -277,7 +274,9 @@ const faqs = [
   <section class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
     <div class="flex items-baseline justify-between gap-4">
       <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">What you get</h2>
-      <a href="/features" class="text-sm font-medium text-brand-600 hover:underline">
+      {/* A button, not a bare link: it is an action beside a heading, and at
+          14px type a text link is a 20px target on the screen this is read on. */}
+      <a href="/features" class="btn btn-tertiary btn-sm -mr-3">
         All features →
       </a>
     </div>
@@ -330,10 +329,9 @@ const faqs = [
           aria-label="Your USDOT number"
           class="w-full rounded-xl border border-ink-100 bg-white px-4 py-3.5 text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
         />
-        <button
-          type="submit"
-          class="shrink-0 rounded-xl bg-ink-900 px-7 py-3.5 text-center font-semibold text-white transition hover:bg-ink-700"
-        >
+        {/* Dark is the marketing chrome variant and stays dark out here. Inside
+            /app the action colour is brand blue; this page is not /app. */}
+        <button type="submit" class="btn btn-dark shrink-0 rounded-xl px-7 py-3.5 font-semibold">
           Check my fleet
         </button>
       </form>

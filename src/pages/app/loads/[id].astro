@@ -66,7 +66,59 @@ function back(params: string): Response {
 }
 
 function fail(message: string): Response {
-  return back(`error=${encodeURIComponent(message)}`)
+  // The fragment is the whole focus mechanism on a page that runs no script:
+  // the browser scrolls to the error box and, because it carries tabindex="-1",
+  // hands it the focus too. See src/components/ui/ErrorSummary.astro.
+  return back(`error=${encodeURIComponent(message)}#form-errors`)
+}
+
+type NumberColumn = 'load_number' | 'broker_reference'
+
+interface DuplicateHit {
+  id: string
+  /** What that load is called on screen — its own number, or the broker's. */
+  name: string
+  column: NumberColumn
+  /** The number she typed, echoed back so the message names it. */
+  value: string
+}
+
+/**
+ * Another load in this carrier's account already carrying one of the two
+ * numbers this save is about to write.
+ *
+ * The same check the create form runs, for the same reason: neither column has
+ * a unique index, so an edit can put a second TEST-BRKR-003 on the board just
+ * as easily as a new load can. The difference here is `.neq('id', id)` — a load
+ * is not its own duplicate, and without that line every save of an unchanged
+ * broker reference would refuse itself.
+ *
+ * No .eq('carrier_id', ...): RLS already scopes the read, so another carrier's
+ * matching number is invisible and cannot block this save. `.eq` rather than
+ * `.ilike`: ilike would read % and _ inside a reference as wildcards and refuse
+ * a number nobody else is using.
+ */
+async function findDuplicate(
+  loadNumber: string | null,
+  brokerReference: string | null,
+): Promise<{ ok: true; hit: DuplicateHit | null } | { ok: false; message: string }> {
+  const pairs: [NumberColumn, string | null][] = [
+    ['load_number', loadNumber],
+    ['broker_reference', brokerReference],
+  ]
+  for (const [column, value] of pairs) {
+    if (!value) continue
+    const { data, error } = await supabase
+      .from('loads')
+      .select('id, load_number, broker_reference')
+      .eq(column, value)
+      .neq('id', id)
+      .limit(1)
+    if (error) return { ok: false, message: error.message }
+    const row = data?.[0]
+    if (row) return { ok: true, hit: { id: row.id, name: loadLabel(row), column, value } }
+  }
+  return { ok: true, hit: null }
 }
 
 /** Back to the board, for every case where this load is not ours to show. */
@@ -186,6 +238,26 @@ if (Astro.request.method === 'POST') {
     if (!loadNumber && !brokerReference) {
       return fail(
         'Keep at least one of the two numbers: your load number or the broker reference. Without one of them you cannot find this load again.',
+      )
+    }
+
+    /**
+     * THE SAME NUMBER TWICE, REFUSED HERE TOO.
+     *
+     * Checking only the create form would leave the back door open: retyping a
+     * broker reference on this page puts two loads under one number exactly as
+     * a second create does, and the cost is the same one — the broker rings
+     * about TEST-BRKR-003, the search box returns two rows, and which one gets
+     * the rate and the stops is a coin toss.
+     */
+    const duplicate = await findDuplicate(loadNumber, brokerReference)
+    if (!duplicate.ok) return fail(duplicate.message)
+    if (duplicate.hit) {
+      const { hit } = duplicate
+      return back(
+        `error=${encodeURIComponent(
+          `${hit.column === 'load_number' ? 'Load number' : 'Broker reference'} ${hit.value} is already on another load. Two loads with the same number cannot be told apart. Nothing was changed here. Use a different number, or open that load and work on it.`,
+        )}&dup=${hit.id}&dup_name=${encodeURIComponent(hit.name)}#form-errors`,
       )
     }
 
@@ -497,6 +569,15 @@ const profitCoverage = [
 
 const params = Astro.url.searchParams
 const error = params.get('error')
+/**
+ * The load a refused save is pointing at.
+ *
+ * The id is checked against the uuid shape before it becomes an href. It came
+ * off the address bar, and an address bar is a place anybody can type.
+ */
+const dupId = params.get('dup') ?? ''
+const duplicateHref = UUID.test(dupId) ? `/app/loads/${dupId}` : null
+const duplicateName = (params.get('dup_name') ?? '').trim()
 const added = params.get('added') === '1'
 const saved = params.get('saved') === '1'
 const statusMoved = params.get('status')
@@ -504,14 +585,25 @@ const billingMoved = params.get('billing')
 const exceptionMoved = params.get('exception')
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
-const moneyWrap =
-  'mt-1 flex items-center rounded-lg border border-ink-100 bg-white focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20'
-const moneyInput = 'w-full bg-transparent px-2 py-2 text-base tabular-nums outline-none'
-const pill = 'rounded-md px-2 py-0.5 text-xs font-medium'
-const smallButton =
-  'mt-3 w-full rounded-lg bg-ink-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-ink-700'
+/**
+ * The shared field construction from src/styles/global.css, not a local copy.
+ *
+ * The local one was 40px tall and drew its border in ink-100, which is 1.2:1
+ * against white — a box a reader in a cab in daylight cannot see the edge of.
+ * `.field-input` is 46px, so every box on this page clears the 44px target.
+ */
+const field = 'field-input mt-1'
+const moneyWrap = 'field-affix mt-1'
+const moneyInput = 'field-affix-input tabular-nums'
+/**
+ * The three sidebar setters.
+ *
+ * Secondary, not the dark button this used to be. Inside /app the action colour
+ * is brand blue and a dark fill reads as a second Primary competing with "Save
+ * load" three inches to the left; dark is marketing chrome. `.btn` is 44px, so
+ * these also stop being 30px targets on a phone.
+ */
+const smallButton = 'btn btn-secondary btn-sm mt-3 w-full'
 
 /** The subtitle says the lane when we know it, and says so plainly when we do not. */
 const subtitle = lane.origin
@@ -520,7 +612,27 @@ const subtitle = lane.origin
 ---
 
 <App title={loadLabel(load)} subtitle={subtitle}>
-  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {
+    /* The shared error box: role="alert" for a reader already on the page,
+       tabindex="-1" so the 303's #form-errors gives it the focus, and — when a
+       save was refused for a repeated number — the link to the load that
+       already holds it. */
+    error && (
+      <div id="form-errors" role="alert" tabindex="-1" class="error-summary mb-5">
+        <p class="font-semibold">
+          <span aria-hidden="true">⚠</span> Fix this before saving
+        </p>
+        <p class="mt-1.5">{error}</p>
+        {duplicateHref && (
+          <p class="mt-2">
+            <a href={duplicateHref} class="font-semibold">
+              Open {duplicateName ? `load ${duplicateName}` : 'that load'}
+            </a>
+          </p>
+        )}
+      </div>
+    )
+  }
   {
     added && (
       <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -568,25 +680,24 @@ const subtitle = lane.origin
   }
   <div class="mb-6 flex flex-wrap items-center gap-x-4 gap-y-2">
     <div class="flex items-baseline gap-2">
-      <span class="text-xs tracking-wide text-ink-500 uppercase">Broker ref</span>
+      <span class="text-xs tracking-wide text-ink-700 uppercase">Broker ref</span>
       <span class="text-lg font-semibold tracking-tight tabular-nums">
-        {load.broker_reference ?? <span class="font-normal text-ink-300">not on file</span>}
+        {load.broker_reference ?? <span class="font-normal text-ink-500">not on file</span>}
       </span>
     </div>
+    {
+      /* `statusPillClass` and its two siblings already return `badge badge-*`
+         from global.css. Nothing is added to them: the local pill classes this
+         used to carry were a second badge shape on top of the shared one. */
+    }
     <div class="flex flex-wrap items-center gap-1">
-      <span class:list={[pill, statusPillClass(load.status)]}>
-        {loadStatusLabel(load.status)}
-      </span>
+      <span class={statusPillClass(load.status)}>{loadStatusLabel(load.status)}</span>
       {
         load.exception && (
-          <span class:list={[pill, exceptionPillClass(load.exception)]}>
-            {exceptionLabel(load.exception)}
-          </span>
+          <span class={exceptionPillClass(load.exception)}>{exceptionLabel(load.exception)}</span>
         )
       }
-      <span class:list={[pill, billingPillClass(load.billing)]}>
-        {billingStatusLabel(load.billing)}
-      </span>
+      <span class={billingPillClass(load.billing)}>{billingStatusLabel(load.billing)}</span>
     </div>
   </div>
 
@@ -596,7 +707,7 @@ const subtitle = lane.origin
         <h2 class="text-lg font-semibold tracking-tight">Load numbers</h2>
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
           <label class="block">
-            <span class="text-sm font-medium">Broker reference</span>
+            <span class="field-label">Broker reference</span>
             <input
               type="text"
               name="broker_reference"
@@ -605,8 +716,8 @@ const subtitle = lane.origin
             />
           </label>
           <label class="block">
-            <span class="text-sm font-medium">
-              Load number <span class="font-normal text-ink-300">(ours)</span>
+            <span class="field-label">
+              Load number <span class="font-normal text-ink-500">(ours)</span>
             </span>
             <input
               type="text"
@@ -619,7 +730,7 @@ const subtitle = lane.origin
 
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
           <label class="block">
-            <span class="text-sm font-medium">Customer</span>
+            <span class="field-label">Customer</span>
             <select name="customer_id" class={field}>
               <option value="">—</option>
               {
@@ -632,9 +743,9 @@ const subtitle = lane.origin
             </select>
           </label>
           <label class="block">
-            <span class="text-sm font-medium">…or type a new one</span>
+            <span class="field-label">…or type a new one</span>
             <input type="text" name="customer_name" placeholder="e.g. TQL" class={field} />
-            <span class="mt-1 block text-xs text-ink-500">
+            <span class="field-hint block">
               We use this only if you leave the list above blank. If the name is already on the
               list, we use that customer.
             </span>
@@ -646,7 +757,7 @@ const subtitle = lane.origin
         <h2 class="text-lg font-semibold tracking-tight">Freight</h2>
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
           <label class="block">
-            <span class="text-sm font-medium">Equipment</span>
+            <span class="field-label">Equipment</span>
             <input
               type="text"
               name="equipment_type"
@@ -659,11 +770,11 @@ const subtitle = lane.origin
             </datalist>
           </label>
           <label class="block">
-            <span class="text-sm font-medium">Commodity</span>
+            <span class="field-label">Commodity</span>
             <input type="text" name="commodity" value={load.commodity ?? ''} class={field} />
           </label>
           <label class="block">
-            <span class="text-sm font-medium">Weight (lb)</span>
+            <span class="field-label">Weight (lb)</span>
             <input
               type="text"
               inputmode="numeric"
@@ -673,7 +784,7 @@ const subtitle = lane.origin
             />
           </label>
           <label class="block">
-            <span class="text-sm font-medium">Pieces</span>
+            <span class="field-label">Pieces</span>
             <input
               type="text"
               inputmode="numeric"
@@ -683,8 +794,8 @@ const subtitle = lane.origin
             />
           </label>
           <label class="block">
-            <span class="text-sm font-medium">
-              Temperature (°F) <span class="font-normal text-ink-300">(reefer)</span>
+            <span class="field-label">
+              Temperature (°F) <span class="font-normal text-ink-500">(reefer)</span>
             </span>
             <input
               type="text"
@@ -694,17 +805,17 @@ const subtitle = lane.origin
               class={`${field} tabular-nums`}
             />
           </label>
-          <label class="flex items-start gap-3 sm:mt-7">
+          <label class="check-row items-start py-2 sm:mt-7">
             <input
               type="checkbox"
               name="hazmat"
               value="1"
               checked={load.hazmat === true}
-              class="mt-0.5 size-4 rounded border-ink-300"
+              class="mt-0.5"
             />
             <span>
-              <span class="text-sm font-medium">Hazmat</span>
-              <span class="mt-1 block text-xs text-ink-500">
+              <span class="field-label">Hazmat</span>
+              <span class="field-hint block">
                 A placarded load has its own inspection and paperwork rules, at any weight.
               </span>
             </span>
@@ -719,9 +830,9 @@ const subtitle = lane.origin
         </p>
         <div class="mt-4 grid gap-4 sm:grid-cols-3">
           <label class="block">
-            <span class="text-sm font-medium">Linehaul</span>
+            <span class="field-label">Linehaul</span>
             <div class={moneyWrap}>
-              <span class="pl-3 text-ink-300">$</span>
+              <span class="pl-3 text-ink-500" aria-hidden="true">$</span>
               <input
                 type="text"
                 name="linehaul"
@@ -732,9 +843,9 @@ const subtitle = lane.origin
             </div>
           </label>
           <label class="block">
-            <span class="text-sm font-medium">Fuel surcharge</span>
+            <span class="field-label">Fuel surcharge</span>
             <div class={moneyWrap}>
-              <span class="pl-3 text-ink-300">$</span>
+              <span class="pl-3 text-ink-500" aria-hidden="true">$</span>
               <input
                 type="text"
                 name="fuel_surcharge"
@@ -745,9 +856,9 @@ const subtitle = lane.origin
             </div>
           </label>
           <label class="block">
-            <span class="text-sm font-medium">Accessorials</span>
+            <span class="field-label">Accessorials</span>
             <div class={moneyWrap}>
-              <span class="pl-3 text-ink-300">$</span>
+              <span class="pl-3 text-ink-500" aria-hidden="true">$</span>
               <input
                 type="text"
                 name="accessorials"
@@ -756,24 +867,24 @@ const subtitle = lane.origin
                 class={moneyInput}
               />
             </div>
-            <span class="mt-1 block text-xs text-ink-500">
+            <span class="field-hint block">
               On a load, money taken off goes in as a negative, like -150.00. Money the broker adds
               goes in as a plain positive number.
             </span>
           </label>
         </div>
 
-        <label class="mt-4 flex items-start gap-3">
+        <label class="check-row mt-4 items-start py-2">
           <input
             type="checkbox"
             name="factored"
             value="1"
             checked={load.factored === true}
-            class="mt-0.5 size-4 rounded border-ink-300"
+            class="mt-0.5"
           />
           <span>
-            <span class="text-sm font-medium">Factored</span>
-            <span class="mt-1 block text-xs text-ink-500">
+            <span class="field-label">Factored</span>
+            <span class="field-hint block">
               This invoice goes to the factoring company, not to the broker.
             </span>
           </span>
@@ -788,7 +899,7 @@ const subtitle = lane.origin
         </p>
         <div class="mt-4 grid gap-4 sm:grid-cols-3">
           <label class="block">
-            <span class="text-sm font-medium">Free hours at pickup</span>
+            <span class="field-label">Free hours at pickup</span>
             <input
               type="text"
               inputmode="numeric"
@@ -798,7 +909,7 @@ const subtitle = lane.origin
             />
           </label>
           <label class="block">
-            <span class="text-sm font-medium">Free hours at delivery</span>
+            <span class="field-label">Free hours at delivery</span>
             <input
               type="text"
               inputmode="numeric"
@@ -808,9 +919,9 @@ const subtitle = lane.origin
             />
           </label>
           <label class="block">
-            <span class="text-sm font-medium">Detention rate (per hour)</span>
+            <span class="field-label">Detention rate (per hour)</span>
             <div class={moneyWrap}>
-              <span class="pl-3 text-ink-300">$</span>
+              <span class="pl-3 text-ink-500" aria-hidden="true">$</span>
               <input
                 type="text"
                 name="detention_rate"
@@ -823,7 +934,7 @@ const subtitle = lane.origin
         </div>
 
         <label class="mt-4 block">
-          <span class="text-sm font-medium">Does the broker have to pre-approve detention?</span>
+          <span class="field-label">Does the broker have to pre-approve detention?</span>
           {
             /* Three answers, not a checkbox. "Not stated" is the honest default
                for a load typed in a hurry, and it is NOT the same as "no" — the
@@ -848,25 +959,24 @@ const subtitle = lane.origin
       <div class={card}>
         <h2 class="text-lg font-semibold tracking-tight">Notes</h2>
         <textarea name="notes" rows="4" class={field}>{load.notes ?? ''}</textarea>
-        <p class="mt-1 text-xs text-ink-500">
+        <p class="mt-1 text-sm text-ink-700">
           Anything with no box above: a gate code, who signed, what the broker promised on the
           phone.
         </p>
       </div>
 
       <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-        <button
-          type="submit"
-          name="intent"
-          value="save_load"
-          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-        >
+        {/* The one Primary on this page. The three setters in the column
+            beside it are Secondary — see `smallButton`. */}
+        <button type="submit" name="intent" value="save_load" class="btn btn-primary">
           Save load
         </button>
-        <a href="/app/loads" class="text-sm font-medium text-brand-600 hover:underline">
-          Back to loads
+        {/* ml-0: .link-back pulls itself left by 12px so it can line up under a
+            heading, and this one is the second thing in a row. */}
+        <a href="/app/loads" class="link-back ml-0">
+          <span aria-hidden="true">←</span> Back to loads
         </a>
-        <span class="text-xs text-ink-300">
+        <span class="text-sm text-ink-700">
           This form does not change the status, the billing or the exception.
         </span>
       </div>
@@ -881,7 +991,7 @@ const subtitle = lane.origin
            gets undone. One button, one column. */
       }
       <form method="POST" class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">Where the truck is</div>
+        <div class="text-xs tracking-wide text-ink-700 uppercase">Where the truck is</div>
         <select name="status" class={field}>
           {
             LOAD_STATUSES.map((s) => (
@@ -894,14 +1004,14 @@ const subtitle = lane.origin
         <button type="submit" name="intent" value="set_status" class={smallButton}>
           Move status
         </button>
-        <p class="mt-2 text-xs text-ink-500">
+        <p class="mt-2 text-sm text-ink-700">
           Moving this never changes the billing. A delivered load that is not ready to invoice is
           normal. It means the POD has not come in yet.
         </p>
       </form>
 
       <form method="POST" class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">Exception</div>
+        <div class="text-xs tracking-wide text-ink-700 uppercase">Exception</div>
         <select name="exception" class={field}>
           <option value="" selected={!load.exception}>No exception</option>
           {
@@ -915,13 +1025,13 @@ const subtitle = lane.origin
         <button type="submit" name="intent" value="set_exception" class={smallButton}>
           Record exception
         </button>
-        <p class="mt-2 text-xs text-ink-500">
+        <p class="mt-2 text-sm text-ink-700">
           An exception sits next to the status. It does not replace it. A detained load is still at
           the shipper, and that is where the truck is.
         </p>
         {
           load.exception === 'detained' && (
-            <p class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            <p class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
               {load.detention_requires_preapproval === true
                 ? 'This broker needs pre-approval. You can only bill this wait if the driver called before the free hours ran out.'
                 : load.detention_requires_preapproval === null
@@ -933,7 +1043,7 @@ const subtitle = lane.origin
       </form>
 
       <form method="POST" class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">Where the money is</div>
+        <div class="text-xs tracking-wide text-ink-700 uppercase">Where the money is</div>
         <select name="billing" class={field}>
           {
             BILLING_STATUSES.map((b) => (
@@ -946,42 +1056,74 @@ const subtitle = lane.origin
         <button type="submit" name="intent" value="set_billing" class={smallButton}>
           Move billing
         </button>
-        <p class="mt-2 text-xs text-ink-500">
+        <p class="mt-2 text-sm text-ink-700">
           This is separate from where the truck is. You can invoice against a signed BOL while the
           truck is still on the road.
         </p>
       </form>
 
+      {
+        /*
+          THE RATE, AND THE THREE NUMBERS THAT MAKE IT.
+
+          What this card used to do, and why it read as $225 short. The heading
+          figure is linehaul + fuel + accessorials. Underneath it were FOUR
+          lines, and the fourth was the detention rate — which is dollars PER
+          HOUR and is not in the total at all. Anyone adding the printed lines
+          got a different number from the one printed above them, and the load
+          this was reported on is the one whose fuel surcharge is $225.00, so
+          the gap looked like a lost fuel surcharge rather than a line that was
+          never a part.
+
+          Now the three parts are a list that visibly adds up: three lines, a
+          rule, and the same total again on the bottom line. The detention rate
+          has moved below that rule, under a heading of its own, labelled as an
+          hourly rate and as not part of the total. Nothing about the arithmetic
+          changed — `totalRateCents` was always exactly these three — only what
+          the card claims its own number is made of.
+        */
+      }
       <div class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">Rate</div>
+        <div class="text-xs tracking-wide text-ink-700 uppercase">Rate</div>
         <div class="mt-1 text-3xl font-semibold tabular-nums">{formatCents(total)}</div>
         <dl class="mt-3 divide-y divide-ink-100 text-sm">
           <div class="flex justify-between gap-4 py-2">
-            <dt class="text-ink-500">Linehaul</dt>
+            <dt class="text-ink-700">Linehaul</dt>
             <dd class="text-right tabular-nums">{formatCents(load.linehaul_cents)}</dd>
           </div>
           <div class="flex justify-between gap-4 py-2">
-            <dt class="text-ink-500">Fuel surcharge</dt>
+            <dt class="text-ink-700">Fuel surcharge</dt>
             <dd class="text-right tabular-nums">{formatCents(load.fuel_surcharge_cents)}</dd>
           </div>
           <div class="flex justify-between gap-4 py-2">
-            <dt class="text-ink-500">Accessorials</dt>
+            <dt class="text-ink-700">Accessorials</dt>
             <dd class="text-right tabular-nums">{formatCents(load.accessorials_cents)}</dd>
           </div>
-          <div class="flex justify-between gap-4 py-2">
-            <dt class="text-ink-500">Detention</dt>
-            <dd class="text-right tabular-nums">
-              {load.detention_rate_cents === null ? (
-                <span class="text-ink-300">—</span>
-              ) : (
-                `${formatCents(load.detention_rate_cents)}/hr`
-              )}
-            </dd>
+          <div class="flex justify-between gap-4 border-t-2 border-ink-100 py-2">
+            <dt class="font-medium">These three added up</dt>
+            <dd class="text-right font-semibold tabular-nums">{formatCents(total)}</dd>
           </div>
         </dl>
-        <p class="mt-2 text-xs text-ink-500">
-          A dash means nobody has typed that rate yet. A dash is not $0.00.
+        <p class="mt-2 text-sm text-ink-700">
+          A dash means nobody has typed that number yet. A dash is not $0.00. The total adds only
+          the numbers that are typed, so a dash adds nothing to it.
         </p>
+
+        <div class="mt-4 border-t border-ink-100 pt-3">
+          <div class="text-xs tracking-wide text-ink-700 uppercase">Detention rate</div>
+          <div class="mt-1 text-lg font-semibold tabular-nums">
+            {load.detention_rate_cents === null ? (
+              <span class="font-normal text-ink-500">Not on file</span>
+            ) : (
+              `${formatCents(load.detention_rate_cents)} an hour`
+            )}
+          </div>
+          <p class="mt-1 text-sm text-ink-700">
+            This is a price per hour of waiting, not money on this load. It is not in the total
+            above. What a wait is worth is worked out from the arrival and departure times on the
+            stops.
+          </p>
+        </div>
       </div>
 
       {
@@ -1003,16 +1145,15 @@ const subtitle = lane.origin
         />
         {
           paySettlements.length > 0 && (
-            <ul class="mt-4 space-y-1 border-t border-ink-100 pt-3 text-xs">
+            <ul class="mt-4 space-y-1 border-t border-ink-100 pt-3 text-sm">
               {paySettlements.map((s) => (
-                <li>
-                  <a
-                    href={`/app/settlements/${s.id}`}
-                    class="font-medium text-brand-600 hover:underline"
-                  >
+                <li class="flex flex-wrap items-center gap-x-2">
+                  {/* .link is underlined at rest, and the 44px box around it is
+                      what makes it a target on a phone. */}
+                  <a href={`/app/settlements/${s.id}`} class="link inline-flex min-h-11 items-center">
                     Read the settlement this pay came off
                   </a>
-                  <span class="text-ink-500"> — {settlementStatusLabel(s.status)}</span>
+                  <span class="text-ink-700">— {settlementStatusLabel(s.status)}</span>
                 </li>
               ))}
             </ul>
@@ -1020,15 +1161,25 @@ const subtitle = lane.origin
         }
       </Figure>
 
+      {
+        /*
+          THE STOPS CONTROL IS A BUTTON, not a line of blue text.
+
+          Both of these were 20px text links, which is why an audit read "Add a
+          stop" as missing: it was on the screen and invisible. Without stops
+          this load has no lane, and with no arrival and departure times there is
+          no detention clock — so the money the broker owes for a four-hour wait
+          cannot be worked out at all. That is a control worth 44px.
+
+          Secondary, not Primary: the one Primary on this page is "Save load".
+        */
+      }
       <div class={card}>
-        <div class="flex items-baseline justify-between gap-3">
-          <div class="text-xs tracking-wide text-ink-500 uppercase">Stops</div>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="text-xs tracking-wide text-ink-700 uppercase">Stops</div>
           {
             stops.length > 0 && (
-              <a
-                href={`/app/loads/${id}/stops`}
-                class="text-sm font-medium text-brand-600 hover:underline"
-              >
+              <a href={`/app/loads/${id}/stops`} class="btn btn-tertiary btn-sm -mr-3">
                 Edit stops
               </a>
             )
@@ -1037,14 +1188,12 @@ const subtitle = lane.origin
         {
           stops.length === 0 ? (
             <>
-              <p class="mt-2 text-sm text-ink-500">
-                No stops yet. Without stops this load has no lane and no detention clock.
+              <p class="mt-2 text-sm text-ink-700">
+                No stops yet. Without stops this load has no lane, and no clock to measure a wait
+                at a dock. You cannot bill detention without that clock.
               </p>
-              <a
-                href={`/app/loads/${id}/stops`}
-                class="mt-2 inline-block text-sm font-medium text-brand-600 hover:underline"
-              >
-                Add a stop →
+              <a href={`/app/loads/${id}/stops`} class="btn btn-secondary mt-3 w-full">
+                Add a stop
               </a>
             </>
           ) : (
@@ -1052,15 +1201,15 @@ const subtitle = lane.origin
               {stops.map((s) => (
                 <li class="flex items-baseline justify-between gap-3 py-2">
                   <span class="min-w-0">
-                    <span class="tabular-nums text-ink-300">{s.sequence}</span>{' '}
+                    <span class="tabular-nums text-ink-700">{s.sequence}</span>{' '}
                     <span class="font-medium">
                       {[s.city, s.state].filter(Boolean).join(', ') || s.company_name || '—'}
                     </span>
                     {s.company_name && [s.city, s.state].filter(Boolean).length > 0 && (
-                      <span class="block text-xs text-ink-300">{s.company_name}</span>
+                      <span class="block text-xs text-ink-700">{s.company_name}</span>
                     )}
                   </span>
-                  <span class="shrink-0 text-xs text-ink-500">{s.stop_type}</span>
+                  <span class="shrink-0 text-xs text-ink-700">{s.stop_type}</span>
                 </li>
               ))}
             </ol>

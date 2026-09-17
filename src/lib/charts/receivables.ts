@@ -1,18 +1,26 @@
 /**
- * What you are owed, and how long it has been sitting there.
+ * What you are owed, how long it has been sitting there, and whether a customer
+ * pays the way they said they would.
  *
- * THE DATE THESE BANDS ARE AGED FROM IS NOT THE INVOICE DATE, BECAUSE THERE IS
- * NO INVOICE DATE. 0009_loads.sql gives a load exactly one moment in time —
- * `created_at`, the day it was entered — and nothing else: no invoiced_on, no
- * paid_on, no payment row anywhere in the schema. So every band below is
- * "days since the load was entered", which is always OLDER than the invoice it
- * stands for, and every caller has to print that sentence next to the chart.
+ * THE DATE EVERY BAND IS AGED FROM IS NAMED ON SCREEN, AND IT IS NOT ALWAYS THE
+ * SAME DATE. 0009_loads.sql gave a load exactly one moment in time —
+ * `created_at`, the day it was entered — and nothing else. 0029 adds
+ * `invoiced_on` and `paid_on`. So a load is aged from its invoice date when
+ * somebody recorded one, and from the day it was entered when nobody did, which
+ * means one chart can hold both kinds of row at once.
  *
- * That is not pedantry. An owner who reads "more than 90 days" off this screen
- * and says it down the phone to a broker whose invoice went out three weeks ago
- * has been handed an argument he loses, by us. Aging receivables properly needs
- * a migration (an invoice date on the load, and the day the money landed); until
- * then this is the age of the LOAD and it is labelled as the age of the load.
+ * That mixture is reported rather than smoothed over: `agedFromInvoice` and
+ * `agedFromEntry` come back on every result and `agingSource()` turns them into
+ * the sentence the page has to print. An owner who reads "more than 90 days"
+ * off this screen and says it down the phone to a broker whose invoice went out
+ * three weeks ago has been handed an argument he loses, by us — and a load aged
+ * from the day it was ENTERED is always older than the invoice behind it.
+ *
+ * THE COLUMNS MAY NOT BE THERE. 0029 is written but applied deliberately, so
+ * every function here treats `invoiced_on` and `paid_on` as optional and absent
+ * by default. With the migration unapplied nothing changes: every load ages
+ * from its entry date exactly as before, and the measured pay speed renders as
+ * the absence it is.
  *
  * WHICH LOADS COUNT. The `waiting` stage from `FUNNEL_STAGES` — invoiced, with
  * the factor, funded — imported rather than spelled out again, so this file and
@@ -31,9 +39,78 @@
  */
 import { formatCents } from '../loads.ts'
 import { daysSinceBooked, FUNNEL_STAGES } from './funnel.ts'
-import { classifyLoad, type RevenueLoad } from './revenue.ts'
+import { bookedDay, classifyLoad, type RevenueLoad } from './revenue.ts'
 import type { Value } from './scale.ts'
 import type { Tone } from './tones.ts'
+
+/**
+ * A load, plus the two dates 0029_load_invoice_dates.sql adds.
+ *
+ * Both are OPTIONAL on the type, not merely nullable, and that is load-bearing:
+ * until the migration is applied the columns do not exist, the page cannot
+ * select them, and every row arrives here with the properties simply absent.
+ * `undefined` and `null` both mean "no date recorded" to everything below.
+ */
+export interface DatedLoad extends RevenueLoad {
+  /** The day the invoice went out, as a `date` column reads: 'YYYY-MM-DD'. */
+  invoiced_on?: string | null
+  /** The day the money arrived. */
+  paid_on?: string | null
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * A stored `date` as UTC midnight of that calendar day, or `null`.
+ *
+ * NO TIMEZONE CONVERSION, deliberately. A `date` column has no zone — "the
+ * invoice went out on the 3rd" is already a calendar day — so shifting it into
+ * the carrier's zone the way a timestamptz has to be shifted would move it to
+ * the 2nd. That is the off-by-one that makes a net-30 broker read as net-31.
+ */
+function calendarDay(value: string | null | undefined): Date | null {
+  if (!value) return null
+  const day = value.slice(0, 10)
+  if (!ISO_DATE.test(day)) return null
+  const d = new Date(`${day}T00:00:00Z`)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/**
+ * Whole days from one stored date to another, or `null` if either is unreadable.
+ *
+ * Both sides are UTC midnights, so the difference is an exact multiple of a day
+ * and no float creeps in. A NEGATIVE result is returned as it is rather than
+ * clamped: money arriving before the invoice that asked for it is a typo, and
+ * the caller counts it as unreadable rather than averaging it into an answer.
+ */
+export function daysBetweenDates(
+  fromIso: string | null | undefined,
+  toIso: string | null | undefined,
+): number | null {
+  const from = calendarDay(fromIso)
+  const to = calendarDay(toIso)
+  if (!from || !to) return null
+  return Math.round((to.getTime() - from.getTime()) / 86_400_000)
+}
+
+/**
+ * Whole days from a stored `date` to today, in the carrier's own calendar.
+ *
+ * `bookedDay` is what turns "now" into the calendar day it is in the yard —
+ * the same function `daysSinceBooked` uses, so an invoice-aged load and an
+ * entry-aged load on one chart are measured against the same today.
+ */
+function daysSinceDate(
+  iso: string | null | undefined,
+  today: Date,
+  timeZone?: string,
+): number | null {
+  const from = calendarDay(iso)
+  const now = bookedDay(today.toISOString(), timeZone)
+  if (!from || !now) return null
+  return Math.round((now.getTime() - from.getTime()) / 86_400_000)
+}
 
 /**
  * The billing states that mean the money is out with somebody else.
@@ -129,6 +206,37 @@ export interface Aging {
   waitingLoads: number
   /** The cutoff the chase figures used, so the page prints the same number. */
   chaseAfterDays: number
+  /**
+   * Loads on these bars aged from a RECORDED INVOICE DATE. The right number.
+   */
+  agedFromInvoice: number
+  /**
+   * Loads aged from the day they were ENTERED, because no invoice date was
+   * recorded on them. Every one of these is older than the invoice behind it,
+   * and `agingSource()` is what says so on screen.
+   */
+  agedFromEntry: number
+}
+
+/**
+ * The sentence naming the date these bands were counted from.
+ *
+ * One string, shared by every page that draws the bands, so two screens can
+ * never describe the same arithmetic two different ways. It is deliberately not
+ * optional: a chart of ages whose reader cannot name the day the clock started
+ * is a chart that loses an argument with a broker.
+ */
+export function agingSource(aging: Aging): string {
+  const { agedFromInvoice: invoiced, agedFromEntry: entered } = aging
+  if (invoiced === 0 && entered === 0) return 'Nothing is invoiced and waiting, so there is nothing to count from.'
+  if (entered === 0) {
+    return 'Counted from the day you sent the invoice.'
+  }
+  if (invoiced === 0) {
+    return 'Counted from the day the load was entered, not the day the invoice went out, because no invoice date is recorded on these loads. Every figure here is older than the invoice behind it.'
+  }
+  const loadWord = (n: number) => (n === 1 ? 'load' : 'loads')
+  return `${invoiced} ${loadWord(invoiced)} counted from the day you sent the invoice. The other ${entered} ${loadWord(entered)} have no invoice date on them, so ${entered === 1 ? 'it is' : 'they are'} counted from the day the load was entered — which is older than the invoice behind ${entered === 1 ? 'it' : 'them'}.`
 }
 
 function bandIndexFor(days: number): number {
@@ -151,7 +259,7 @@ function bandIndexFor(days: number): number {
  * different populations is how a page starts disagreeing with itself.
  */
 export function receivablesAging(
-  loads: readonly RevenueLoad[] | null | undefined,
+  loads: readonly DatedLoad[] | null | undefined,
   today: Date,
   opts: { timeZone?: string; chaseAfterDays?: number } = {},
 ): Aging {
@@ -169,6 +277,8 @@ export function receivablesAging(
   let disputedCents = 0
   let disputedLoads = 0
   let waitingLoads = 0
+  let agedFromInvoice = 0
+  let agedFromEntry = 0
 
   for (const load of loads ?? []) {
     const klass = classifyLoad(load)
@@ -183,7 +293,16 @@ export function receivablesAging(
     if (!WAITING_BILLING.includes(billing)) continue
 
     waitingLoads++
-    const days = daysSinceBooked(load.created_at, today, opts.timeZone)
+    // THE INVOICE DATE WHERE THERE IS ONE, THE ENTRY DATE WHERE THERE IS NOT.
+    //
+    // Not a fallback to be embarrassed about: an invoice date is the day the
+    // clock actually started, and the entry date is the only thing we have when
+    // nobody typed one. The two are counted separately so `agingSource()` can
+    // say on screen which rows are which, because a load aged from the day it
+    // was entered reads OLDER than the invoice behind it.
+    const fromInvoice = daysSinceDate(load.invoiced_on, today, opts.timeZone)
+    const days =
+      fromInvoice !== null ? fromInvoice : daysSinceBooked(load.created_at, today, opts.timeZone)
     if (days === null) {
       // Counted and named rather than dropped. A load quietly missing from a
       // money chart is the one failure nobody notices, because the chart still
@@ -202,6 +321,12 @@ export function receivablesAging(
       if (klass.kind === 'counted') undatedCents += klass.cents
       continue
     }
+
+    // Counted here and nowhere earlier, so the two figures always add up to the
+    // loads actually ON the bands — a row that fell out at one of the guards
+    // above is in `undatedLoads` and must not also be claimed by a band.
+    if (fromInvoice !== null) agedFromInvoice++
+    else agedFromEntry++
 
     cells[i].loads++
     if (klass.kind === 'counted') {
@@ -252,6 +377,8 @@ export function receivablesAging(
     disputedLoads,
     waitingLoads,
     chaseAfterDays,
+    agedFromInvoice,
+    agedFromEntry,
   }
 }
 
@@ -292,7 +419,7 @@ export interface CustomerReceivables {
  * that reason.
  */
 export function receivablesByCustomer(
-  loads: readonly RevenueLoad[] | null | undefined,
+  loads: readonly DatedLoad[] | null | undefined,
   customers: readonly CustomerForReceivables[] | null | undefined,
   today: Date,
   opts: { timeZone?: string } = {},
@@ -311,7 +438,13 @@ export function receivablesByCustomer(
     if (klass.kind === 'quoted' || klass.kind === 'cancelled') continue
     if (!WAITING_BILLING.includes(load.billing ?? '')) continue
 
-    const days = daysSinceBooked(load.created_at, today, opts.timeZone)
+    // Same rule as the bands: the invoice date where one was recorded, the day
+    // the load was entered where none was. The two pages that draw these rows
+    // and the bands beside them must age from the same day per load, or one
+    // broker appears twice with two different ages.
+    const days =
+      daysSinceDate(load.invoiced_on, today, opts.timeZone) ??
+      daysSinceBooked(load.created_at, today, opts.timeZone)
     const id = load.customer_id ?? ''
     if (!known.has(id)) {
       // `customer_id` is ON DELETE SET NULL, so a bare null is the normal case.
@@ -362,4 +495,200 @@ export function receivablesByCustomer(
  */
 export function daysWord(days: number): string {
   return `${days} ${days === 1 ? 'day' : 'days'}`
+}
+
+// ---------------------------------------------------------------------------
+// Promised against actual
+// ---------------------------------------------------------------------------
+
+/**
+ * The fewest paid invoices this will state a pay speed from.
+ *
+ * One invoice is an anecdote. Two is a coincidence. Three is the smallest
+ * number that can be called a habit, and a habit is what the owner is deciding
+ * about when he asks whether to take their next load. Below this the page draws
+ * the dashed gap and says how many it has — it never averages two numbers and
+ * calls the result how a broker pays.
+ */
+export const MIN_MEASURED_INVOICES = 3
+
+export interface PaySpeed {
+  /** What they AGREED to. NULL means nobody has asked them. Not "fast". */
+  promisedDays: number | null
+  /** Invoices carrying BOTH dates, so a wait could actually be measured. */
+  measured: number
+  /** The typical wait, in whole days. The middle one, not the average. */
+  typicalDays: number | null
+  fastestDays: number | null
+  slowestDays: number | null
+  /** Invoiced and not yet marked paid. Still out, so not yet a measurement. */
+  awaiting: number
+  /** Loads of theirs with no invoice date on them at all. */
+  unrecorded: number
+  /** Dates present but impossible — money before the invoice. In no figure. */
+  unreadable: number
+  /** Measured invoices paid on or before the agreed day. */
+  onTime: number
+  late: number
+  /** Whole percent on time, or `null` when nothing can honestly be said. */
+  onTimePercent: number | null
+  /** The threshold actually used, so the page prints the number the maths used. */
+  minimum: number
+  /** Why there is no measured wait, in plain words. `null` when there is one. */
+  absence: string | null
+  /** Why there is no on-time share. `null` when there is one. */
+  punctualityAbsence: string | null
+}
+
+const invoiceWord = (n: number) => (n === 1 ? 'invoice' : 'invoices')
+
+/** The middle value of a sorted list of whole days. Never an average. */
+function median(sorted: readonly number[]): number | null {
+  if (sorted.length === 0) return null
+  const mid = Math.floor(sorted.length / 2)
+  if (sorted.length % 2 === 1) return sorted[mid]
+  // An even count has no middle value. The two either side are averaged and
+  // rounded — these are days, not money, so a rounded day is a day and not a
+  // cent nobody can reconcile.
+  return Math.round((sorted[mid - 1] + sorted[mid]) / 2)
+}
+
+/**
+ * WHAT THEY PROMISED, AGAINST WHAT THEY ACTUALLY DID.
+ *
+ * `days_to_pay` on the customer is a sentence off a rate confirmation. It is
+ * not a measurement, and reading it as one is the mistake this whole function
+ * exists to correct: the reason a small carrier cares about the field at all is
+ * that the two numbers differ.
+ *
+ * WHAT IT REFUSES TO DO. It will not state a pay speed from fewer than
+ * `MIN_MEASURED_INVOICES` measured invoices, it will not state one from loads
+ * that carry only one of the two dates, and it will not state an on-time share
+ * for a customer who never gave terms — there is nothing to be on time against.
+ * Each refusal comes back as a SENTENCE, not as a silence and never as a zero,
+ * because the page has to print the reason beside the dashed gap.
+ *
+ * WITH 0029 UNAPPLIED EVERY RESULT IS AN ABSENCE. The columns do not exist, so
+ * every load arrives with both dates undefined, `measured` is 0 and `absence`
+ * says the dates are not recorded. That is the correct output, not a failure.
+ *
+ * NO MONEY IS TOUCHED HERE. These are whole days, counted between two calendar
+ * dates. The only division is the on-time percentage, which is printed beside
+ * the two counts it is made of and never on its own.
+ */
+export function paySpeed(
+  loads: readonly DatedLoad[] | null | undefined,
+  promisedDays: number | null | undefined,
+  opts: { minimum?: number } = {},
+): PaySpeed {
+  const minimum = Math.max(1, Math.trunc(opts.minimum ?? MIN_MEASURED_INVOICES))
+  const promised = promisedDays ?? null
+
+  const waits: number[] = []
+  let awaiting = 0
+  let unrecorded = 0
+  let unreadable = 0
+  let onTime = 0
+  let late = 0
+  let considered = 0
+
+  for (const load of loads ?? []) {
+    const klass = classifyLoad(load)
+    // Quoted and cancelled loads are left out here exactly as every other
+    // derivation in this folder leaves them out. Nobody invoices a quote.
+    if (klass.kind === 'quoted' || klass.kind === 'cancelled') continue
+    considered++
+
+    const invoiced = load.invoiced_on ?? null
+    const paid = load.paid_on ?? null
+
+    if (!invoiced) {
+      unrecorded++
+      continue
+    }
+    if (!paid) {
+      awaiting++
+      continue
+    }
+
+    const days = daysBetweenDates(invoiced, paid)
+    // A negative wait is money that arrived before the invoice asked for it —
+    // a transposed date. Counted and named rather than averaged in, where it
+    // would make a slow broker read as a fast one.
+    if (days === null || days < 0) {
+      unreadable++
+      continue
+    }
+
+    waits.push(days)
+    if (promised !== null) {
+      if (days <= promised) onTime++
+      else late++
+    }
+  }
+
+  waits.sort((a, b) => a - b)
+  const measured = waits.length
+  const enough = measured >= minimum
+
+  let onTimePercent: number | null = null
+  if (enough && promised !== null && measured > 0) {
+    const raw = Math.round((onTime / measured) * 100)
+    // A rounded 100% over a record that contains a late payment is a claim this
+    // app has not earned, and the same in reverse at the bottom of the scale.
+    onTimePercent = late > 0 && raw >= 100 ? 99 : onTime > 0 && raw <= 0 ? 1 : raw
+  }
+
+  const absence = enough
+    ? null
+    : considered === 0
+      ? 'You have not hauled anything for them yet, so there is nothing to measure.'
+      : measured === 0 && unrecorded === considered
+        ? 'No load of theirs has an invoice date on it, so how long they really take cannot be worked out. Put the date on the load when you send the invoice, and the date again when the money lands.'
+        : measured === 0 && awaiting > 0
+          ? `${awaiting} ${invoiceWord(awaiting)} out with them ${awaiting === 1 ? 'has' : 'have'} no payment date yet, so no wait has finished. This does not mean they are slow.`
+          : measured === 0
+            ? 'No load of theirs carries both an invoice date and a payment date, so there is no wait to measure.'
+            : `Only ${measured} paid ${invoiceWord(measured)} ${measured === 1 ? 'carries' : 'carry'} both dates. ${minimum} is the fewest this screen will speak from — one or two is luck, not a habit.`
+
+  const punctualityAbsence =
+    promised === null
+      ? 'They have never given you payment terms, so there is nothing to measure them against. Settle it before the next load.'
+      : absence
+
+  return {
+    promisedDays: promised,
+    measured,
+    typicalDays: enough ? median(waits) : null,
+    fastestDays: enough ? (waits[0] ?? null) : null,
+    slowestDays: enough ? (waits[waits.length - 1] ?? null) : null,
+    awaiting,
+    unrecorded,
+    unreadable,
+    onTime,
+    late,
+    onTimePercent,
+    minimum,
+    absence,
+    punctualityAbsence,
+  }
+}
+
+/**
+ * The word and the colour for an on-time share.
+ *
+ * The WORD is the finding and the colour is the second signal, never the first
+ * — roughly one man in twelve cannot separate the red gauge from the amber one,
+ * and this product is read in a yard, in the sun. The counts behind the share
+ * are printed beside it in every caller, so the word is never the only claim
+ * either.
+ *
+ * Green at 90 and up: a broker who misses one invoice in ten is a broker you
+ * plan around. Amber from 50: late often enough to matter to a fuel bill.
+ * Red below 50: late more often than not, which is a conversation, not a wait.
+ */
+export function punctualityVerdict(percent: number): { tone: Tone; word: string } {
+  if (percent >= 90) return { tone: 'good', word: 'Pays on time' }
+  if (percent >= 50) return { tone: 'soon', word: 'Often late' }
+  return { tone: 'overdue', word: 'Usually late' }
 }

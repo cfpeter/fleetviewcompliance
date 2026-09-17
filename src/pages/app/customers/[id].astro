@@ -15,10 +15,17 @@ import Columns from '../../../components/charts/Columns.astro'
 import Figure from '../../../components/charts/Figure.astro'
 import Proportion from '../../../components/charts/Proportion.astro'
 import App from '../../../layouts/App.astro'
-import { daysWord, receivablesAging } from '../../../lib/charts/receivables.ts'
-import { type RevenueLoad, billingMix, revenueByMonth, sliceOf } from '../../../lib/charts/revenue.ts'
-import { ceilingFor, compactMoney } from '../../../lib/charts/scale.ts'
-import { UNKNOWN_SLOT } from '../../../lib/charts/tones.ts'
+import {
+  type DatedLoad,
+  agingSource,
+  daysWord,
+  paySpeed,
+  punctualityVerdict,
+  receivablesAging,
+} from '../../../lib/charts/receivables.ts'
+import { billingMix, revenueByMonth, sliceOf } from '../../../lib/charts/revenue.ts'
+import { ceilingFor } from '../../../lib/charts/scale.ts'
+import { TONES, UNKNOWN_SLOT } from '../../../lib/charts/tones.ts'
 import {
   type CustomerLoadRow,
   type CustomerRow,
@@ -202,20 +209,44 @@ const loadsQuery = supabase
  * query can be forty times the size of the one above it and none of that is
  * rendered anywhere.
  */
-const historyQuery = supabase
-  .from('loads')
-  .select(
-    'status, exception, billing, linehaul_cents, fuel_surcharge_cents, accessorials_cents, created_at',
-    // The exact count, so the charts can tell whether PostgREST's row cap ate
-    // anything. Without it a capped response draws a quietly short year and
-    // there is nothing on screen — or in the data — that says so.
-    { count: 'exact' },
-  )
-  .eq('customer_id', id)
+const HISTORY_COLUMNS =
+  'status, exception, billing, linehaul_cents, fuel_surcharge_cents, accessorials_cents, created_at'
+// The two dates 0029_load_invoice_dates.sql adds. They are what turns "how much
+// of theirs is still out" into "how long they actually take to pay", which is
+// the question this page exists to answer and could not.
+const HISTORY_COLUMNS_WITH_DATES = `${HISTORY_COLUMNS}, invoiced_on, paid_on`
 
-const [loadsResult, historyResult, federal] = await Promise.all([
+/**
+ * Their whole load history, asked for with the invoice dates and again without.
+ *
+ * 0029 IS WRITTEN AND NOT YET APPLIED. Until somebody runs it the two columns
+ * do not exist and PostgREST answers the first request with "column
+ * loads.invoiced_on does not exist" — which would take every chart off this
+ * page over a column that is an improvement, not a requirement. So it asks
+ * again without them: the revenue columns and the aging bands come back exactly
+ * as they did before, the measured pay speed renders as the dashed gap it
+ * already rendered as, and the words beside it say the dates are not recorded.
+ *
+ * The exact count rides on both, so the charts can tell whether PostgREST's row
+ * cap ate anything. Without it a capped response draws a quietly short year and
+ * there is nothing on screen — or in the data — that says so.
+ */
+async function historyRows() {
+  const withDates = await supabase
+    .from('loads')
+    .select(HISTORY_COLUMNS_WITH_DATES, { count: 'exact' })
+    .eq('customer_id', id)
+  if (!withDates.error) return { result: withDates, dates: true }
+  const plain = await supabase
+    .from('loads')
+    .select(HISTORY_COLUMNS, { count: 'exact' })
+    .eq('customer_id', id)
+  return { result: plain, dates: false }
+}
+
+const [loadsResult, history_, federal] = await Promise.all([
   loadsQuery,
-  historyQuery,
+  historyRows(),
   // Asked only when there is something to ask about. A customer with neither
   // number gets no federal block at all rather than an empty one, because an
   // empty panel reads as an answer.
@@ -236,7 +267,18 @@ const loadsFailed = Boolean(loadsResult.error)
  * a shape: a customer who was half the year and has gone quiet looks identical
  * to a steady one in a list of ten rows.
  */
-const history = (historyResult.data ?? []) as unknown as RevenueLoad[]
+const historyResult = history_.result
+/**
+ * Whether the two date columns were actually readable.
+ *
+ * FALSE is the state of this database today, because 0029 is unapplied. It is
+ * carried as a value rather than inferred from "every row has no dates",
+ * because those are two different facts: a carrier who simply has not typed any
+ * invoice dates yet gets a different sentence from a carrier whose database
+ * cannot hold them.
+ */
+const payDatesStored = history_.dates
+const history = (historyResult.data ?? []) as unknown as DatedLoad[]
 const historyFailed = Boolean(historyResult.error)
 // One instant, shared by every derivation on the page. Two calls to new Date()
 // can straddle midnight in the yard, and then the revenue axis and the aging
@@ -248,7 +290,24 @@ const mix = historyFailed || history.length === 0 ? null : billingMix(history)
 // as the two charts above it, so this page cannot disagree with itself.
 const aging = historyFailed ? null : receivablesAging(history, now)
 
+/**
+ * PROMISED AGAINST ACTUAL, MEASURED.
+ *
+ * Same rows again — the whole history, not the last ten in the table — so the
+ * card in the rail and the bands below it cannot disagree about this broker.
+ *
+ * `paySpeed` refuses to state a figure from fewer than three finished invoices
+ * and refuses an on-time share for a customer who never gave terms, and it
+ * hands back the REASON as a sentence in both cases. That is what the card
+ * prints beside the dashed gap. It never prints a zero and it never prints an
+ * average of two invoices under a heading that reads like a habit.
+ */
+const speed = historyFailed ? null : paySpeed(history, customer.days_to_pay)
+const punctuality =
+  speed && speed.onTimePercent !== null ? punctualityVerdict(speed.onTimePercent) : null
+
 const loadWord = (n: number) => (n === 1 ? 'load' : 'loads')
+const invoiceWord = (n: number) => (n === 1 ? 'invoice' : 'invoices')
 
 // What the response could not carry. See the note on the count above: a capped
 // result drops rows silently, and a chart has no visible end to give the loss
@@ -290,14 +349,13 @@ const revenueCoverage = months
   : undefined
 
 /**
- * What the billing bar does not cover — and the one thing this app cannot yet
- * tell him at all.
+ * What the billing bar does not cover.
  *
- * `days_to_pay` is the AGREED term. Nothing in 0009_loads.sql records the day a
- * payment actually landed, so we can show what is outstanding and we cannot
- * show how long this broker really takes. Saying so is the point: a page that
- * quietly showed only the agreed number would be read as the real one, and the
- * whole reason a small carrier cares about this field is that the two differ.
+ * The last clause is the one that matters and it changes with what is on file.
+ * This bar is a count of where money sits, never a measure of how long anybody
+ * took to send it — that answer is the card in the rail, and the two must not
+ * be read as one. Pointing at the card is better than the old flat "we cannot
+ * tell you", which stopped being true the moment a load carried both dates.
  */
 const mixCoverage = mix
   ? [
@@ -307,36 +365,25 @@ const mixCoverage = mix
       mix.quotedLoads + mix.cancelledLoads > 0 &&
         `${mix.quotedLoads + mix.cancelledLoads} quoted or cancelled ${loadWord(mix.quotedLoads + mix.cancelledLoads)} are not on this bar.`,
       missing > 0 && `${missing} older ${loadWord(missing)} did not fit in one request.`,
-      'Nothing here records the day a payment arrived, so this cannot tell you how long they really take. It only shows what is still out.',
+      'This shows what is still out. How long they take to pay is the "How fast they pay" card at the top of this page.',
     ]
       .filter(Boolean)
       .join(' ')
   : undefined
 
 /**
- * HOW FAST THEY PAY: WHAT WE PROMISED TO SHOW, AND WHAT WE CAN ACTUALLY SHOW.
+ * HOW OLD WHAT IS STILL OUT IS, AND THE DAY IT IS COUNTED FROM.
  *
- * The question on this page is "can I trust their terms". The honest answer is
- * that half of it cannot be computed from this database at all: 0009_loads.sql
- * records no invoice date and no payment date, so there is no day-the-money-
- * arrived to subtract a day-the-invoice-went-out from. An average days-to-pay
- * drawn from anything else here would be a number this app made up, on the
- * screen an owner uses to decide whether to take their next load — and he would
- * repeat it to them down the phone.
- *
- * So the actual half renders as the dashed gap this app draws for every figure
- * it does not have, with the words for it beside the box. What IS knowable is
- * drawn instead: how much of theirs is invoiced and still out, and how long the
- * loads behind it have been on the books. That is the closest true answer, and
- * it is labelled as exactly what it is.
- *
- * To make the promised-against-actual comparison real, a migration has to store
- * the day each load was invoiced and the day the money landed. Until then this
- * page says so out loud rather than drawing a confident bar.
+ * A load that carries an invoice date is aged from that day. A load with none
+ * is aged from the day it was ENTERED, which is always older than the invoice
+ * behind it. `agingSource` writes out how many rows are which, and it is the
+ * first line of the coverage note rather than the last: an owner who reads
+ * "more than 90 days" off this screen and repeats it to a broker whose invoice
+ * went out three weeks ago has been handed an argument he loses, by us.
  */
 const agingCoverage = aging
   ? [
-      'Counted from the day the load was entered, not the day the invoice went out. Nothing on a load records when it was invoiced, so every band is older than the invoice behind it.',
+      agingSource(aging),
       'Only loads marked invoiced, with the factor, or funded. Anything you have not invoiced yet is not on these bars.',
       aging.unpricedLoads > 0 &&
         `${aging.unpricedLoads} ${loadWord(aging.unpricedLoads)} still out carry no rate yet, so the amounts are lower than the real figures.`,
@@ -358,12 +405,121 @@ const problemSlice = mix ? sliceOf(mix, 'problem') : undefined
 // number of days, and the broker who never answered would read as the best
 // payer on the book — the same trap parseDaysToPay exists to keep out of the
 // database.
+//
+// "Net 30" rather than "pays in 30 days", here and everywhere else on this
+// screen. It is the phrase on the rate confirmation, so it reads as the promise
+// it is rather than as a measurement of what they actually do.
 const termsLine =
   customer.days_to_pay === null
     ? 'They have never given you payment terms, so there is nothing to compare the wait against.'
     : customer.days_to_pay === 0
       ? 'Their agreed terms are payment on delivery.'
-      : `Their agreed terms are ${customer.days_to_pay} days from a clean invoice.`
+      : `Their agreed terms are net ${customer.days_to_pay} — ${daysWord(customer.days_to_pay)} from a clean invoice.`
+
+/**
+ * The two bars: what they promised, and what they actually did.
+ *
+ * ONE SCALE over both, so a bar twice as long really is twice the wait. Scaled
+ * separately, a broker taking 60 days against agreed 30 would draw two bars of
+ * the same length and the comparison the card exists for would be invisible.
+ *
+ * A missing half is `null`, never 0. Zero days is the best terms in the
+ * industry — payment on delivery — and a customer nobody has measured must
+ * never be drawn sitting on top of the best payer on the book.
+ */
+const promisedValue = customer.days_to_pay
+const actualValue = speed?.typicalDays ?? null
+const speedCeiling = ceilingFor([promisedValue, actualValue])
+const speedBars = [
+  {
+    label: 'What they promised',
+    value: promisedValue,
+    display:
+      promisedValue === null
+        ? 'not recorded'
+        : promisedValue === 0
+          ? 'on delivery'
+          : `net ${promisedValue} — ${daysWord(promisedValue)}`,
+    note: promisedValue === null ? 'Nobody has asked them for terms yet.' : 'Agreed terms, off the rate confirmation.',
+    tone: 'brand' as const,
+  },
+  {
+    label: 'What they really take',
+    value: actualValue,
+    display: actualValue === null ? 'not known yet' : daysWord(actualValue),
+    note: (() => {
+      if (!speed) return 'We could not read their load history just now, so there is nothing measured here.'
+      if (actualValue === null) return speed.absence ?? ''
+      const range =
+        speed.fastestDays !== null && speed.slowestDays !== null
+          ? ` Fastest ${daysWord(speed.fastestDays)}, slowest ${daysWord(speed.slowestDays)}.`
+          : ''
+      return `The middle wait across ${speed.measured} paid ${invoiceWord(speed.measured)}.${range}`
+    })(),
+    // GREEN ONLY WHEN THEY ACTUALLY KEPT THE TERMS, and blue — "simply a fact"
+    // — when there is no term to keep. Red is not used here: it means act now
+    // in this app, and the thing to act on is the money still out, which is the
+    // bands lower down. A broker who runs a few days over gets amber and the
+    // sentence that says so.
+    tone:
+      actualValue === null || promisedValue === null
+        ? ('brand' as const)
+        : actualValue <= promisedValue
+          ? ('good' as const)
+          : ('soon' as const),
+  },
+]
+
+/**
+ * The finding under the two bars, written out.
+ *
+ * A pair of bar lengths is a shape, and a shape is not a number. This is the
+ * sentence that survives being read on a phone in the sun by somebody reading
+ * a second language, and it is the one an owner repeats down the phone — so it
+ * names both figures rather than the difference alone.
+ */
+const speedFinding =
+  actualValue === null || promisedValue === null || !speed
+    ? null
+    : actualValue > promisedValue
+      ? `They agreed net ${promisedValue} and typically take ${daysWord(actualValue)} — ${daysWord(actualValue - promisedValue)} longer than they promised. Price that in before the next load.`
+      : actualValue === promisedValue
+        ? `They agreed net ${promisedValue} and typically take ${daysWord(actualValue)}. They pay the way they said they would.`
+        : `They agreed net ${promisedValue} and typically take ${daysWord(actualValue)} — ${daysWord(promisedValue - actualValue)} sooner than they promised.`
+
+/** The counts behind the gauge. A share never travels without them. */
+const punctualityLine =
+  speed && speed.onTimePercent !== null && speed.promisedDays !== null
+    ? `${speed.onTime} of ${speed.measured} paid ${invoiceWord(speed.measured)} ${
+        speed.promisedDays === 0
+          ? 'arrived on the day you invoiced'
+          : `arrived within the agreed ${daysWord(speed.promisedDays)}`
+      }. ${speed.late === 0 ? 'None came late.' : `${speed.late} came late.`}`
+    : null
+
+/**
+ * What the card does NOT cover, one line each.
+ *
+ * Every one of these is a load that is deliberately in none of the figures
+ * above. Left unsaid, a customer with nine invoices out and three paid would
+ * read as a customer we have measured properly.
+ */
+const speedCoverage = speed
+  ? [
+      !payDatesStored &&
+        'FleetView is not storing invoice dates or payment dates yet, so nothing on this card can be measured. Ask for that to be switched on.',
+      payDatesStored &&
+        speed.awaiting > 0 &&
+        `${speed.awaiting} ${invoiceWord(speed.awaiting)} out with them ${speed.awaiting === 1 ? 'has' : 'have'} no payment date yet, so ${speed.awaiting === 1 ? 'it is' : 'they are'} in no figure here. Waiting is not the same as late.`,
+      payDatesStored &&
+        speed.unrecorded > 0 &&
+        `${speed.unrecorded} of their ${loadWord(speed.unrecorded)} carry no invoice date, so ${speed.unrecorded === 1 ? 'it is' : 'they are'} not counted. Type the date when you send the invoice.`,
+      speed.unreadable > 0 &&
+        `${speed.unreadable} ${loadWord(speed.unreadable)} show money arriving before the invoice went out. That is a typed date in the wrong box, and ${speed.unreadable === 1 ? 'it is' : 'they are'} in no figure here.`,
+      missing > 0 &&
+        `${missing} older ${loadWord(missing)} did not fit in one request and are in no figure here.`,
+    ].filter((line): line is string => typeof line === 'string')
+  : []
 
 // The banner only fires on a definite finding: we reached the federal file, it
 // returned dockets for this DOT number, and not one of them is Active. Anything
@@ -416,7 +572,7 @@ const field = 'field-input mt-1'
  *
  *   h2  text-lg font-semibold tracking-tight        — a section of the page
  *   h3  text-sm font-semibold tracking-tight        — a subsection inside a card
- *   h3  text-xs tracking-wide text-ink-500 uppercase — the label on a small card
+ *   h3  text-xs tracking-wide text-ink-700 uppercase — the label on a small card
  *
  * Both cards in the rail on this page are the third kind, so the string is
  * written out where it is used rather than kept in a constant: it has to stay
@@ -510,7 +666,7 @@ const said = 'text-ink-500 sm:hidden'
             placeholder="1234567"
             class={`${field} tabular-nums`}
           />
-          <span class="mt-1 block text-xs text-ink-500">
+          <span class="field-hint block">
             This is the number the federal authority check runs on.
           </span>
         </label>
@@ -560,7 +716,7 @@ const said = 'text-ink-500 sm:hidden'
             value={customer.billing_email ?? ''}
             class={field}
           />
-          <span class="mt-1 block text-xs text-ink-500">
+          <span class="field-hint block">
             Invoices sent to the dispatch address do not get paid.
           </span>
         </label>
@@ -572,7 +728,11 @@ const said = 'text-ink-500 sm:hidden'
       </label>
 
       <label class="block">
-        <span class="field-label">Days to pay</span>
+        {/* "Payment terms", not "Days to pay". What goes in this box is what
+            they AGREED to — net 30 — and the card in the rail is where what
+            they actually do is measured. Running the two words together is how
+            a promise starts being read as a record. */}
+        <span class="field-label">Payment terms</span>
         <input
           type="text"
           name="days_to_pay"
@@ -581,9 +741,9 @@ const said = 'text-ink-500 sm:hidden'
           placeholder="30"
           class={`${field} tabular-nums`}
         />
-        <span class="mt-1 block text-xs text-ink-500">
-          If you leave it blank, it stays blank. A guessed 30 here would be a payment term we made
-          up.
+        <span class="field-hint block">
+          Days from a clean invoice, as agreed. Type 30 for net 30. If you leave it blank, it stays
+          blank — a guessed 30 here would be a payment term we made up.
         </span>
       </label>
 
@@ -618,50 +778,83 @@ const said = 'text-ink-500 sm:hidden'
         as a guess.
       */}
       <div class={card}>
-        <h3 class="text-xs tracking-wide text-ink-500 uppercase">How fast they pay</h3>
+        {/* 12px, so ink-700. */}
+        <h3 class="text-xs tracking-wide text-ink-700 uppercase">How fast they pay</h3>
 
+        {/* TWO BARS, ONE SCALE. The pair is the point: a lone "30" reads as a
+            fact about this broker's behaviour when it is a fact about a
+            sentence on a rate confirmation. Where the measured half does not
+            exist, Bars draws the dashed slot every unknown gets in this app and
+            the note under it says why — never a zero, never a guess. */}
         <div class="mt-3">
-          <div class="text-sm font-medium text-ink-700">What they promised</div>
+          <Bars items={speedBars} max={speedCeiling} />
+        </div>
+
+        {speedFinding && <p class="mt-3 text-sm text-ink-700">{speedFinding}</p>}
+
+        {/* ------------------------------------------------- the gauge
+
+            "Did they keep their word", as one share with both counts beside it.
+            The two bars above say how long; this says how often they made it.
+
+            The WORD carries the finding and the colour is the second signal —
+            roughly one man in twelve cannot separate the red from the amber,
+            and this is read in a yard. The counts are printed under it, so the
+            share is never a score nobody can check.
+
+            No figure without terms to judge against, and no figure from one or
+            two invoices: both come back as the dashed slot and the sentence
+            that says which of the two it is. */}
+        <div class="mt-4 border-t border-ink-100 pt-3">
+          <div class="text-sm font-medium text-ink-700">Paid on time</div>
           {
-            customer.days_to_pay === null ? (
+            speed && punctuality && speed.onTimePercent !== null ? (
               <>
-                <div class="mt-0.5 text-3xl font-semibold text-ink-500 tabular-nums">—</div>
-                <p class="mt-1 text-sm text-ink-500">
-                  Not recorded. This does not mean they pay fast. It means nobody has asked them
-                  yet. Settle it before the second load.
-                </p>
+                <div class="mt-1 flex flex-wrap items-baseline justify-between gap-x-3">
+                  <span class:list={['text-3xl font-semibold tabular-nums', TONES[punctuality.tone].text]}>
+                    {speed.onTimePercent}%
+                  </span>
+                  <span class:list={['text-sm font-semibold', TONES[punctuality.tone].text]}>
+                    {punctuality.word}
+                  </span>
+                </div>
+                <div
+                  class:list={['mt-1.5 h-3 overflow-hidden rounded-full', TONES[punctuality.tone].track]}
+                  role="img"
+                  aria-label={`${punctuality.word}. ${speed.onTime} of ${speed.measured} paid ${invoiceWord(speed.measured)} arrived by the agreed day.`}
+                >
+                  <div
+                    class:list={['h-full rounded-full', TONES[punctuality.tone].bar]}
+                    style={`width:${speed.onTimePercent}%`}
+                  />
+                </div>
+                <p class="mt-1.5 text-sm text-ink-700">{punctualityLine}</p>
               </>
             ) : (
               <>
-                <div class="mt-0.5 text-3xl font-semibold tabular-nums">
-                  {customer.days_to_pay}
-                  <span class="ml-1 text-base font-normal text-ink-500">
-                    {customer.days_to_pay === 1 ? 'day' : 'days'}
-                  </span>
-                </div>
-                <p class="mt-1 text-sm text-ink-500">
-                  {customer.days_to_pay === 0
-                    ? 'Payment on delivery, as agreed.'
-                    : 'Agreed terms, in days from a clean invoice.'}
+                {/* The dashed slot, same treatment every unknown gets on every
+                    chart in this app. Announced as text, not as a shape. */}
+                <div class:list={['mt-1.5 h-8 rounded-lg', UNKNOWN_SLOT]} aria-hidden="true" />
+                <p class="mt-1.5 text-sm text-ink-700">
+                  {speed?.punctualityAbsence ??
+                    'We could not read their load history just now, so there is no figure here. That is not the same as them paying on time.'}
                 </p>
               </>
             )
           }
         </div>
 
-        <div class="mt-4 border-t border-ink-100 pt-3">
-          <div class="text-sm font-medium text-ink-700">What they really take</div>
-          {/* The dashed slot, same treatment every unknown gets on every chart
-              in this app. Announced as text, not as a shape. */}
-          <div class:list={['mt-1.5 h-8 rounded-lg', UNKNOWN_SLOT]} aria-hidden="true"></div>
-          <p class="mt-1.5 text-sm text-ink-700">
-            Not known. FleetView does not store the day you sent an invoice or the day the money
-            landed, so it cannot work out how long they really take. Do not quote a number at them
-            from this screen — there is not one here.
-          </p>
-        </div>
+        {
+          speedCoverage.length > 0 && (
+            <ul class="mt-3 space-y-1 border-t border-ink-100 pt-3 text-sm text-ink-700">
+              {speedCoverage.map((line) => (
+                <li>{line}</li>
+              ))}
+            </ul>
+          )
+        }
 
-        <p class="mt-3 border-t border-ink-100 pt-3 text-xs text-ink-500">
+        <p class="mt-3 border-t border-ink-100 pt-3 text-xs text-ink-700">
           Added <span class="tabular-nums">{formatStamp(customer.created_at)}</span>
         </p>
       </div>
@@ -686,8 +879,8 @@ const said = 'text-ink-500 sm:hidden'
         federal && (
           <div class={card}>
             <div class="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 class="text-xs tracking-wide text-ink-500 uppercase">Operating authority</h3>
-              <span class="text-xs text-ink-500">Public FMCSA record</span>
+              <h3 class="text-xs tracking-wide text-ink-700 uppercase">Operating authority</h3>
+              <span class="text-xs text-ink-700">Public FMCSA record</span>
             </div>
 
             {federal.state === 'mc_only' && (
@@ -713,7 +906,7 @@ const said = 'text-ink-500 sm:hidden'
                     </li>
                   ))}
                 </ul>
-                <p class="mt-3 text-xs text-ink-500">
+                <p class="mt-3 text-xs text-ink-700">
                   Read live from the federal authority file for USDOT{' '}
                   <span class="tabular-nums">{federal.dot}</span>. Your insurer and your factor
                   read the same record.
@@ -751,7 +944,7 @@ const said = 'text-ink-500 sm:hidden'
                  are not carriers — so that case is worded to mean nothing. */
             }
             {federal.state === 'checked' && (
-              <p class="mt-3 border-t border-ink-100 pt-3 text-xs text-ink-500">
+              <p class="mt-3 border-t border-ink-100 pt-3 text-xs text-ink-700">
                 {federal.census.state === 'row' && (
                   <>
                     Federal carrier census:{' '}
@@ -776,7 +969,7 @@ const said = 'text-ink-500 sm:hidden'
         )
       }
 
-      <p class="px-1 text-xs text-ink-500">
+      <p class="px-1 text-xs text-ink-700">
         Federal data is retrieved live from the FMCSA public files. FleetView Compliance is not
         affiliated with FMCSA, the DOT, or any government agency.
       </p>
@@ -804,14 +997,21 @@ const said = 'text-ink-500 sm:hidden'
             columns={months.columns.map((c) => ({
               label: c.label,
               value: c.value,
-              display: c.display,
+              // THE FULL FIGURE, WITH COMMAS AND CENTS. `revenueByMonth`
+              // hands back a compact display — '$12.4k' — and that is not a
+              // number anybody can check against an invoice. It is overridden
+              // here rather than in the derivation because the derivation is
+              // shared with screens this pass does not own. `c.display` is
+              // still used where there is no figure at all, because it carries
+              // the two different absences in words ('no rate' against '—').
+              display: c.value === null ? c.display : formatCents(c.value),
               // The part month is toned down and named in the sentence below.
               // A broker who is having a perfectly normal September must not
               // appear to have stopped calling on the 15th of it.
               inProgress: c.isCurrent,
             }))}
             max={revenueCeiling}
-            axisLabel={revenueCeiling > 0 ? `Full height ${compactMoney(revenueCeiling)}` : undefined}
+            axisLabel={revenueCeiling > 0 ? `Full height ${formatCents(revenueCeiling)}` : undefined}
             emptyMessage="No rates have been typed on any of their loads, so there is nothing to draw."
           />
           {months.window.countedLoads > 0 && (
@@ -903,9 +1103,14 @@ const said = 'text-ink-500 sm:hidden'
                 theirs is invoiced and not paid, across {aging.countedLoads}{' '}
                 {loadWord(aging.countedLoads)}
                 {aging.oldestDays !== null && (
+                  /* "Has been out", not "was entered": some of these rows are
+                     aged from an invoice date and some from the day the load
+                     was typed in. The coverage line above says exactly which,
+                     in numbers, and this sentence must not contradict it by
+                     naming one of the two. */
                   <>
-                    . The oldest one was entered{' '}
-                    <span class="tabular-nums">{daysWord(aging.oldestDays)}</span> ago
+                    . The oldest has been out{' '}
+                    <span class="tabular-nums">{daysWord(aging.oldestDays)}</span>
                   </>
                 )}
                 . {termsLine}
@@ -975,7 +1180,7 @@ const said = 'text-ink-500 sm:hidden'
               not columns explain nothing — each block says what it is in its own
               words instead.
             */}
-            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
               <tr>
                 <th class="px-4 py-3 font-medium">Load</th>
                 <th class="px-4 py-3 font-medium">Booked</th>
@@ -994,7 +1199,7 @@ const said = 'text-ink-500 sm:hidden'
                       {loadLabel(l)}
                     </a>
                     {l.broker_reference && l.load_number && (
-                      <div class="text-xs text-ink-500 tabular-nums">
+                      <div class="text-xs text-ink-700 tabular-nums">
                         Their ref {l.broker_reference}
                       </div>
                     )}
@@ -1002,7 +1207,7 @@ const said = 'text-ink-500 sm:hidden'
                   {/* Last on a phone. The day it was booked is how the list is
                       sorted, not something read off a row. */}
                   <td
-                    class={`${cell} order-5 mt-0.5 text-xs whitespace-nowrap text-ink-500 tabular-nums sm:mt-0 sm:text-sm sm:text-ink-900`}
+                    class={`${cell} order-5 mt-0.5 text-xs whitespace-nowrap text-ink-700 tabular-nums sm:mt-0 sm:text-sm sm:text-ink-900`}
                   >
                     <span class="sm:hidden">Booked </span>
                     {formatStamp(l.created_at)}

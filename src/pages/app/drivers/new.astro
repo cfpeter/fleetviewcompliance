@@ -118,8 +118,13 @@ const error = params.get('error')
 const fromSetup = params.get('from') === 'setup'
 const today = todayInCalifornia()
 
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+/*
+  There is no `field` string on this page any more. Every box wears
+  `.field-input` from global.css — 44px tall, a border at ink-500 rather than the
+  ink-100 that vanished on a phone in daylight, and the one focus ring the whole
+  app shares. The labels and the help lines are `.field-label` and `.field-hint`
+  for the same reason: one construction, corrected in one place.
+*/
 ---
 
 <App title="Add a driver" subtitle="A name is enough to start. The rest can wait for the paperwork.">
@@ -131,56 +136,56 @@ const field =
       {fromSetup && <input type="hidden" name="from" value="setup" />}
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">First name <span class="text-red-600">*</span></span>
-          <input type="text" name="first_name" required autofocus class={field} />
+          <span class="field-label">First name <span class="text-red-600">*</span></span>
+          <input type="text" name="first_name" required autofocus class="field-input mt-1" />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">Last name <span class="text-red-600">*</span></span>
-          <input type="text" name="last_name" required class={field} />
+          <span class="field-label">Last name <span class="text-red-600">*</span></span>
+          <input type="text" name="last_name" required class="field-input mt-1" />
         </label>
       </div>
 
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">
-            Phone <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            Phone <span class="font-normal text-ink-500">(optional)</span>
           </span>
           <input
             type="tel"
             name="phone"
             placeholder="(818) 334-0168"
-            class={`${field} tabular-nums`}
+            class="field-input mt-1 tabular-nums"
           />
-          <span class="mt-1 block text-xs text-ink-500">
+          <span class="field-hint block">
             This is where his reminders go. Type ten digits and nothing else. An extension or a
             note next to the number makes it impossible to dial.
           </span>
         </label>
         <label class="block">
-          <span class="text-sm font-medium">
-            Email <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            Email <span class="font-normal text-ink-500">(optional)</span>
           </span>
-          <input type="email" name="email" class={field} />
+          <input type="email" name="email" class="field-input mt-1" />
         </label>
       </div>
 
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">
-            CDL number <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            CDL number <span class="font-normal text-ink-500">(optional)</span>
           </span>
-          <input type="text" name="cdl_number" class={`${field} tabular-nums`} />
+          <input type="text" name="cdl_number" class="field-input mt-1 tabular-nums" />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">
-            CDL state <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            CDL state <span class="font-normal text-ink-500">(optional)</span>
           </span>
           {
             /* No preselected California. A value she did not choose is
                indistinguishable on the screen from one she did, and the annual
                MVR has to be pulled from every state that licensed him. */
           }
-          <select name="cdl_state" class={field}>
+          <select name="cdl_state" class="field-input mt-1">
             <option value="">—</option>
             {US_STATE_CODES.map((code) => <option value={code}>{code}</option>)}
           </select>
@@ -189,17 +194,17 @@ const field =
 
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">
-            CDL expires <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            CDL expires <span class="font-normal text-ink-500">(optional)</span>
           </span>
-          <input type="date" name="cdl_expires_on" class={`${field} tabular-nums`} />
+          <input type="date" name="cdl_expires_on" class="field-input mt-1 tabular-nums" />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">
-            Hire date <span class="font-normal text-ink-300">(optional)</span>
+          <span class="field-label">
+            Hire date <span class="font-normal text-ink-500">(optional)</span>
           </span>
-          <input type="date" name="hired_on" max={today} class={`${field} tabular-nums`} />
-          <span class="mt-1 block text-xs text-ink-500">
+          <input type="date" name="hired_on" max={today} class="field-input mt-1 tabular-nums" />
+          <span class="field-hint block">
             Five federal deadlines are counted from this day: the qualification file, the road
             test, the pre-employment Clearinghouse query, and the 30-day driving record and
             previous employer checks.
@@ -208,29 +213,22 @@ const field =
       </div>
 
       <label class="block">
-        <span class="text-sm font-medium">
-          Date of birth <span class="font-normal text-ink-300">(optional)</span>
+        <span class="field-label">
+          Date of birth <span class="font-normal text-ink-500">(optional)</span>
         </span>
-        <input type="date" name="date_of_birth" max={today} class={`${field} tabular-nums`} />
-        <span class="mt-1 block text-xs text-ink-500">
+        <input type="date" name="date_of_birth" max={today} class="field-input mt-1 tabular-nums" />
+        <span class="field-hint block">
           Needed to request a driving record or run a Clearinghouse query. Nothing else uses it.
         </span>
       </label>
 
       <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-        <button
-          type="submit"
-          name="intent"
-          value="create"
-          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-        >
+        <button type="submit" name="intent" value="create" class="btn btn-primary">
           Add driver
         </button>
-        {/* The way out goes back where she came in. */}
-        <a
-          href={fromSetup ? '/app/setup' : '/app/drivers'}
-          class="text-sm font-medium text-brand-600 hover:underline"
-        >
+        {/* The way out goes back where she came in. Tertiary, and a full 44px
+            target: it was a 20px line of text beside a button. */}
+        <a href={fromSetup ? '/app/setup' : '/app/drivers'} class="btn btn-tertiary">
           {fromSetup ? 'Back to setup' : 'Back to drivers'}
         </a>
       </div>

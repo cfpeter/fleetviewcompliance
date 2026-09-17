@@ -40,7 +40,10 @@ import { site } from '../lib/site.ts'
 const h2 = 'text-xl font-semibold tracking-tight'
 const p = 'mt-2 text-sm text-ink-500'
 const list = 'mt-2 space-y-2 text-sm text-ink-500'
-const link = 'text-brand-600 hover:underline'
+// `.link` from global.css: underlined at rest, not only under the cursor.
+// A link that is nothing but a different blue is a link a reader in a hurry
+// does not see, and half this audience is reading a second language.
+const link = 'link'
 ---
 
 <Public
