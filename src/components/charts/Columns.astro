@@ -121,7 +121,19 @@ const lonely = known.length === 1 ? known[0] : null
                   // is most often read on. A KNOWN figure still hides there,
                   // because twelve amounts across a phone is a grey smear and
                   // the table below carries them exactly.
-                  h === null ? 'leading-none italic' : 'hidden truncate sm:block',
+                  //
+                  // It now waits for `lg` rather than `sm`, and it no longer
+                  // truncates. Money is written in full everywhere in this app,
+                  // and a full amount at 10px in a twelfth of a phone-width grid
+                  // clipped to "$12,4…" — which is not a smaller version of
+                  // $12,450.00, it is a number the reader cannot tell from
+                  // $12,400.00. Clipping a figure is worse than withholding it:
+                  // one is ambiguous, the other is honest. From `lg` a cell is
+                  // about 79px and the longest realistic amount needs ~55px, so
+                  // it fits whole or it does not appear. The exact figure is on
+                  // the column's aria-label at EVERY width, so nothing was
+                  // taken from a reader using a screen reader.
+                  h === null ? 'leading-none italic' : 'hidden lg:block',
                   h !== null && c.inProgress && 'italic',
                 ]}
               >

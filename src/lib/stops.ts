@@ -137,7 +137,9 @@ export function stopTypeBadgeClass(value: StopType | string): string {
   const clock = STOP_TYPES.find((t) => t.value === value)?.clock ?? null
   if (clock === 'pickup') return 'bg-sky-50 text-sky-700 ring-sky-600/20'
   if (clock === 'delivery') return 'bg-blue-50 text-blue-700 ring-blue-600/20'
-  return 'bg-ink-50 text-ink-500 ring-ink-300/40'
+  // ink-700, not ink-500: this sits inside `.badge`, which is 12px on a tint,
+  // and ink-500 there is under the text floor the rest of the app now holds to.
+  return 'bg-ink-50 text-ink-700 ring-ink-300/40'
 }
 
 /**
