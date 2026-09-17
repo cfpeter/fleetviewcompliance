@@ -32,6 +32,8 @@ import {
   uploadFromForm,
 } from '../../../lib/documents.ts'
 import { isActiveVehicle, VEHICLE_NOT_ACTIVE_MEANS } from '../../../lib/fleet/active.ts'
+import { daysBetween, toUtcMidnight } from '../../../lib/rules/dates.ts'
+import { type DeadlineItem, dueLine, SOON_DAYS } from '../../../lib/rules/index.ts'
 import {
   canRemove,
   confirmBody,
@@ -397,6 +399,253 @@ const ringCaveats = unitRing
     ].filter((s): s is string => Boolean(s))
   : []
 
+/**
+ * THE TIMELINE, AND WHY IT IS IN THE ORDER THE ENGINE HANDS IT OVER.
+ *
+ * `evaluate` sorts by `compareDeadlines`: past its date first, then the ones we
+ * hold no date for, then the dated ones soonest first, then the duties with no
+ * schedule anybody can work out. That is the order every other screen in this
+ * app reads in, and it is not calendar order — a row nobody has typed a date
+ * for has no place on a calendar at all. Re-sorted by date, those rows would
+ * fall to the bottom of the list, under the fold, on the one page where he
+ * would go to type the date in. So the engine's order stands.
+ *
+ * `subjectType` is filtered a second time on purpose. A trailer has no engine,
+ * so no Clean Truck Check, no Form 2290 and no fuel tax may ever appear on one
+ * — the same belt-and-braces `truckRing` does above.
+ */
+const unitItems = allDeadlines.filter(
+  (i) => i.subjectId === vehicle.id && i.subjectType === vehicle.kind,
+)
+
+/** The five things a row on the timeline can be. Four are the ring's buckets. */
+type Mark = 'act' | 'nodate' | 'soon' | 'ok' | 'read'
+
+const day0 = toUtcMidnight(new Date())
+
+/**
+ * Which mark a row gets — `buildHealth`'s buckets, decided in its order.
+ *
+ * STANDING FIRST, DAYS SECOND, AND BOTH SIDES OF ZERO GUARDED. A NEGATIVE
+ * COUNTDOWN IS NOT "COMING UP": a one-time duty done the week the truck was
+ * bought comes back `current` with a date behind us, or with no date at all,
+ * and `<= 45` is true for the first of those. Bucketing on the number before
+ * the standing is how finished work ends up under a heading about the next 45
+ * days, which has shipped in this codebase more than once.
+ */
+function markFor(i: DeadlineItem): Mark {
+  const standing = i.status.standing
+  if (standing === 'unsupported') return 'read'
+  if (standing === 'overdue') return 'act'
+  if (standing === 'unknown') return 'nodate'
+  // `current` from here, including the finished one-time duties: no next date,
+  // so nothing to count down, and they belong with the far end rather than
+  // inventing urgency.
+  const days = i.daysUntil ?? Number.POSITIVE_INFINITY
+  return days >= 0 && days <= SOON_DAYS ? 'soon' : 'ok'
+}
+
+const timeline = unitItems.map((item) => ({ item, mark: markFor(item) }))
+
+/**
+ * The duties with no schedule are declared, then folded away.
+ *
+ * They are real — a DVIR is written at the end of a driving day, a CTC-VIS
+ * listing is updated within 30 days of a sale — and neither has a cycle anybody
+ * can put on a calendar. Left in the main list they are two rows of standing
+ * advice sitting among the dates that are actually running, and each carries a
+ * paragraph saying why it has no date. Dropped, the count would shrink with no
+ * notice. So they keep their own line, which says how many there are, and open
+ * on a tap with their reasons in full. Same decision `noScheduleNote` makes for
+ * the circle, and the same words.
+ */
+const onTheClock = timeline.filter((r) => r.mark !== 'read')
+const noSchedule = timeline.filter((r) => r.mark === 'read')
+
+const plainDays = (n: number) => `${n} ${n === 1 ? 'day' : 'days'}`
+
+/**
+ * How late, counted off the date that has already gone past.
+ *
+ * `lastDue` and not `daysUntil`. A 90-day cycle whose last inspection was five
+ * months ago is `overdue` while `nextDue` — the next occurrence of the cycle —
+ * is still ahead of us, so its countdown is a POSITIVE number. Reading days
+ * late off that would print "overdue" beside a date in the future. `dueLine`
+ * picks the same date for the same reason.
+ */
+function daysLate(i: DeadlineItem): number {
+  const gone = i.status.lastDue ?? i.status.nextDue
+  return gone ? daysBetween(gone, day0) : 0
+}
+
+function lateWords(i: DeadlineItem): string {
+  const late = daysLate(i)
+  return late > 0 ? `Overdue ${plainDays(late)}` : 'Overdue'
+}
+
+/** The countdown in words. Never "34d" — this is read by people reading a second language. */
+function aheadWords(days: number): string {
+  if (days === 0) return 'Due today'
+  if (days === 1) return 'Due tomorrow'
+  return `Due in ${plainDays(days)}`
+}
+
+const countdownOf = (r: { item: DeadlineItem }) => r.item.daysUntil ?? Number.POSITIVE_INFINITY
+
+const overdueRows = timeline.filter((r) => r.mark === 'act')
+// Dated, ahead of us, and known to be a real next occurrence rather than a
+// finished one-time duty: the only rows that can carry a countdown.
+const aheadRows = timeline.filter(
+  (r) => (r.mark === 'soon' || r.mark === 'ok') && r.item.status.nextDue && countdownOf(r) >= 0,
+)
+const missingDates = timeline.filter((r) => r.mark === 'nodate').length
+
+const worstLate = overdueRows.length
+  ? overdueRows.reduce((worst, r) => (daysLate(r.item) > daysLate(worst.item) ? r : worst))
+  : null
+const nextAhead = aheadRows.length
+  ? aheadRows.reduce((soonest, r) => (countdownOf(r) < countdownOf(soonest) ? r : soonest))
+  : null
+
+/**
+ * THE ONE LINE AT THE TOP OF THE PAGE.
+ *
+ * What the owner opened the truck to find out, in type big enough to read from
+ * a phone on a dashboard mount, before he has scrolled anything. The rule's own
+ * title and the date sit under it so the number can be taken apart.
+ *
+ * Past its date beats a countdown, and a countdown beats everything else. The
+ * dates we do NOT hold are not folded into this number and are not hidden
+ * either: they print on their own grey line underneath, every time there is one,
+ * because "we have no date" is a state of its own and never a quiet kind of
+ * fine.
+ */
+const headline: { tone: Mark; label: string; big: string; what: string; when: string } | null =
+  worstLate
+    ? {
+        tone: 'act',
+        label: 'Next deadline',
+        big: lateWords(worstLate.item),
+        what: worstLate.item.rule.title,
+        when: dueLine(worstLate.item),
+      }
+    : nextAhead
+      ? {
+          tone: countdownOf(nextAhead) <= SOON_DAYS ? 'soon' : 'ok',
+          label: 'Next deadline',
+          big: aheadWords(countdownOf(nextAhead)),
+          what: nextAhead.item.rule.title,
+          when: formatDay(nextAhead.item.status.nextDue?.toISOString()),
+        }
+      : missingDates > 0
+        ? {
+            // Grey gets the big number too, and it is a COUNT — the one thing
+            // on this page he can act on when nothing else has a date behind
+            // it. The label changes with it: a heading reading "Next deadline"
+            // over a number that is not one is a heading arguing with itself.
+            tone: 'nodate',
+            label: 'What we are waiting on',
+            big: `${missingDates} ${missingDates === 1 ? 'date' : 'dates'} not on file`,
+            what: 'We cannot tell you what is next until you put a date in.',
+            when: '',
+          }
+        : onTheClock.length > 0
+          ? {
+              tone: 'ok',
+              label: 'Next deadline',
+              big: 'Nothing is due',
+              what: 'Every date we track for this unit is in. Nothing is counting down.',
+              when: '',
+            }
+          : null
+
+/**
+ * How each mark is drawn and what it is called.
+ *
+ * Colour is never the only carrier: every row prints the word as well, because
+ * roughly one man in twelve cannot separate the red from the amber, and this is
+ * read on a phone, in a yard, in the sun. Grey is an OUTLINE rather than a fill
+ * — a filled grey dot still looks like a measurement, and the whole point of
+ * that row is that there is nothing to measure yet.
+ */
+const MARK_STYLE: Record<Mark, { dot: string; pill: string; edge: string; big: string }> = {
+  act: {
+    dot: 'bg-red-500 text-white',
+    pill: 'bg-red-100 text-red-700',
+    edge: 'border-l-red-500',
+    big: 'text-red-700',
+  },
+  nodate: {
+    dot: 'border border-dashed border-ink-300 text-ink-500',
+    pill: 'bg-ink-100 text-ink-500',
+    edge: 'border-l-ink-300',
+    big: 'text-ink-500',
+  },
+  soon: {
+    dot: 'bg-amber-500 text-white',
+    pill: 'bg-amber-100 text-amber-800',
+    edge: 'border-l-amber-500',
+    big: 'text-amber-800',
+  },
+  ok: {
+    dot: 'bg-emerald-500 text-white',
+    pill: 'bg-emerald-100 text-emerald-800',
+    edge: 'border-l-emerald-500',
+    big: 'text-emerald-800',
+  },
+  read: {
+    dot: 'bg-brand-500 text-white',
+    pill: 'bg-brand-500/10 text-brand-700',
+    edge: 'border-l-brand-500',
+    big: 'text-brand-700',
+  },
+}
+
+/** The word on the pill. `act` says how late it is, so it is built per row. */
+const MARK_WORD: Record<Mark, string> = {
+  act: 'Overdue',
+  nodate: 'Missing a date',
+  soon: 'Due soon',
+  ok: 'On file',
+  read: 'Check yourself',
+}
+
+/**
+ * The glyph inside the dot: a flag, a clock, a tick, an upright bar for "read
+ * this". Grey has none — it is a dashed, empty outline, because there is
+ * nothing in it yet and a symbol would suggest there was.
+ */
+const MARK_ICON: Record<Mark, string> = {
+  act: 'M5.4 3v10M5.4 4h5.6l-1.2 1.8L11 7.6H5.4z',
+  nodate: '',
+  soon: 'M12.8 8a4.8 4.8 0 1 1-9.6 0 4.8 4.8 0 0 1 9.6 0M8 5.3V8l1.9 1.2',
+  ok: 'M4.6 8.3 7 10.7l4.4-5',
+  read: 'M8 7.3v3.5M8 5.2v.6',
+}
+
+/**
+ * The line beside the pill.
+ *
+ * `dueLine` does the work — it is the same sentence the dashboard prints, and
+ * it already keeps apart the three things that look alike: a finished one-time
+ * duty ("done · nothing more due"), a date we can compute with no record that
+ * the last cycle was ever done, and a date nobody has typed at all.
+ *
+ * The one row that gets better than `dueLine` can give is the row with no date
+ * at all: it names THE BOX TO TYPE IT IN, which is the next thing he needs and
+ * one tap below. A duty with no schedule never reaches here — it prints its own
+ * reason in the list further down, because `dueLine` would call it "no date
+ * yet", which is addressed to the owner and invents a job that is not his.
+ */
+function detailOf(i: DeadlineItem, mark: Mark): string {
+  if (mark === 'nodate' && !i.status.nextDue) {
+    const key = i.status.answerKey ?? i.status.needs?.[0]
+    const box = key ? anchorByKey(key) : undefined
+    if (box) return `Add: ${box.label}`
+  }
+  return dueLine(i)
+}
+
 /** anchor_key -> the date in force, and the row it came from. */
 const current = new Map<string, { on: string; id: string }>()
 for (const r of anchorRows ?? []) {
@@ -524,6 +773,28 @@ const cardHeading = 'text-sm font-semibold tracking-tight'
  */
 const recordOpen = error !== null
 
+/**
+ * THE DATE BOXES ARE FOLDED AWAY AND THE TIMELINE STANDS IN FRONT OF THEM.
+ *
+ * Twelve date boxes, each with three lines of help under it, ran to about a
+ * thousand pixels of form on a page an owner opens to find out when the next
+ * inspection lands. He types those dates a handful of times a year and reads
+ * them every week. So the reading is the page now and the typing is one tap
+ * behind a `details` — no script, the same way the vehicle record above folds.
+ *
+ * IT OPENS ON ITS OWN in the three cases where a closed form would be a dead
+ * end: a refused save (the message prints at the top and the boxes have to be
+ * under it), a save that went through (he is mid-job and usually has another
+ * date in his hand), and a truck added a moment ago, whose banner tells him to
+ * put his dates in. `?add=1` is the link from the timeline and from the grey
+ * line at the top — a query parameter, because nothing here runs script.
+ */
+const datesOpen = error !== null || added || datesCount !== null || params.get('add') === '1'
+// The hash lands on the boxes themselves, not on the section heading above the
+// timeline: a link that opens a form and leaves it off the bottom of the screen
+// has not opened anything.
+const addDatesHref = `/app/vehicles/${vehicle.id}?add=1#add-dates`
+
 const cell = 'block px-4 sm:table-cell sm:py-3'
 /** The column name, said on the block that has no column. */
 const said = 'text-ink-500 sm:hidden'
@@ -563,6 +834,64 @@ const said = 'text-ink-500 sm:hidden'
           Nothing changed. Every date you sent was already the one on file.
         </p>
       ))
+  }
+
+  {/*
+    THE ANSWER, BEFORE ANYTHING IS SCROLLED.
+
+    First in the page body, above the record and above the rail, because it is
+    the sentence the truck was opened for. Everything under it — the circle, the
+    timeline, the boxes — is the evidence for this one line.
+
+    The grey line is not a footnote to it. A date we do not hold carries the same
+    exposure as one that has run out (`STANDING_RANK` in src/lib/rules/index.ts
+    puts the two together), so it is never added into the number above it and
+    never left off the screen.
+  */}
+  {
+    headline && (
+      <section
+        class:list={[
+          'mb-6 rounded-xl border border-ink-100 border-l-4 bg-white p-5',
+          MARK_STYLE[headline.tone].edge,
+        ]}
+      >
+        <h2 class="text-xs tracking-wide text-ink-500 uppercase">{headline.label}</h2>
+        <p
+          class:list={[
+            'mt-1 text-3xl font-semibold tracking-tight sm:text-4xl',
+            MARK_STYLE[headline.tone].big,
+          ]}
+        >
+          {headline.big}
+        </p>
+        <p class="mt-1 max-w-2xl text-sm">
+          <span class="font-medium">{headline.what}</span>
+          {headline.when && <span class="text-ink-500"> · {headline.when}</span>}
+        </p>
+
+        {/* Not printed twice: when the big number above IS the missing count,
+            this line would be the same sentence said again in a smaller font. */}
+        {missingDates > 0 && headline.tone !== 'nodate' && (
+          <p class="mt-3 rounded-lg bg-ink-50 px-3 py-2 text-sm text-ink-700">
+            <span class="tabular-nums">{missingDates}</span>
+            {missingDates === 1 ? ' date is' : ' dates are'} not on file. We cannot say when{' '}
+            {missingDates === 1 ? 'it is' : 'they are'} due until you put{' '}
+            {missingDates === 1 ? 'it' : 'them'} in.
+            <a href={addDatesHref} class="ml-1 font-medium text-brand-600 hover:underline">
+              Put the dates in →
+            </a>
+          </p>
+        )}
+        {headline.tone === 'nodate' && (
+          <p class="mt-3">
+            <a href={addDatesHref} class="text-sm font-medium text-brand-600 hover:underline">
+              Put the dates in →
+            </a>
+          </p>
+        )}
+      </section>
+    )
   }
 
   {/*
@@ -941,15 +1270,158 @@ const said = 'text-ink-500 sm:hidden'
   <!-- ------------------------------------------------------------- dates -->
 
   <section id="dates" class="mt-8 scroll-mt-24">
-    <form method="POST" class="space-y-4">
-      <div>
-        <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
-        <p class="mt-1 max-w-3xl text-sm text-ink-500">
-          Every box below wants the <strong>last time it happened</strong>, not the next time it
-          is due. We count forward from the date you type. A date in the future makes us skip
-          past the deadline you were trying to tell us about.
-        </p>
-      </div>
+    <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
+
+    {/*
+      THE TIMELINE REPLACED THE OPEN FORM THAT USED TO BE HERE.
+
+      The boxes are still one tap away, below. What sat on this page before was
+      about a thousand pixels of date fields on a screen an owner opens to find
+      out when the next inspection lands — the reading buried under the typing.
+      Every row here is one obligation, in the engine's own order, with the mark
+      it earned and the date it turns on.
+
+      There is no map on this page and there will not be one. Where a truck has
+      BEEN is not a compliance fact, and this is the screen where somebody would
+      think to put it. See docs/product/SCOPE.md.
+    */}
+    {
+      timeline.length > 0 && (
+        <Figure
+          class="mt-3"
+          title={`${timeline.length} ${timeline.length === 1 ? 'thing' : 'things'} we track for this ${vehicle.kind === 'trailer' ? 'trailer' : 'truck'}`}
+          subtitle="Past its date first, then the dates we do not have, then the soonest."
+          coverage={COVERAGE_NOTE}
+          action={{ href: addDatesHref, label: 'Put a date in' }}
+        >
+          <ol>
+            {onTheClock.map((r, n) => (
+              <li class="relative flex gap-3 pb-4 last:pb-0">
+                {/* The spine. Never under the last dot — a line running off the
+                    bottom of a list reads as a row that failed to load. */}
+                {n < onTheClock.length - 1 && (
+                  <span
+                    class="absolute top-6 bottom-0 left-[10px] w-px bg-ink-100"
+                    aria-hidden="true"
+                  />
+                )}
+                <span
+                  class:list={[
+                    'relative flex size-[22px] shrink-0 items-center justify-center rounded-full',
+                    MARK_STYLE[r.mark].dot,
+                  ]}
+                  aria-hidden="true"
+                >
+                  {MARK_ICON[r.mark] && (
+                    <svg
+                      viewBox="0 0 16 16"
+                      class="size-3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d={MARK_ICON[r.mark]} />
+                    </svg>
+                  )}
+                </span>
+                <div class="min-w-0 flex-1">
+                  <p class="text-sm font-medium">{r.item.rule.title}</p>
+                  <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                    {/* The word, always, beside the colour. */}
+                    <span
+                      class:list={[
+                        'rounded-md px-1.5 py-0.5 font-medium',
+                        MARK_STYLE[r.mark].pill,
+                      ]}
+                    >
+                      {r.mark === 'act' ? lateWords(r.item) : MARK_WORD[r.mark]}
+                    </span>
+                    <span class="text-ink-500">{detailOf(r.item, r.mark)}</span>
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ol>
+
+          {/*
+            DECLARED, THEN FOLDED — never dropped, and never given a colour off
+            the urgency scale. Amber means time and only time; these will still
+            be here next year. `details` opens on a tap and from the keyboard on
+            its own, which is the whole disclosure mechanism this app has.
+          */}
+          {noSchedule.length > 0 && (
+            <details class="mt-1 border-t border-ink-100 pt-3">
+              <summary class="cursor-pointer text-xs text-ink-500 select-none">
+                <span class="tabular-nums">{noSchedule.length}</span>
+                {noSchedule.length === 1 ? ' more duty has' : ' more duties have'} no date anyone
+                can work out
+              </summary>
+              <ul class="mt-3 space-y-3">
+                {noSchedule.map((r) => (
+                  <li class="flex gap-3">
+                    <span
+                      class:list={[
+                        'flex size-[22px] shrink-0 items-center justify-center rounded-full',
+                        MARK_STYLE.read.dot,
+                      ]}
+                      aria-hidden="true"
+                    >
+                      <svg
+                        viewBox="0 0 16 16"
+                        class="size-3.5"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d={MARK_ICON.read} />
+                      </svg>
+                    </span>
+                    <div class="min-w-0 flex-1">
+                      <p class="text-sm font-medium">{r.item.rule.title}</p>
+                      <p class="mt-1 text-xs text-ink-500">{r.item.status.reason}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </Figure>
+      )
+    }
+
+    <details open={datesOpen} id="add-dates" class="group mt-4 scroll-mt-24">
+      <summary
+        class="flex cursor-pointer list-none items-center gap-3 rounded-xl border border-ink-100 bg-white p-4 select-none [&::-webkit-details-marker]:hidden"
+      >
+        <h3 class={cardHeading}>Put a date in, or change one</h3>
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          class="size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180"
+        >
+          <path d="M5 8l5 5 5-5"></path>
+        </svg>
+        <span class="ml-auto text-sm font-medium text-brand-600 group-open:hidden">
+          <span class="tabular-nums">{anchors.length}</span>
+          {anchors.length === 1 ? ' box' : ' boxes'}
+        </span>
+      </summary>
+
+      <form method="POST" class="mt-4 space-y-4">
+      <p class="max-w-3xl text-sm text-ink-500">
+        Every box below wants the <strong>last time it happened</strong>, not the next time it
+        is due. We count forward from the date you type. A date in the future makes us skip
+        past the deadline you were trying to tell us about.
+      </p>
 
       {
         weightUnknown && (
@@ -1041,7 +1513,8 @@ const said = 'text-ink-500 sm:hidden'
           Save dates
         </button>
       </div>
-    </form>
+      </form>
+    </details>
   </section>
 
   <!-- --------------------------------------------------------- documents -->

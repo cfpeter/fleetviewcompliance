@@ -8,9 +8,12 @@
  * and works on a phone with one bar of signal in a yard — which is where this
  * screen actually gets used.
  */
+import Figure from '../../../components/charts/Figure.astro'
 import Ring from '../../../components/charts/Ring.astro'
 import App from '../../../layouts/App.astro'
+import { monthBuckets } from '../../../lib/charts/scale.ts'
 import {
+  COVERAGE_NOTE,
   fleetLine,
   rowLine,
   TRAILER_NOTE,
@@ -20,7 +23,7 @@ import {
 import { loadDeadlines } from '../../../lib/deadlines.ts'
 import { isActiveVehicle } from '../../../lib/fleet/active.ts'
 import { removedMessage } from '../../../lib/fleet/remove.ts'
-import type { DeadlineItem } from '../../../lib/rules/index.ts'
+import { type DeadlineItem, SOON_DAYS } from '../../../lib/rules/index.ts'
 import {
   byUnitNumber,
   gvwrReading,
@@ -148,6 +151,208 @@ const answer = fleetLine(rings)
 // Counted rather than assumed: the caveat is only true of the rows on screen.
 const unscored = shown.length - rings.length
 const showsTrailers = shown.some((v) => v.kind === 'trailer')
+
+/**
+ * THE DUE STRIP: one row per unit, one column per month, three months out.
+ *
+ * The table below answers "what is wrong with this unit". It cannot answer the
+ * one an owner asks in the same breath — "what does the yard owe the calendar
+ * between now and Christmas" — because that answer is a shape, and a shape made
+ * of forty rows is only visible by reading all forty and holding them in your
+ * head. Four inspections landing in the same month is a bad month whether or
+ * not any single one of them is alarming on its own.
+ *
+ * FOUR COLUMNS OF THE FIVE ARE MONTHS; THE FIRST TWO ARE NOT, AND THAT IS THE
+ * WHOLE POINT. A calendar can only hold things that have a date. Something
+ * already past its date has no future month to sit in, and something nobody has
+ * typed a date for has none either — on day one that is most of the yard. Drawn
+ * as months alone, the fleet with eleven late inspections and thirty undated
+ * ones gets three empty columns: the calmest picture in the app, shown to the
+ * fleet that is most exposed. So "Overdue" and "No date" stand at the left of
+ * the same strip, ahead of the months, and are counted first. The runway on the
+ * dashboard has carried its own block on the left for the same reason — see the
+ * header of src/lib/charts/runway.ts.
+ *
+ * The buckets are `buildHealth`'s, decided in `buildHealth`'s order: standing
+ * first, and only then the number of days. See `dueMarks`.
+ */
+const stripMonths = monthBuckets(
+  observedAt,
+  new Date(Date.UTC(observedAt.getUTCFullYear(), observedAt.getUTCMonth() + 2, 1)),
+)
+
+/** Sorts after every real countdown, without the NaN that `Infinity - Infinity` gives. */
+const NOTHING_DATED = 100_000
+
+interface DueMark {
+  /** Which of the four meanings this cell carries. Never colour alone — see the legend. */
+  tone: 'act' | 'nodate' | 'soon' | 'ok'
+  count: number
+  /** Said in words for a reader who gets no colour at all. */
+  said: string
+}
+
+interface DueRow {
+  id: string
+  label: string
+  marks: DueMark[]
+  /** Sort keys, worst first. */
+  overdue: number
+  noDate: number
+  soonest: number
+  drawn: number
+}
+
+/** How many dated items fall past the right edge of the strip. Declared, never dropped. */
+let beyondStrip = 0
+
+/**
+ * One unit's row.
+ *
+ * A NEGATIVE COUNTDOWN IS NOT "COMING UP", and both sides of zero are guarded
+ * here. A one-time duty that is already done comes back `current` with no next
+ * date at all, and a computed one can come back `current` with a date behind us.
+ * Neither is a gap and neither is a deadline: both are finished, so neither is
+ * drawn and neither is counted as missing. Bucketing on the number of days
+ * before the standing is the bug that has shipped in this codebase before.
+ */
+function dueMarks(items: readonly DeadlineItem[]): {
+  marks: DueMark[]
+  overdue: number
+  noDate: number
+  soonest: number
+} {
+  let overdue = 0
+  let noDate = 0
+  let soonest = NOTHING_DATED
+  const months = stripMonths.map(() => ({ count: 0, tone: 'ok' as 'soon' | 'ok' }))
+
+  for (const i of items) {
+    const standing = i.status.standing
+    // A duty with no schedule anybody can work out is not late, not coming up
+    // and not a missing date. It has no cell here; the unit's own page names it.
+    if (standing === 'unsupported' || standing === 'not_applicable') continue
+    if (standing === 'overdue') {
+      overdue++
+      continue
+    }
+    if (standing === 'unknown') {
+      noDate++
+      continue
+    }
+
+    const due = i.status.nextDue
+    const days = i.daysUntil
+    if (!due || days === undefined || days < 0) continue
+
+    const at = stripMonths.findIndex((m) => due >= m.start && due < m.end)
+    if (at < 0) {
+      beyondStrip++
+      continue
+    }
+    months[at].count++
+    // Amber wins the cell: a month holding one thing due inside 45 days and one
+    // due at the end of it is an amber month, not a green one.
+    if (days <= SOON_DAYS) months[at].tone = 'soon'
+    if (days < soonest) soonest = days
+  }
+
+  const marks: DueMark[] = [
+    { tone: 'act', count: overdue, said: 'overdue' },
+    { tone: 'nodate', count: noDate, said: 'with no date on file' },
+    ...months.map((m, n) => ({
+      tone: m.tone,
+      count: m.count,
+      said: `due in ${stripMonths[n].label}`,
+    })),
+  ]
+
+  return { marks, overdue, noDate, soonest }
+}
+
+/**
+ * Only the units with something in the window, and only when nothing is being
+ * searched for.
+ *
+ * A strip of empty rows teaches the owner to skip the strip, and pushing the
+ * rows somebody has just searched for further down the page undoes the reason
+ * the search exists. What is left out is counted and said underneath, so an
+ * absent row never reads as a unit with nothing to do.
+ */
+const STRIP_ROWS = 12
+
+const allDueRows: DueRow[] = shown
+  .filter((v) => ringByVehicle.has(v.id))
+  .map((v) => {
+    const counted = dueMarks(byVehicle.get(v.id) ?? [])
+    return {
+      id: v.id,
+      label: vehicleLabel(v),
+      marks: counted.marks,
+      overdue: counted.overdue,
+      noDate: counted.noDate,
+      soonest: counted.soonest,
+      drawn: counted.marks.reduce((n, m) => n + m.count, 0),
+    }
+  })
+
+const withSomething = allDueRows
+  .filter((r) => r.drawn > 0)
+  // Worst first: late, then the dates we do not hold, then the soonest real
+  // date. `shown` is already in unit-number order, and the sort is stable, so
+  // two units with the same story stay in the order the table below lists them.
+  .sort((a, b) => b.overdue - a.overdue || b.noDate - a.noDate || a.soonest - b.soonest)
+
+const dueRows = withSomething.slice(0, STRIP_ROWS)
+const quietUnits = allDueRows.length - withSomething.length
+const stripHidden = withSomething.length - dueRows.length
+const lastMonth = stripMonths[stripMonths.length - 1]?.label ?? ''
+
+// The strip is drawn from the units on screen, so the caveats have to be too.
+const stripCaveats = [
+  COVERAGE_NOTE,
+  `Only what is due by the end of ${lastMonth}.${
+    beyondStrip > 0 ? ` ${beyondStrip} dated ${beyondStrip === 1 ? 'item is' : 'items are'} further out.` : ''
+  }`,
+  quietUnits > 0
+    ? `${quietUnits} ${quietUnits === 1 ? 'unit has' : 'units have'} nothing in these three months, so ${quietUnits === 1 ? 'it is' : 'they are'} not on the strip.`
+    : '',
+  stripHidden > 0
+    ? `${stripHidden} more ${stripHidden === 1 ? 'unit is' : 'units are'} not shown here. The table below has every one of them.`
+    : '',
+].filter(Boolean)
+
+/**
+ * The answer, not the name of the chart — and it names all three columns the
+ * strip is made of. "Something due in the next three months" would be the
+ * months only, and would read as though the two columns in front of them were
+ * part of the same claim.
+ */
+const stripTitle = `${withSomething.length} of ${allDueRows.length} ${
+  allDueRows.length === 1 ? 'unit has' : 'units have'
+} something late, missing, or due by ${lastMonth}`
+
+/** The dot in a cell. Grey is an absence, so it is drawn as an outline, never as a fill. */
+const DUE_DOT: Record<DueMark['tone'], string> = {
+  act: 'bg-red-500',
+  nodate: 'border border-dashed border-ink-300',
+  soon: 'bg-amber-500',
+  ok: 'bg-emerald-500',
+}
+const DUE_TEXT: Record<DueMark['tone'], string> = {
+  act: 'text-red-700',
+  nodate: 'text-ink-500',
+  soon: 'text-amber-800',
+  ok: 'text-emerald-800',
+}
+/** Colour is never the only carrier. This is the same table, in words. */
+const DUE_LEGEND: readonly { tone: DueMark['tone']; label: string }[] = [
+  { tone: 'act', label: 'Overdue' },
+  { tone: 'nodate', label: 'No date on file' },
+  { tone: 'soon', label: 'Due within 45 days' },
+  { tone: 'ok', label: 'Later' },
+]
+const stripHeadings = ['Overdue', 'No date', ...stripMonths.map((m) => m.label)]
 
 // The add button carries the segment you are standing on, so "Add" from the
 // Trailers tab pre-selects trailer instead of making that choice twice.
@@ -323,6 +528,99 @@ const said = 'text-ink-500 sm:hidden'
             </span>
           )}
         </p>
+
+        {/*
+          THE STRIP SITS ABOVE THE TABLE AND IS KEPT SHORT ON PURPOSE.
+          docs/charts.md: a work surface leads with its rows, so every line here
+          is earning its height against the first truck being pushed down a
+          phone screen. Twelve rows at a time, none of them empty, and nothing
+          at all while a search is on screen.
+        */}
+        {
+          !q && dueRows.length > 0 && (
+            <Figure
+              title={stripTitle}
+              subtitle="Each dot is something due that month. The first two columns are not months."
+              coverage={stripCaveats}
+              class="mb-4"
+            >
+              <div class="-mx-1 overflow-x-auto px-1">
+                <table class="w-full text-xs">
+                  <thead>
+                    <tr class="text-ink-500">
+                      <th scope="col" class="py-1 pr-3 text-left font-medium">
+                        Unit
+                      </th>
+                      {stripHeadings.map((h) => (
+                        <th
+                          scope="col"
+                          class="px-1 pb-1 text-center font-medium whitespace-nowrap"
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-ink-100">
+                    {dueRows.map((r) => (
+                      <tr>
+                        <th scope="row" class="max-w-[9rem] py-1 pr-3 text-left font-medium">
+                          <a
+                            href={`/app/vehicles/${r.id}`}
+                            class="block truncate py-1.5 hover:text-brand-600 hover:underline"
+                          >
+                            {r.label}
+                          </a>
+                        </th>
+                        {r.marks.map((m) => (
+                          <td class="px-1 text-center">
+                            {m.count > 0 ? (
+                              <span class="inline-flex items-center gap-1">
+                                <span
+                                  class:list={['size-2.5 shrink-0 rounded-full', DUE_DOT[m.tone]]}
+                                  aria-hidden="true"
+                                />
+                                <span
+                                  class:list={['font-medium tabular-nums', DUE_TEXT[m.tone]]}
+                                  aria-hidden="true"
+                                >
+                                  {m.count}
+                                </span>
+                                {/* The colour carries nothing on its own, so the
+                                    cell says the whole thing in words for a
+                                    reader who never sees it. */}
+                                <span class="sr-only">
+                                  {m.count} {m.said}
+                                </span>
+                              </span>
+                            ) : (
+                              <span class="text-ink-200">
+                                <span aria-hidden="true">·</span>
+                                <span class="sr-only">none</span>
+                              </span>
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-500">
+                {DUE_LEGEND.map((l) => (
+                  <li class="flex items-center gap-1.5 whitespace-nowrap">
+                    <span
+                      class:list={['size-2 shrink-0 rounded-full', DUE_DOT[l.tone]]}
+                      aria-hidden="true"
+                    />
+                    {l.label}
+                  </li>
+                ))}
+              </ul>
+            </Figure>
+          )
+        }
 
         <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
         <table class="w-full text-sm sm:min-w-[56rem]">
