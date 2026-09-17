@@ -24,7 +24,7 @@ import {
   viewNoun,
   visibleSections,
 } from '../src/lib/dashboard.ts'
-import { dueLine } from '../src/lib/rules/index.ts'
+import { dueLine, evaluate } from '../src/lib/rules/index.ts'
 
 const VIEWS: readonly DashboardView[] = ['all', 'overdue', 'unknown', 'soon']
 
@@ -230,6 +230,62 @@ test('a current row keeps its countdown — that is the one standing that earns 
     daysUntil: 45,
   })
   assert.equal(line, 'Oct 31, 2026 · in 45 days')
+})
+
+test('a finished one-time obligation reads as done, not as a backwards countdown', () => {
+  /**
+   * The row this was reported on: "Feb 15, 2021 · 2040 days ago", under a green
+   * "Current" pill, for a road test the driver passed the week he was hired.
+   *
+   * A countdown only ever runs one way on this screen, so an owner reads that
+   * line as a deadline receding into the past — the same shape the overdue rows
+   * carry, in the colour that means everything is fine. It came from `status`
+   * handing back the hire date as a FUTURE due date; see ../src/lib/rules/compute.ts.
+   *
+   * Now there is no date, because there is no next occurrence. What replaces it
+   * has to say DONE, and it specifically must not say "no date yet": that line
+   * is addressed to the owner and means we are waiting on him, and printing it
+   * against a finished road test invents a gap in a file that has none.
+   */
+  const line = dueLine({ status: { standing: 'current' } })
+
+  assert.ok(!/\d{4}/.test(line), `a finished obligation showed a date: ${line}`)
+  assert.ok(!/\bago\b/.test(line), `the backwards countdown survived: ${line}`)
+  assert.ok(!/\bin \d+ days\b|\btoday\b|\btomorrow\b/.test(line), `a countdown: ${line}`)
+  assert.ok(!line.includes('no date yet'), `a finished obligation read as a gap: ${line}`)
+  assert.equal(line, 'done · nothing more due')
+
+  // And the same thing again through the engine, so this test fails if `status`
+  // ever starts handing back the hire date as a due date again. The assertion
+  // above only pins the wording; this one pins the row an owner actually sees.
+  const real = evaluate(
+    [
+      {
+        type: 'driver',
+        id: 'd1',
+        label: 'Miguel Arellano',
+        context: { carrierOperation: 'A', cdl: true },
+        anchors: { hire_date: at('2021-02-15') },
+        lastDone: { road_test_or_equivalent: at('2021-02-15') },
+      },
+    ],
+    at('2026-09-17'),
+  ).find((i) => i.rule.code === 'road_test_or_equivalent')
+
+  assert.ok(real)
+  assert.equal(dueLine(real), 'done · nothing more due')
+  assert.ok(
+    !dueLine(real).includes('2021'),
+    'the reported row printed "Feb 15, 2021 · 2040 days ago"',
+  )
+})
+
+test('"no date yet" still belongs to the rows that are actually waiting on him', () => {
+  // The other side of the arm above. Both are dateless; only one is a gap. If
+  // the `current` check ever widens to every dateless row, the question the
+  // "We need a date from you" section asks disappears from it.
+  assert.equal(dueLine({ status: { standing: 'unknown', needs: ['hire_date'] } }), 'no date yet')
+  assert.equal(dueLine({ status: { standing: 'unsupported' } }), 'no date yet')
 })
 
 test('an overdue row counts backward from what was missed, not forward', () => {

@@ -33,6 +33,7 @@ import {
   weekStart,
   widthPercent,
 } from '../src/lib/charts/scale.ts'
+import { evaluate } from '../src/lib/rules/index.ts'
 
 const utc = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d))
 
@@ -245,7 +246,7 @@ test('what is already behind him is counted, never dropped off the timeline', ()
   assert.equal(r.undated, 30)
   assert.equal(r.scheduled, 0)
   assert.equal(
-    r.overdue + r.undated + r.scheduled + r.beyond + r.unschedulable,
+    r.overdue + r.undated + r.settled + r.beyond + r.unschedulable + r.scheduled,
     items.length,
     'every item must be accounted for somewhere',
   )
@@ -261,6 +262,62 @@ test("an unknown carrying a computed next date is still 'no date'", () => {
   assert.equal(r.scheduled, 0)
 })
 
+test('a finished one-time obligation is not stacked in with the real gaps', () => {
+  /**
+   * The counterpart to the test above, and the opposite failure.
+   *
+   * A one-time obligation that has been satisfied — the road test, the
+   * hire-time MVR — has no next occurrence, so `status` returns it `current`
+   * with no date. "No date" is the same shape as the undated gaps, and one line
+   * of this function separates them. If it ever stops separating them, the
+   * block at the left edge of the axis — which this module's header calls the
+   * first thing on the chart — fills up with completed paperwork, under a
+   * caption that reads "have no date yet".
+   */
+  const r = buildRunway([{ standing: 'current' }], today)
+
+  assert.equal(r.settled, 1)
+  assert.equal(r.undated, 0, 'a finished obligation is not a missing date')
+  assert.equal(r.overdue, 0, 'a finished obligation is not past due')
+  assert.equal(r.scheduled, 0, 'there is nothing to draw on a week')
+})
+
+test('a finished one-time obligation is never drawn as overdue, however old', () => {
+  /**
+   * The regression in its original shape. Before `status` stopped handing back
+   * the hire date as a future due date, a road test passed in 2021 arrived here
+   * as `current` with `nextDue` five years in the past, fell into the `t < day`
+   * arm, and was counted OVERDUE. The chart that exists so a bad month cannot
+   * hide was reporting finished paperwork as past due, and the number it
+   * inflated is the one rendered biggest and linked to a filter.
+   *
+   * Asserted through the engine rather than a hand-built fixture, because the
+   * hand-built fixture is what let this through: the bug was in what `status`
+   * produced, not in what the chart did with a well-formed item.
+   */
+  const items = evaluate(
+    [
+      {
+        type: 'driver',
+        id: 'd1',
+        label: 'Miguel Arellano',
+        context: { carrierOperation: 'A', cdl: true },
+        anchors: { hire_date: utc(2021, 2, 15) },
+        lastDone: { road_test_or_equivalent: utc(2021, 2, 15) },
+      },
+    ],
+    today,
+  ).filter((i) => i.rule.code === 'road_test_or_equivalent')
+
+  assert.equal(items.length, 1)
+  const r = buildRunway(
+    items.map((i) => ({ standing: i.status.standing, nextDue: i.status.nextDue })),
+    today,
+  )
+  assert.equal(r.overdue, 0, 'a road test passed five years ago is not past due')
+  assert.equal(r.settled, 1)
+})
+
 test('nothing is silently discarded, whatever standing it carries', () => {
   const items: RunwayItem[] = [
     { standing: 'current', nextDue: utc(2026, 9, 17) },
@@ -270,7 +327,7 @@ test('nothing is silently discarded, whatever standing it carries', () => {
     { standing: 'overdue' },
   ]
   const r = buildRunway(items, today)
-  assert.equal(r.scheduled + r.beyond + r.unschedulable + r.overdue + r.undated, 4)
+  assert.equal(r.scheduled + r.beyond + r.unschedulable + r.overdue + r.undated + r.settled, 4)
   assert.equal(r.beyond, 1)
   assert.equal(r.unschedulable, 1)
 })

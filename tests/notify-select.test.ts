@@ -11,7 +11,7 @@ import {
   splitForQuietHours,
 } from '../src/lib/notify/select.ts'
 import { utcDate } from '../src/lib/rules/dates.ts'
-import type { DeadlineItem } from '../src/lib/rules/index.ts'
+import { type DeadlineItem, evaluate } from '../src/lib/rules/index.ts'
 
 const TODAY = utcDate(2026, 9, 15)
 
@@ -84,6 +84,69 @@ test('the most urgent reached window wins, not every reached one', () => {
 
 test('overdue reaches the negative window', () => {
   assert.equal(reachedWindow(-3, [30, 7, 1, -1]), -1)
+})
+
+test('a finished one-time obligation never earns a message, on any channel', () => {
+  /**
+   * The worst reachable form of one bug, and the reason it was fixed in
+   * `status` rather than in each chart that tripped over it.
+   *
+   * A one-time obligation anchored to employment used to come back `current`
+   * with the HIRE DATE as its next due date, so a road test passed in 2021
+   * arrived here with `daysUntil` around -2040. Every comparison against a
+   * window is then true:
+   *
+   *   reachedWindow(-2040, [30, 7, 1, -1]) === -1   — the overdue nag fires
+   *   deservesSms(-2040)                   === true — and it goes out by TEXT,
+   *                                                   which `isCritical` lets
+   *                                                   through quiet hours
+   *
+   * So a carrier signing up on a Sunday night would have been woken by texts
+   * about paperwork his drivers completed years ago. The dashboard's amber tile
+   * was the visible symptom of the same arithmetic; this was the expensive one,
+   * and it is the one that leaves the building.
+   *
+   * Both halves are asserted. The guard above (`daysUntil === undefined`) is
+   * what catches it now, but the reason it catches it is that `status` stopped
+   * inventing the date — so the raw window arithmetic is pinned too, to say
+   * plainly that it is NOT what makes this safe.
+   */
+  // Built by the ENGINE, not by hand. A hand-built item would assert only that
+  // the `daysUntil === undefined` guard below works, and would go on passing if
+  // `status` started inventing the hire date again — which is precisely how
+  // this reached production while four other call sites were being patched.
+  const done = evaluate(
+    [
+      {
+        type: 'driver',
+        id: 'd1',
+        label: 'Miguel Arellano',
+        context: { carrierOperation: 'A', cdl: true },
+        anchors: { hire_date: utcDate(2021, 2, 15) },
+        lastDone: { road_test_or_equivalent: utcDate(2021, 2, 15) },
+      },
+    ],
+    TODAY,
+  ).find((i) => i.rule.code === 'road_test_or_equivalent')
+
+  assert.ok(done, 'the road test must still be on the list')
+  assert.equal(done.status.standing, 'current', 'it is done')
+  assert.equal(done.daysUntil, undefined, 'a satisfied one-time has no countdown')
+  assert.equal(done.status.nextDue, undefined, 'and no next date')
+
+  assert.deepEqual(
+    run([done], { preferences: [pref({ channel: 'email' }), pref({ channel: 'sms' })] }),
+    [],
+    'a completed obligation was queued for delivery',
+  )
+  assert.equal(deservesSms(done), false, 'and it must not read as critical')
+  assert.equal(isCritical(done), false)
+
+  // The arithmetic this used to be fed. Left here deliberately: it still says
+  // yes, and always will — the past passes every window. Nothing may rely on
+  // `reachedWindow` to reject a finished item.
+  assert.equal(reachedWindow(-2040, [30, 7, 1, -1]), -1)
+  assert.equal(deservesSms({ status: { standing: 'current' }, daysUntil: -2040 }), true)
 })
 
 // ---------------------------------------------------------------- selection

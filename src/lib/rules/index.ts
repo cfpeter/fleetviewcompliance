@@ -231,6 +231,24 @@ const countdown = (days: number) => {
 export function dueLine(item: { status: Status; daysUntil?: number }): string {
   const s = item.status
   if (s.standing === 'overdue') return `was due ${onDate(s.lastDue ?? s.nextDue)}`
+  // A `current` row with no next date is a one-time obligation already
+  // satisfied — the road test, the hire-time MVR, the pre-employment
+  // Clearinghouse query. It is DONE, which is the opposite of the line below.
+  //
+  // This arm has to come first, and the ordering is the whole point. "no date
+  // yet" is addressed to the owner: it means we are waiting on him. Printed
+  // against a finished road test it invents a gap in a file that has none, and
+  // it would do so on the proof packet a broker reads.
+  //
+  // It replaces "Feb 15, 2021 · 2054 days ago", which is what this printed
+  // while `status` still handed back the hire date as a future due date: a
+  // countdown running backwards, under a green "Current" pill. See the note in
+  // ./compute.ts for why that date is no longer produced at all.
+  //
+  // No date is shown because there is no date to show. The one we used to print
+  // was the DEADLINE, not the day he did it, so nothing he would recognise has
+  // been taken away — the completion itself lives on the driver's own page.
+  if (s.standing === 'current' && !s.nextDue) return 'done · nothing more due'
   if (!s.nextDue) return 'no date yet'
   if (s.standing === 'unknown') return `${onDate(s.nextDue)} · we have no record of the last one`
   // The countdown is reserved for `current`, where the date is known AND the

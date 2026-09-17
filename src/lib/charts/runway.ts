@@ -43,6 +43,15 @@ export interface Runway {
   overdue: number
   /** No date at all — same exposure as overdue, per the ranking in rules/index.ts. */
   undated: number
+  /**
+   * Done, with nothing further due — a one-time obligation already satisfied.
+   *
+   * Counted rather than dropped so that `not_applicable` stays the ONE thing
+   * that legitimately vanishes from this chart, and never drawn, because there
+   * is no date to place and nothing for him to do. It is the only field here
+   * that is not a call on his attention.
+   */
+  settled: number
   /** Dated, but past the end of the horizon. */
   beyond: number
   /** Real obligations with no computable schedule. Counted so the caption can say so. */
@@ -82,6 +91,7 @@ export function buildRunway(items: readonly RunwayItem[], today: Date, horizonWe
 
   let overdue = 0
   let undated = 0
+  let settled = 0
   let beyond = 0
   let unschedulable = 0
   let scheduled = 0
@@ -94,6 +104,27 @@ export function buildRunway(items: readonly RunwayItem[], today: Date, horizonWe
     }
     if (item.standing === 'overdue') {
       overdue++
+      continue
+    }
+    if (item.standing === 'current' && !item.nextDue) {
+      // DONE IS NOT UNDATED, and this arm exists only to keep those two apart.
+      //
+      // A one-time obligation that has been satisfied — the road test, the
+      // hire-time MVR — has no next occurrence, so `status` returns no date for
+      // it. Without this it would fall into `undated` one line below and be
+      // drawn in the block at the left edge of the axis, which this file's own
+      // header calls the first thing on the chart. Eighteen finished items
+      // would be stacked there beside the real gaps, under a caption reading
+      // "have no date yet".
+      //
+      // Before `status` stopped inventing a due date it was worse: the hire
+      // date came back as `nextDue`, landed in the `t < day` arm below, and was
+      // counted OVERDUE. The chart that exists so a bad month cannot hide was
+      // reporting completed paperwork as past due.
+      //
+      // `unknown` is checked after this and is unaffected: it never reaches
+      // here, because its own arm takes it whether or not it carries a date.
+      settled++
       continue
     }
     if (item.standing === 'unknown' || !item.nextDue) {
@@ -133,6 +164,7 @@ export function buildRunway(items: readonly RunwayItem[], today: Date, horizonWe
     weeks,
     overdue,
     undated,
+    settled,
     beyond,
     unschedulable,
     scheduled,

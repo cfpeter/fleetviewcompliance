@@ -191,3 +191,92 @@ test('a hire date on the driver row gives the hire-time rules a real deadline', 
   const mvr = withHire.find((i) => i.rule.code === 'mvr_inquiry_at_hire')
   assert.equal(mvr?.status.nextDue?.toISOString().slice(0, 10), '2026-08-31')
 })
+
+test('a satisfied one-time obligation reports no next date at all', () => {
+  /**
+   * WHERE A FINISHED ONE-TIME OBLIGATION BELONGS, decided once, here, because
+   * deciding it in each consumer is what produced four copies of one bug.
+   *
+   * A one-time obligation anchored to employment — the road test, the hire-time
+   * MVR, the pre-employment Clearinghouse query — was due on a day that is in
+   * the past for everybody who already works here, and can never have a future
+   * occurrence. `status` used to return that past day as `nextDue`, which is a
+   * field whose own comment promises the next occurrence IN THE FUTURE.
+   *
+   * `evaluate` turned it into `daysUntil` ≈ -2040, and the past passes every
+   * window anybody compares it to. That one invented date put twenty finished
+   * items in the amber "Due in 45 days" arc, printed "Expires soon" forever on
+   * a clean qualification binder, drew completed paperwork as OVERDUE on the
+   * runway, and queued a text message about a road test passed five years ago.
+   *
+   * The standing stays `current` — it is done, and green is the bucket with
+   * nothing in it for the owner to do. What goes is the date, because there
+   * isn't one. A consumer that skips undated rows, or defaults a missing
+   * `daysUntil` to +Infinity, is now correct without knowing this case exists.
+   */
+  const run = (lastDone: Record<string, Date> | undefined) =>
+    evaluate(
+      [
+        {
+          type: 'driver',
+          id: 'd1',
+          label: 'Miguel Arellano',
+          context: { carrierOperation: 'A', cdl: true },
+          anchors: { hire_date: utcDate(2021, 2, 15) },
+          lastDone,
+        },
+      ],
+      TODAY,
+    )
+
+  const ONE_TIME = [
+    'road_test_or_equivalent',
+    'clearinghouse_query_pre_employment',
+    'mvr_inquiry_at_hire',
+    'dqf_maintained',
+  ]
+  const done = Object.fromEntries(ONE_TIME.map((c) => [c, utcDate(2021, 2, 15)]))
+
+  for (const code of ONE_TIME) {
+    const i = run(done).find((x) => x.rule.code === code)
+    assert.ok(i, `${code} must still appear — it is evidence the file is complete`)
+    assert.equal(i.status.standing, 'current', `${code} is done`)
+    assert.equal(i.status.nextDue, undefined, `${code} invented a due date in the past`)
+    assert.equal(i.daysUntil, undefined, `${code} produced a countdown that runs backwards`)
+  }
+
+  // NOT a blanket rule about one-time obligations: it is about SATISFIED ones.
+  // With no completion on file the same rule is a real gap, keeps the deadline
+  // it was owed by, and goes on saying so. If this ever starts returning
+  // `current` the fix above has swallowed the question instead of answering it.
+  for (const code of ONE_TIME) {
+    const i = run(undefined).find((x) => x.rule.code === code)
+    assert.ok(i)
+    assert.equal(i.status.standing, 'unknown', `${code} must still be a gap when never done`)
+    assert.ok(i.status.nextDue, `${code} must keep the deadline it was owed by`)
+  }
+})
+
+test('a recurring rule still gets a real future date, however long it has been running', () => {
+  // The guard on the fix above is `lastDue === undefined`, which is the shape
+  // only a one-time schedule has. An interval rule always derives a previous
+  // occurrence, so it must be untouched — dropping ITS date would delete the
+  // renewal that is actually coming up.
+  const items = evaluate(
+    [
+      {
+        type: 'driver',
+        id: 'd1',
+        label: 'A Driver',
+        context: { carrierOperation: 'A', cdl: true },
+        anchors: { hire_date: utcDate(2021, 2, 15), annual_mvr_last_obtained: utcDate(2026, 6, 1) },
+        lastDone: { mvr_inquiry_annual: utcDate(2026, 6, 1) },
+      },
+    ],
+    TODAY,
+  )
+
+  const annual = items.find((i) => i.rule.code === 'mvr_inquiry_annual')
+  assert.ok(annual?.status.nextDue, 'an annual MVR must keep its next date')
+  assert.ok((annual.daysUntil ?? -1) > 0, 'and it must be ahead of us')
+})

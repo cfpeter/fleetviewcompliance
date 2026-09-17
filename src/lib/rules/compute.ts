@@ -256,5 +256,52 @@ export function status(rule: RuleDefinition, ctx: RuleContext, lastDone: Date | 
   if (lastDue && toUtcMidnight(lastDone) < lastDue) {
     return { standing: 'overdue', nextDue: outcome.on, lastDue }
   }
+
+  // A ONE-TIME OBLIGATION THAT IS DONE HAS NO NEXT DATE, so we do not invent one.
+  //
+  // `nextDue` means what its own comment says: the next occurrence IN THE
+  // FUTURE. A one-time obligation anchored to employment — the road test, the
+  // hire-time MVR, the pre-employment Clearinghouse query — was due on the day
+  // it was due, and for anybody who already works here that day is in the past.
+  // It cannot ever have a future occurrence. Returning the hire date as
+  // `nextDue` was therefore a date the field promises is ahead of us and is not.
+  //
+  // `evaluate` turns that into a large NEGATIVE `daysUntil`, and the past then
+  // passes every window anybody compares it to. That one invented date has cost
+  // the product the same bug in five separate places:
+  //
+  //   1. twenty finished items in the amber "Due in 45 days" arc
+  //   2. "Expires soon" printed forever on a clean qualification binder
+  //   3. the dashboard's own filter
+  //   4. the runway, where a past `nextDue` was counted OVERDUE, so completed
+  //      paperwork was drawn as past due on the chart that exists to stop a bad
+  //      month hiding
+  //   5. `reachedWindow` in src/lib/notify/select.ts — the one nobody had
+  //      caught — where -2040 reaches EVERY lead window and `deservesSms` reads
+  //      it as critical, so a road test passed five years ago earns a text
+  //      message that breaks through quiet hours
+  //
+  // The first three were fixed by teaching one more caller to distrust the
+  // number, which is what left 4 and 5 standing.
+  // This fixes the number. A consumer that skips undated rows, or that defaults
+  // a missing `daysUntil` to +Infinity, now gets the right answer without
+  // knowing this case exists — which is the only version of this that holds.
+  //
+  // The two callers that CANNOT be silent about it are the two for which "no
+  // date" already means "we need one from you": `dueLine` in ./index.ts and the
+  // `undated` arm of src/lib/charts/runway.ts. Both name this case explicitly.
+  //
+  // Scoped by `lastDue === undefined`, which is precisely the shape this is
+  // about: a schedule that cannot name an earlier occurrence, because it has
+  // only ever had one. See `registerOneTime` in ./federal-driver.ts for why
+  // those deliberately register no `previous` hook. An interval rule always
+  // derives a `lastDue` and never reaches here; an `expiry` whose date has
+  // passed is already `overdue` above. The standing stays `current` — it is
+  // done, there is nothing further due, and green is the bucket with nothing
+  // in it for the owner to do.
+  if (lastDue === undefined && outcome.on < today) {
+    return { standing: 'current' }
+  }
+
   return { standing: 'current', nextDue: outcome.on, lastDue }
 }
