@@ -450,12 +450,12 @@ const secondary =
         <h2 class="font-medium tracking-tight">Which trucks you pay for</h2>
         <dl class="mt-3 divide-y divide-ink-100 text-sm">
           <div class="flex justify-between gap-4 py-2.5">
-            <dt class="text-ink-500">Power units you pay for</dt>
+            <dt class="text-ink-500">Active power units — you pay for these</dt>
             <dd class="text-right font-medium tabular-nums">{breakdown.billable}</dd>
           </div>
           <div class="flex justify-between gap-4 py-2.5">
-            <dt class="text-ink-500">Trucks marked Sold — free</dt>
-            <dd class="text-right font-medium tabular-nums">{breakdown.sold}</dd>
+            <dt class="text-ink-500">Trucks not Active — free</dt>
+            <dd class="text-right font-medium tabular-nums">{breakdown.notActive}</dd>
           </div>
           <div class="flex justify-between gap-4 py-2.5">
             <dt class="text-ink-500">Trailers — free</dt>
@@ -466,10 +466,18 @@ const secondary =
           You pay for power units: trucks with an engine. Trailers are free. Drivers are free. Extra
           users are free.
         </p>
+        {/*
+          THE ONE SENTENCE THIS PAGE OWES THE OWNER, and it is both halves at
+          once. "It comes off your bill" alone reads as a saving with no cost
+          attached, and a man who parks a truck to save $6 has to hear in the
+          same breath that we stop watching its dates. src/lib/fleet/active.ts
+          is where the rule lives; this is where he reads it.
+        */}
         <p class="mt-2 text-xs text-ink-500">
-          When you sell a truck, mark it <span class="font-medium">Sold</span> on the truck page. We
-          stop billing it and we stop watching its dates. A truck that is parked or out of service
-          still costs ${site.pricing.perTruck}, because we still watch its dates for you.
+          Only <span class="font-medium">Active</span> trucks count. Sold, Out of service and
+          Inactive trucks are free — and we stop watching their dates. Change the status on the
+          truck page. Your bill goes down by ${site.pricing.perTruck} and that truck leaves your
+          reminders the same day.
         </p>
       </section>
 

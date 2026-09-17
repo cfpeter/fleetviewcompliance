@@ -21,6 +21,7 @@ import {
   countBillableTrucks,
   isBillableTruck,
 } from '../src/lib/billing/trucks.ts'
+import { isActiveVehicle } from '../src/lib/fleet/active.ts'
 import { monthlyPrice, site } from '../src/lib/site.ts'
 import type { VehicleKind, VehicleStatus } from '../src/lib/vehicles.ts'
 
@@ -30,7 +31,7 @@ import type { VehicleKind, VehicleStatus } from '../src/lib/vehicles.ts'
 
 const unit = (kind: VehicleKind, status: VehicleStatus) => ({ kind, status })
 
-test('a billable truck is a power unit that has not been sold', () => {
+test('a billable truck is a power unit that is ACTIVE', () => {
   assert.equal(isBillableTruck(unit('power_unit', 'active')), true)
   assert.equal(isBillableTruck(unit('power_unit', 'sold')), false)
 })
@@ -57,14 +58,27 @@ test('a truck marked sold drops off the bill', () => {
   assert.equal(countBillableTrucks(fleet), 2)
 })
 
-test('a parked or out-of-service truck is still billed, because it is still watched', () => {
-  // loadDeadlines() reads `.neq('status', 'sold')` — every vehicle except a sold
-  // one has its dates computed and its reminders sent. Billing on the same
-  // filter is what makes "you pay for the trucks we watch" a true sentence. A
-  // free status that still gets the service would also be an invitation to
-  // mislabel a working truck, which corrupts the compliance data.
+test('a parked or out-of-service truck is NOT billed, because it is not watched', () => {
+  // This assertion used to say the opposite, and the comment under it argued
+  // for that from `loadDeadlines()` reading `.neq('status', 'sold')`. The
+  // premise was the bug: the loader was watching trucks the owner does not run.
+  // Both sides now read src/lib/fleet/active.ts, so the sentence "you pay for
+  // the trucks we watch" holds in the direction he asked for — active only.
   const fleet = [unit('power_unit', 'out_of_service'), unit('power_unit', 'inactive')]
-  assert.equal(countBillableTrucks(fleet), 2)
+  assert.equal(countBillableTrucks(fleet), 0)
+})
+
+test('the bill and the alerts cannot disagree, because they ask the same function', () => {
+  // The whole point of the shared module. If this ever fails, one of the two has
+  // been given its own opinion again — and the failure mode is either an invoice
+  // for a truck nobody is watching or a truck watched for free.
+  for (const status of ['active', 'out_of_service', 'sold', 'inactive'] as VehicleStatus[]) {
+    assert.equal(
+      isBillableTruck(unit('power_unit', status)),
+      isActiveVehicle({ status }),
+      `billing and alerting disagree about a ${status} power unit`,
+    )
+  }
 })
 
 test('every unit on the account lands in exactly one line of the breakdown', () => {
@@ -78,14 +92,14 @@ test('every unit on the account lands in exactly one line of the breakdown', () 
     unit('trailer', 'sold'),
   ]
   const b = billingBreakdown(fleet)
-  assert.deepEqual(b, { billable: 2, sold: 1, trailers: 2 })
-  assert.equal(b.billable + b.sold + b.trailers, fleet.length)
+  assert.deepEqual(b, { billable: 1, notActive: 2, trailers: 2 })
+  assert.equal(b.billable + b.notActive + b.trailers, fleet.length)
   assert.equal(b.billable, countBillableTrucks(fleet))
 })
 
 test('an empty fleet is billed as an empty fleet, not as an error', () => {
   assert.equal(countBillableTrucks([]), 0)
-  assert.deepEqual(billingBreakdown([]), { billable: 0, sold: 0, trailers: 0 })
+  assert.deepEqual(billingBreakdown([]), { billable: 0, notActive: 0, trailers: 0 })
 })
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@
  * whole subscription rests on: the price is per truck, so a wrong answer here is
  * a wrong invoice every month, forever, to every customer.
  *
- * THE RULE: a billable truck is a POWER UNIT that is not marked SOLD.
+ * THE RULE: a billable truck is a POWER UNIT that is ACTIVE.
  *
  * Both halves were decided by promises already made in public, not by taste.
  *
@@ -18,25 +18,26 @@
  * $132 — and a bill that disagrees with the price page is the one billing defect
  * you cannot explain your way out of.
  *
- * NOT SOLD. The same page: "What happens when I add or sell a truck? Your bill
- * goes up or down by $6." A truck marked `sold` is gone, and charging for it is
- * the fastest way to lose the customer who noticed.
+ * ACTIVE ONLY, AND THAT WORD IS NOT DEFINED HERE. It is defined once, in
+ * src/lib/fleet/active.ts, and src/lib/deadlines.ts reads the same definition to
+ * decide whose dates it watches. That shared module is the whole point: this
+ * file used to say `status !== 'sold'` because the deadline loader said
+ * `.neq('status', 'sold')`, which made "you pay for the trucks we watch" true by
+ * coincidence rather than by construction. Two expressions that agree by
+ * coincidence are two expressions that drift, and the drift shows up as an
+ * invoice for a truck nobody is watching, or a truck watched for free.
  *
- * WHY `out_of_service` AND `inactive` ARE STILL BILLED. Because they are still
- * worked on. loadDeadlines() reads `.neq('status', 'sold')` — every vehicle
- * except a sold one has its inspection, registration, HVUT and Clean Truck Check
- * dates computed, and generates reminders and emails. Billing on the same filter
- * makes one honest sentence possible: you pay for the trucks we are watching,
- * and the day you mark one sold we stop doing both. Any other line here would
- * either charge for trucks we ignore or watch trucks for free — and a free
- * status that still gets the service is an invitation to mislabel a working
- * truck, which corrupts the compliance data this product exists to keep right.
+ * So the rule now reads in one sentence and it is the same sentence on both
+ * sides: WE WATCH THE TRUCKS YOU RUN AND WE CHARGE FOR THE TRUCKS YOU RUN. Mark
+ * a unit Sold, Out of service or Inactive and both stop on the same day. The
+ * screens say that out loud rather than leaving the owner to discover it.
  *
  * Kept as pure functions over plain rows so the count can be tested without a
  * database and so the screen, the checkout and the Stripe quantity all derive
  * from one implementation.
  */
 
+import { ACTIVE_VEHICLE_STATUS, isActiveVehicle } from '../fleet/active.ts'
 import type { VehicleKind, VehicleStatus } from '../vehicles.ts'
 
 /** The two columns billing looks at. Anything with these can be counted. */
@@ -46,16 +47,16 @@ export interface BillableVehicle {
 }
 
 /**
- * The one status that takes a unit off the bill.
+ * The one status that keeps a power unit on the bill.
  *
- * A constant rather than a literal at the comparison, because this value also
- * has to be said out loud on the billing screen ("mark it Sold") and the screen
- * and the arithmetic must never drift apart.
+ * Re-exported from src/lib/fleet/active.ts rather than restated, so a screen
+ * that needs the word can take it from billing without opening a second module,
+ * and so there is still exactly one place it is written down.
  */
-export const UNBILLED_STATUS: VehicleStatus = 'sold'
+export const BILLED_STATUS: VehicleStatus = ACTIVE_VEHICLE_STATUS
 
 export function isBillableTruck(v: BillableVehicle): boolean {
-  return v.kind === 'power_unit' && v.status !== UNBILLED_STATUS
+  return v.kind === 'power_unit' && isActiveVehicle(v)
 }
 
 export function countBillableTrucks(rows: readonly BillableVehicle[]): number {
@@ -71,22 +72,22 @@ export function countBillableTrucks(rows: readonly BillableVehicle[]): number {
  * that are free — and why — answers the question before he asks it.
  */
 export interface FleetBilling {
-  /** Power units that are not sold. The quantity Stripe is sent. */
+  /** Active power units. The quantity Stripe is sent. */
   billable: number
-  /** Power units marked sold. Free, and no longer watched. */
-  sold: number
+  /** Power units that are not active: sold, out of service, parked. Free, and not watched. */
+  notActive: number
   /** Trailers, whatever their status. Always free. */
   trailers: number
 }
 
 export function billingBreakdown(rows: readonly BillableVehicle[]): FleetBilling {
   let billable = 0
-  let sold = 0
+  let notActive = 0
   let trailers = 0
   for (const v of rows) {
     if (v.kind === 'trailer') trailers++
-    else if (v.status === UNBILLED_STATUS) sold++
-    else billable++
+    else if (isActiveVehicle(v)) billable++
+    else notActive++
   }
-  return { billable, sold, trailers }
+  return { billable, notActive, trailers }
 }

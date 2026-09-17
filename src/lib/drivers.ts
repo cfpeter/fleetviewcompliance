@@ -67,13 +67,23 @@ export function formDate(form: FormData, name: string): string | null {
   return value === '' ? null : value
 }
 
-export const DRIVER_STATUSES = [
+/**
+ * The `driver_status` enum from 0002_fleet.sql, written out.
+ *
+ * Named so src/lib/fleet/active.ts can state the one rule about who is watched
+ * without either importing a page or widening to `string` — which is what it had
+ * to do before, and `string` is how 'Terminated' and 'terminated' end up being
+ * two different answers to one question.
+ */
+export type DriverStatus = 'active' | 'inactive' | 'terminated'
+
+export const DRIVER_STATUSES: readonly { value: DriverStatus; label: string }[] = [
   { value: 'active', label: 'Active' },
   { value: 'inactive', label: 'Inactive' },
   { value: 'terminated', label: 'Terminated' },
-] as const
+]
 
-export function isDriverStatus(value: string): boolean {
+export function isDriverStatus(value: string): value is DriverStatus {
   return DRIVER_STATUSES.some((s) => s.value === value)
 }
 

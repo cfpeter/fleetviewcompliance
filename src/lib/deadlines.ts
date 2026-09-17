@@ -5,8 +5,9 @@
  * Postgres, and this file knows nothing about the regulations.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { ACTIVE_DRIVER_STATUS, ACTIVE_VEHICLE_STATUS } from './fleet/active.ts'
 import { DRIVER_ANCHORS_FROM_DRIVER_COLUMNS } from './rules/driver-anchors.ts'
-import { evaluate, type DeadlineItem, type EvaluationSubject } from './rules/index.ts'
+import { type DeadlineItem, type EvaluationSubject, evaluate } from './rules/index.ts'
 
 /** 'YYYY-MM-DD' from Postgres -> a UTC midnight Date. */
 function parseDate(v: string | null | undefined): Date | undefined {
@@ -30,10 +31,18 @@ export async function loadDeadlines(
 ): Promise<DeadlineItem[]> {
   // RLS scopes all four of these to the signed-in user's carrier, so there is
   // no carrier_id filter here. Adding one would imply the policy might not hold.
+  //
+  // BOTH STATUS FILTERS COME FROM src/lib/fleet/active.ts, AND SO DOES BILLING.
+  // This line used to read `.neq('status', 'sold')` for vehicles against
+  // `.eq('status', 'active')` for drivers — an asymmetry nobody chose. It meant
+  // an out-of-service truck kept generating reminders and kept costing $6 a
+  // month, while an inactive driver silently left the dashboard. One shared
+  // predicate is what makes "you pay for the trucks we watch" true again, and
+  // the only way to change one side now is to change both.
   const [carrier, drivers, vehicles, anchors] = await Promise.all([
     supabase.from('carriers').select('*').eq('id', carrierId).single(),
-    supabase.from('drivers').select('*').eq('status', 'active'),
-    supabase.from('vehicles').select('*').neq('status', 'sold'),
+    supabase.from('drivers').select('*').eq('status', ACTIVE_DRIVER_STATUS),
+    supabase.from('vehicles').select('*').eq('status', ACTIVE_VEHICLE_STATUS),
     supabase.from('current_compliance_anchors').select('*'),
   ])
 
@@ -75,6 +84,9 @@ export async function loadDeadlines(
       dotNumber: c?.dot_number ?? undefined,
       carrierOperation: c?.carrier_operation ?? undefined,
       registrationState: carrierState,
+      // Active power units — the same population billing charges for and the
+      // same number the dashboard's roster tile counts, because the query above
+      // now shares its filter with both. Three screens, one count.
       fleetSize: (vehicles.data ?? []).filter((v) => v.kind === 'power_unit').length,
     },
     anchors: anchorsFor('carrier', carrierId),
