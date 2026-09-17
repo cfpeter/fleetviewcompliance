@@ -171,15 +171,15 @@ export function evaluate(subjects: readonly EvaluationSubject[], today: Date): D
 export function standingPill(standing: Standing): { label: string; className: string } {
   switch (standing) {
     case 'overdue':
-      return { label: 'Overdue', className: 'bg-red-100 text-red-700' }
+      return { label: 'Overdue', className: 'badge badge-danger' }
     case 'unknown':
-      return { label: 'Not sure', className: 'bg-ink-100 text-ink-500' }
+      return { label: 'Not sure', className: 'badge badge-neutral' }
     case 'current':
-      return { label: 'Current', className: 'bg-emerald-100 text-emerald-800' }
+      return { label: 'Current', className: 'badge badge-success' }
     case 'unsupported':
-      return { label: 'Check yourself', className: 'bg-brand-500/10 text-brand-700' }
+      return { label: 'Check yourself', className: 'badge badge-info' }
     case 'not_applicable':
-      return { label: 'Not applicable', className: 'bg-ink-50 text-ink-300' }
+      return { label: 'Not applicable', className: 'badge badge-neutral' }
   }
 }
 

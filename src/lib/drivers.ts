@@ -97,11 +97,11 @@ export function isDriverStatus(value: string): value is DriverStatus {
 export function statusPillClass(status: string): string {
   switch (status) {
     case 'active':
-      return 'bg-emerald-100 text-emerald-800'
+      return 'badge badge-success'
     case 'inactive':
-      return 'bg-ink-100 text-ink-500'
+      return 'badge badge-neutral'
     default:
-      return 'bg-ink-50 text-ink-300'
+      return 'badge badge-neutral'
   }
 }
 

@@ -93,7 +93,13 @@ const ceiling = max ?? ceilingFor(items.map((i) => i.value))
               <span
                 class:list={[
                   'shrink-0 tabular-nums',
-                  w === null ? 'text-ink-300 italic' : 'font-medium',
+                  // The row with no figure is the one row here that must not be
+                  // faint: it is the truck whose odometer nobody typed, and it
+                  // is the only thing on this chart the owner can act on. The
+                  // italics carry "this is not a measurement"; the ink-700 is
+                  // there because a current row sits on a bg-ink-50 tint, where
+                  // ink-500 stops passing.
+                  w === null ? 'text-ink-700 italic' : 'font-medium',
                 ]}
               >
                 {item.display}

@@ -149,26 +149,33 @@ export const exceptionLabel = (v: string | null): string => labelOf(LOAD_EXCEPTI
  * and an operational status is never that — the load moving slowly is not a
  * compliance failure. The exception pill is the thing allowed to be loud, and it
  * is rendered NEXT TO this one rather than replacing it.
+ *
+ * The returned classes are the shared badge classes from src/styles/global.css,
+ * which has five pairs and no more. Several branches therefore hand back the
+ * same pair — every stage between booked and delivered is one blue — and that is
+ * the intent rather than a shortcut: the WORD in the pill says which stage it is,
+ * and a nine-step colour ramp is nine shades nobody can tell apart on a phone in
+ * daylight. Colour carries "not started / moving / done" and nothing finer.
  */
 export function statusPillClass(status: string | null): string {
   switch (status) {
     case 'quoted':
-      return 'bg-ink-100 text-ink-500'
+      return 'badge badge-neutral'
     case 'booked':
-      return 'bg-blue-100 text-blue-800'
+      return 'badge badge-info'
     case 'assigned':
     case 'dispatched':
-      return 'bg-sky-100 text-sky-800'
+      return 'badge badge-info'
     case 'at_shipper':
     case 'loaded':
     case 'in_transit':
     case 'at_consignee':
-      return 'bg-brand-500/10 text-brand-700'
+      return 'badge badge-info'
     case 'delivered':
     case 'pod_received':
-      return 'bg-emerald-100 text-emerald-800'
+      return 'badge badge-success'
     default:
-      return 'bg-ink-50 text-ink-300'
+      return 'badge badge-neutral'
   }
 }
 
@@ -183,26 +190,26 @@ export function statusPillClass(status: string | null): string {
 export function billingPillClass(billing: string | null): string {
   switch (billing) {
     case 'not_ready':
-      return 'bg-ink-100 text-ink-500'
+      return 'badge badge-neutral'
     case 'ready_to_invoice':
-      return 'bg-amber-100 text-amber-800'
+      return 'badge badge-warning'
     case 'invoiced':
-      return 'bg-blue-100 text-blue-800'
+      return 'badge badge-info'
     case 'submitted_to_factor':
-      return 'bg-sky-100 text-sky-800'
+      return 'badge badge-info'
     case 'funded':
-      return 'bg-emerald-50 text-emerald-700'
+      return 'badge badge-success'
     case 'paid':
-      return 'bg-emerald-100 text-emerald-800'
+      return 'badge badge-success'
     case 'closed':
-      return 'bg-ink-50 text-ink-300'
+      return 'badge badge-neutral'
     case 'short_paid':
     case 'in_dispute':
-      return 'bg-red-100 text-red-700'
+      return 'badge badge-danger'
     case 'written_off':
-      return 'bg-red-50 text-red-700'
+      return 'badge badge-danger'
     default:
-      return 'bg-ink-50 text-ink-300'
+      return 'badge badge-neutral'
   }
 }
 
@@ -212,12 +219,12 @@ export function exceptionPillClass(exception: string | null): string {
     case 'detained':
     case 'late':
     case 'tonu':
-      return 'bg-amber-100 text-amber-800'
+      return 'badge badge-warning'
     case 'breakdown':
     case 'cancelled':
-      return 'bg-red-100 text-red-700'
+      return 'badge badge-danger'
     default:
-      return 'bg-ink-100 text-ink-500'
+      return 'badge badge-neutral'
   }
 }
 

@@ -228,17 +228,17 @@ export function isLocked(status: string | null | undefined): boolean {
 export function settlementStatusPillClass(status: string | null): string {
   switch (status) {
     case 'draft':
-      return 'bg-ink-100 text-ink-500'
+      return 'badge badge-neutral'
     case 'approved':
-      return 'bg-blue-100 text-blue-800'
+      return 'badge badge-info'
     case 'paid':
-      return 'bg-emerald-100 text-emerald-800'
+      return 'badge badge-success'
     case 'void':
       // Not red. Red on this product means "a regulator will fine you", and a
       // voided settlement is an ordinary administrative act.
-      return 'bg-ink-50 text-ink-300'
+      return 'badge badge-neutral'
     default:
-      return 'bg-ink-50 text-ink-300'
+      return 'badge badge-neutral'
   }
 }
 

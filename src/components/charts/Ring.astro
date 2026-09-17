@@ -112,7 +112,12 @@ const width = size >= 60 ? 4 : 5
           <li
             class:list={[
               'flex items-center gap-1.5 whitespace-nowrap',
-              s.count === 0 && 'text-ink-300',
+              // A bucket standing at zero steps back from the ones with drivers
+              // in it, and it steps back to ink-700, not out of the page. This
+              // legend is 12px, where ink-700 is the floor, and the empty bucket
+              // is the one an owner does not know exists until somebody lands
+              // in it — dimming it into the paper defeats printing it at all.
+              s.count === 0 && 'text-ink-700',
             ]}
           >
             <span

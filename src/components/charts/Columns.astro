@@ -77,7 +77,7 @@ const lonely = known.length === 1 ? known[0] : null
         /* The only axis this chart gets. With no hover there is no other way to
            know what full height is worth, and a ruled scale down the left edge
            costs 40px that a 320px screen does not have to give. */
-        <div class="flex items-center gap-2 text-[10px] text-ink-300">
+        <div class="flex items-center gap-2 text-[10px] text-ink-700">
           <span class="tabular-nums">{axisLabel}</span>
           <span class="h-px flex-1 bg-ink-100" />
         </div>
@@ -106,7 +106,12 @@ const lonely = known.length === 1 ? known[0] : null
               <div
                 aria-hidden="true"
                 class:list={[
-                  'mb-1 text-center text-[10px] tabular-nums',
+                  // ink-700 and not a lighter grey: this is 10px type, and the
+                  // floor for anything at 12px and under is ink-700. The states
+                  // below are told apart by italics and by the dashed slot under
+                  // them, never by how faint the number is — a figure nobody can
+                  // read is not a softer claim, it is an absent one.
+                  'mb-1 text-center text-[10px] text-ink-700 tabular-nums',
                   // An UNKNOWN keeps its label at every width. Revenue is the
                   // case that forced this: a month with four loads nobody
                   // priced and a month with no loads at all are both `null`, so
@@ -116,10 +121,8 @@ const lonely = known.length === 1 ? known[0] : null
                   // is most often read on. A KNOWN figure still hides there,
                   // because twelve amounts across a phone is a grey smear and
                   // the table below carries them exactly.
-                  h === null
-                    ? 'leading-none text-ink-300 italic'
-                    : 'hidden truncate sm:block',
-                  h !== null && (c.inProgress ? 'text-ink-300 italic' : 'text-ink-500'),
+                  h === null ? 'leading-none italic' : 'hidden truncate sm:block',
+                  h !== null && c.inProgress && 'italic',
                 ]}
               >
                 {c.display}
@@ -152,8 +155,8 @@ const lonely = known.length === 1 ? known[0] : null
         {columns.map((c) => (
           <div
             class:list={[
-              'min-w-0 flex-1 text-center text-[10px] leading-tight',
-              c.inProgress ? 'text-ink-300 italic' : 'text-ink-500',
+              'min-w-0 flex-1 text-center text-[10px] leading-tight text-ink-700',
+              c.inProgress && 'italic',
             ]}
           >
             {c.label}

@@ -60,6 +60,9 @@ const pct = (n: number) => (total > 0 ? (n / total) * 100 : 0)
               </span>
             </>
           )
+          // A segment standing at zero is still named, and still readable: this
+          // legend is 12px, where ink-700 is the floor. It steps back from the
+          // segments with something in them; it does not step off the page.
           return (
             <li>
               {s.href && s.count > 0 ? (
@@ -67,7 +70,7 @@ const pct = (n: number) => (total > 0 ? (n / total) * 100 : 0)
                   {inner}
                 </a>
               ) : (
-                <span class:list={['flex items-center gap-1.5', s.count === 0 && 'text-ink-300']}>
+                <span class:list={['flex items-center gap-1.5', s.count === 0 && 'text-ink-700']}>
                   {inner}
                 </span>
               )}

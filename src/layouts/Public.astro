@@ -93,16 +93,28 @@ const nav = [
 
         <nav class="ml-auto flex items-center gap-0.5 text-sm sm:gap-1">
           {
+            /*
+              `.nav-item` and `.is-current` from global.css: one 44px target and
+              one selected mark, the same two the signed-in header uses. The page
+              you are on used to be marked by darker text alone, which is the
+              weakest signal on the page — a tinted pill and semibold survive a
+              sunlit screen and colour blindness both, and `aria-current` says it
+              to a screen reader either way.
+
+              The horizontal padding is written back over the class on purpose.
+              `.nav-item` is px-3, and the measurements in the comment above are
+              px-2 below `sm` with 12px of the 375px header to spare; px-3 on
+              three items spends 24px of it. The height is what this fix is
+              about, and the height is free.
+            */
             nav.map((n) => (
               <a
                 href={n.href}
                 aria-current={path === n.href ? 'page' : undefined}
                 class:list={[
-                  'rounded-lg px-2 py-2 font-medium whitespace-nowrap transition sm:px-3',
-                  n.desktopOnly && 'hidden sm:inline-block',
-                  path === n.href
-                    ? 'text-ink-900'
-                    : 'text-ink-500 hover:bg-ink-50 hover:text-ink-900',
+                  'nav-item px-2 whitespace-nowrap transition sm:px-3',
+                  n.desktopOnly && 'hidden sm:inline-flex',
+                  path === n.href && 'is-current',
                 ]}
               >
                 <span class="sm:hidden">{n.short}</span>
@@ -118,13 +130,19 @@ const nav = [
                back the next day had no way in from the marketing pages. -->
           <a
             href="/login"
-            class="shrink-0 px-1.5 font-medium whitespace-nowrap text-ink-500 transition hover:text-ink-900 sm:px-2"
+            class="nav-item shrink-0 px-1.5 whitespace-nowrap transition sm:px-2"
           >
             Sign in
           </a>
+          {/* Dark is marketing chrome and stays dark here — this is the one
+              header in the product where it is not competing with a blue
+              primary. What it gains is the 44px: py-2 on 14px type was 36px,
+              which is a miss away from the one control this page is built to
+              get tapped. The padding is unchanged, so the measurements in the
+              comment above still hold. */}
           <a
             href="/check"
-            class="ml-0.5 shrink-0 rounded-lg bg-ink-900 px-2.5 py-2 font-medium whitespace-nowrap text-white transition hover:bg-ink-700 sm:ml-1 sm:px-3.5"
+            class="ml-0.5 inline-flex min-h-11 shrink-0 items-center rounded-lg bg-ink-900 px-2.5 py-2 font-medium whitespace-nowrap text-white transition hover:bg-ink-700 sm:ml-1 sm:px-3.5"
           >
             <span class="sm:hidden">Check</span>
             <span class="hidden sm:inline">Check my fleet</span>
@@ -168,8 +186,11 @@ const nav = [
         </div>
       </div>
       <div class="border-t border-ink-100">
+        {/* The line that says we are not a law firm. It was ink-300 on the
+            footer tint, which is 1.85:1 — present, load-bearing, and
+            unreadable. On a tint at 12px the floor is ink-700. */}
         <div
-          class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-5 text-xs text-ink-300 sm:px-6"
+          class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-5 text-xs text-ink-700 sm:px-6"
         >
           <span>© {new Date().getFullYear()} {BRAND}</span>
           <span aria-hidden="true">·</span>

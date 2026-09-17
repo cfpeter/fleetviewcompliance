@@ -112,13 +112,18 @@ const { rows } = divergingRows(items.map((i) => i.value))
                 <div
                   class:list={[
                     'w-20 shrink-0 text-right text-sm font-medium tabular-nums sm:w-24',
+                    // Two different greys on purpose. A row we cannot price is
+                    // ink-700 and italic — it is missing information and the
+                    // reader has to see it. A row that came out at exactly zero
+                    // is a figure we have, so it reads as ordinary secondary
+                    // text beside the red and the green.
                     item.value === null
-                      ? 'text-ink-300 italic'
+                      ? 'text-ink-700 italic'
                       : item.value < 0
                         ? 'text-emerald-800'
                         : item.value > 0
                           ? 'text-red-700'
-                          : 'text-ink-300',
+                          : 'text-ink-500',
                   ]}
                 >
                   {item.display}

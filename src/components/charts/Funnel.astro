@@ -63,7 +63,10 @@ const loadWord = (n: number) => (n === 1 ? 'load' : 'loads')
                 <span
                   class:list={[
                     'shrink-0 tabular-nums',
-                    row.percent === null ? 'text-ink-300 italic' : 'font-medium',
+                    // Not faint. A stage holding loads nobody priced is the one
+                    // line on this chart with money missing from it; the italics
+                    // say it is not a measurement, the ink says read it.
+                    row.percent === null ? 'text-ink-700 italic' : 'font-medium',
                   ]}
                 >
                   {row.display}

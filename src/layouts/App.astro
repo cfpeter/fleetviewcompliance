@@ -109,28 +109,41 @@ const active = (href: string) =>
  * around the links and nothing about how the current one is marked — a link
  * inside a group is still just a link, and still carries `aria-current`.
  *
- * Desktop only now: below `sm` the row is behind the menu, and a link in the
- * menu is a full-width row rather than a pill. `px-2.5` stays because `sm:px-3`
- * is written against it.
+ * Desktop only: below `sm` the row is behind the menu, and a link in the menu is
+ * a full-width row rather than a pill.
+ *
+ * Both of these are now `.nav-item` and `.is-current` out of global.css, which
+ * is where the one selected mark and the one 44px nav target live. Two things
+ * changed by adopting them.
+ *
+ * THE PILL IS 44px. It was py-1.5 on 14px type, which is 32px — a third short
+ * of what a thumb needs and the reason the phone menu had to invent its own
+ * 48px row in the first place. The header is 12px taller per deck for it.
+ *
+ * THE CURRENT PAGE IS bg-blue-100, not brand-500 at 10% opacity. A tint mixed
+ * from an opacity is a colour nothing can be checked against — it changes with
+ * whatever is behind it — and the pill sits on white here and on the backdrop
+ * blur of a sticky header, which are not the same white. The solid tint is
+ * 8.23:1 under brand-700 wherever it lands.
+ *
+ * `text-sm` is written over the class on purpose: `.nav-item` inherits the 16px
+ * body size, and 16px labels push this row past one line between 640px and
+ * 900px, where it already wraps to two.
  */
 const pill = (href: string) => [
-  'rounded-lg px-2.5 py-1.5 text-sm font-medium whitespace-nowrap transition sm:px-3',
-  active(href)
-    ? 'bg-brand-500/10 text-brand-700'
-    : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
+  'nav-item text-sm whitespace-nowrap transition',
+  active(href) && 'is-current',
 ]
 
 /**
- * A line in the phone menu. `min-h-12` is 48px — the desktop pills are 24px,
- * which is half the 44px a thumb needs, and a yard is exactly where that gets
- * paid for. A list down the page has the room, so it takes it. Same active
- * colours as `pill`, so "blue means you are here" is one rule, not two.
+ * A line in the phone menu. `min-h-12` is 48px — 4px more than the floor, and a
+ * yard is exactly where that gets paid for. A list down the page has the room,
+ * so it takes it. Same `.is-current` mark as `pill`, so "blue means you are
+ * here" is one rule, not two.
  */
 const row = (href: string) => [
-  'flex min-h-12 items-center rounded-lg px-3 text-base font-medium transition',
-  active(href)
-    ? 'bg-brand-500/10 text-brand-700'
-    : 'text-ink-700 hover:bg-ink-100 hover:text-ink-900',
+  'nav-item flex min-h-12 px-3 text-base transition',
+  active(href) && 'is-current',
 ]
 
 const sections: Section[] = groups.flat()
@@ -153,6 +166,27 @@ const current = [...sections, ...account].find((s) => active(s.href))?.label ?? 
     <title>{title} · FleetView</title>
   </head>
   <body class="min-h-dvh bg-ink-50 font-sans text-ink-900 antialiased">
+    {/*
+      FIRST TAB STOP, and the app had none while the marketing site did.
+
+      The signed-in header is about thirteen tab stops deep — wordmark, the
+      section row, the phone disclosure, sign out — so without this a keyboard
+      or switch-control user walked the whole navigation again on every single
+      page before reaching the page itself. The owner screens are where somebody
+      actually works, which makes this the half that needed it more.
+
+      `focus:` and not `focus-visible:` on the reveal: the link has to appear the
+      moment it takes focus, and it is only ever reached by keyboard anyway. The
+      2px ring around it comes from the global `:focus-visible` rule, so this
+      markup carries no ring of its own — see src/styles/global.css.
+    */}
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-3 focus:rounded-lg focus:bg-ink-900 focus:px-4 focus:py-2 focus:text-white"
+    >
+      Skip to content
+    </a>
+
     <header class="sticky top-0 z-10 border-b border-ink-100 bg-white/85 backdrop-blur">
       {/*
         PHONE. One line: the wordmark, and the page you are on. 49px of header
@@ -172,8 +206,14 @@ const current = [...sections, ...account].find((s) => active(s.href))?.label ?? 
               does — on this line the page name has the better claim on the
               space. */}
           <span class="font-semibold tracking-tight">FleetView</span>
+          {/* `.is-current` and nothing hand-mixed: the mark on the closed bar is
+              the same mark the reader will see beside the current row once the
+              list is open, and there is now one place that decides what it looks
+              like. No `aria-current` on it — this is a label inside the control,
+              not a link, and the page name is spelled out in words either way,
+              so the pill is never carrying the meaning on its own. */}
           <span
-            class="ml-auto flex items-center gap-1.5 rounded-lg bg-brand-500/10 px-2.5 py-1.5 text-sm font-medium text-brand-700"
+            class="is-current ml-auto flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm"
           >
             {current}
             <svg
@@ -229,7 +269,7 @@ const current = [...sections, ...account].find((s) => active(s.href))?.label ?? 
             <form method="POST" action="/logout">
               <button
                 type="submit"
-                class="flex min-h-12 w-full items-center rounded-lg px-3 text-base font-medium text-ink-700 transition hover:bg-ink-100 hover:text-ink-900"
+                class="flex min-h-12 w-full cursor-pointer items-center rounded-lg px-3 text-base font-medium text-ink-700 transition hover:bg-ink-50 hover:text-ink-900"
               >
                 Sign out
               </button>
@@ -284,9 +324,14 @@ const current = [...sections, ...account].find((s) => active(s.href))?.label ?? 
             {settings.label}
           </a>
           <form method="POST" action="/logout">
+            {/* A button, so it takes the button classes rather than the nav
+                ones — it signs you out, it does not go anywhere. `.btn-sm` is
+                the dense-table size: 14px type to sit level with the pills
+                beside it, still 44px tall, because padding is what gives way
+                and never the target. */}
             <button
               type="submit"
-              class="rounded-lg px-2.5 py-1.5 text-sm font-medium text-ink-500 transition hover:bg-ink-100 hover:text-ink-900"
+              class="btn btn-sm text-ink-700 hover:bg-ink-50 hover:text-ink-900"
             >
               Sign out
             </button>
@@ -339,7 +384,7 @@ const current = [...sections, ...account].find((s) => active(s.href))?.label ?? 
       JavaScript at all, which is what the rest of this app already assumes.
     */}
 
-    <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+    <main id="main" class="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
       <div class="mb-6">
         <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
         {subtitle && <p class="mt-1 text-sm text-ink-500">{subtitle}</p>}
