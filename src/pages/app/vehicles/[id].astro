@@ -23,6 +23,8 @@ import {
   parseAnchorDate,
   parseOptionalInt,
   parseStateCode,
+  parseVin,
+  parseVinEdit,
   statusLabel,
   statusPillClass,
   textOrNull,
@@ -30,6 +32,7 @@ import {
   VEHICLE_KINDS,
   VEHICLE_STATUSES,
   vehicleLabel,
+  vinCheckDigitMismatch,
   type VehicleRow,
 } from '../../../lib/vehicles.ts'
 
@@ -80,6 +83,24 @@ if (Astro.request.method === 'POST') {
       return fail('That is not a status we recognise.')
     }
 
+    // Parsed, not merely uppercased. Editing is where a VIN gets re-typed off a
+    // photograph of the door plate, and a character wrong here is a truck CARB
+    // and the inspection record will never match — reported on a dashboard that
+    // looks complete. It also has to reach `vehicles_vin_unique` in ONE spelling
+    // or the duplicate guard is defeated by a space.
+    //
+    // Edit-aware, though, and that half matters just as much. The rules are
+    // newer than some of the rows: VINs already on file fail them, and judging
+    // what was POSTED would mean an owner updating a BIT inspection date is
+    // refused over a VIN box he never put a cursor in — the whole record locked
+    // out of the product by a field he did not touch, with no way through short
+    // of inventing a VIN. So an unchanged value goes back exactly as it came out
+    // of the column, unnormalised, and only a VIN he actually typed is held to
+    // the rules. The amber note under the field is where he hears about the one
+    // on file, since a save will never tell him again.
+    const vin = parseVinEdit(form.get('vin'), vehicle.vin)
+    if (!vin.ok) return fail(vin.message)
+
     const year = parseOptionalInt(form.get('model_year'), { label: 'Year', min: 1900, max: maxYear })
     if (!year.ok) return fail(year.message)
 
@@ -103,7 +124,7 @@ if (Astro.request.method === 'POST') {
         kind,
         status,
         unit_number: textOrNull(form.get('unit_number')),
-        vin: upperOrNull(form.get('vin')),
+        vin: vin.value,
         make: textOrNull(form.get('make')),
         model: textOrNull(form.get('model')),
         model_year: year.value,
@@ -188,7 +209,7 @@ if (Astro.request.method === 'POST') {
     // Unreachable from this form — one input per anchor — but a planner that can
     // refuse must not be allowed to refuse silently.
     if (conflicts.length > 0) {
-      return fail('Two different dates were typed for the same field.', '#dates')
+      return fail('You typed two different dates for the same field.', '#dates')
     }
 
     if (supersede.length > 0) {
@@ -284,6 +305,33 @@ const datesCount = dates === null ? null : Number(dates)
 const gvwr = gvwrReading(vehicle.gvwr_lbs)
 const weightUnknown = vehicle.gvwr_lbs === null
 
+// Advisory, and deliberately not a save-time refusal — see vinCheckDigitMismatch.
+// Position 9 is a checksum over the other sixteen characters, so a mismatch is
+// almost always a single character copied wrong off the door plate. Almost. A
+// small trailer builder can ship a VIN that fails this arithmetic, and refusing
+// to save it would lock a real unit out of the product over its manufacturer's
+// mistake. So it is shown, every time the page is opened, and it blocks nothing.
+const vinSuspect = vinCheckDigitMismatch(vehicle.vin)
+
+// The other way the VIN on file can be useless: it does not pass `parseVin` at
+// all — a half-typed stub, or a 17-character string with an I read off a dirty
+// plate. Rows like that predate the rules and parseVinEdit grandfathers them so
+// the owner is never blocked on one, which makes this note the ONLY place he
+// ever hears about it. Saying nothing would be the worse bug: a VIN that matches
+// nothing looks exactly like a VIN that matches, and the dashboard reads as
+// complete either way.
+const vinUnusable = vehicle.vin !== null && !parseVin(vehicle.vin).ok
+
+// ONE note under the field, never two. The two cases cannot both be true today
+// (a VIN that fails `parseVin` has no computable check digit), but two amber
+// boxes stacked under a single input would read as two separate problems with
+// the truck — so the slot takes the worse of the two and says it once.
+const vinNotice = vinUnusable
+  ? 'This VIN is not a valid one, so CARB and inspection reports will never match it. Type in the VIN from the door plate. We keep this one until you do.'
+  : vinSuspect
+    ? 'This VIN fails its own check digit, so one character is probably wrong. Check the door plate. CARB matches Clean Truck Check on the exact VIN, so one wrong character is a truck we never find. We saved it anyway.'
+    : null
+
 const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
@@ -298,8 +346,8 @@ const today = new Date().toISOString().slice(0, 10)
   {
     added && (
       <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-        Vehicle added. The dates below are what turn it into deadlines — put in the ones you have
-        and leave the rest.
+        Vehicle added. The dates below are what create the deadlines. Put in the ones you have and
+        leave the rest.
       </p>
     )
   }
@@ -307,8 +355,8 @@ const today = new Date().toISOString().slice(0, 10)
   {
     withdrew && (
       <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-        Entry withdrawn. It stays in the history as a record of what was believed and when; the
-        next most recent date takes over.
+        Date withdrawn. We keep it in the history, so you can still see what was on file and
+        when. The next most recent date is now the one we use.
       </p>
     )
   }
@@ -321,7 +369,7 @@ const today = new Date().toISOString().slice(0, 10)
         </p>
       ) : (
         <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
-          Nothing changed — every date you submitted was already the one on file.
+          Nothing changed. Every date you sent was already the one on file.
         </p>
       ))
   }
@@ -342,15 +390,27 @@ const today = new Date().toISOString().slice(0, 10)
         </label>
         <label class="block">
           <span class="text-sm font-medium">VIN</span>
+          {/*
+            maxlength is 24 and not 17 on purpose: the parser strips spaces and
+            hyphens, so a hard 17 would silently swallow the tail of a correctly
+            typed VIN the moment he chunked it. Over-length is refused in words.
+          */}
           <input
             type="text"
             name="vin"
             value={vehicle.vin ?? ''}
-            maxlength="17"
+            maxlength="24"
             autocapitalize="characters"
             spellcheck="false"
             class={`${field} font-mono uppercase`}
           />
+          {
+            vinNotice && (
+              <span class="mt-1.5 inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                {vinNotice}
+              </span>
+            )
+          }
         </label>
       </div>
 
@@ -427,8 +487,8 @@ const today = new Date().toISOString().slice(0, 10)
             }
           </select>
           <span class="mt-1 block text-xs text-ink-500">
-            Changing this changes which deadlines the unit gets. Dates already recorded stay in
-            the history either way.
+            Changing this changes which deadlines this unit gets. Dates you already saved stay in
+            the history.
           </span>
         </label>
         <label class="block">
@@ -480,8 +540,8 @@ const today = new Date().toISOString().slice(0, 10)
         <p class="mt-2 text-xs text-ink-500">
           {
             weightUnknown
-              ? 'We do not know this unit’s weight. That is not the same as exempt: it is treated as fully regulated until you tell us otherwise.'
-              : 'Used to decide which weight-conditional rules apply to this unit.'
+              ? 'We do not know this truck’s weight. That is not the same as exempt. We treat it as fully regulated until you tell us the weight.'
+              : 'We use this to decide which weight rules apply to this truck.'
           }
         </p>
       </div>
@@ -525,17 +585,17 @@ const today = new Date().toISOString().slice(0, 10)
       <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
       <p class="mt-1 text-sm text-ink-500">
         Every box below wants the <strong>last time it happened</strong>, not the next time it is
-        due. We count forward from what you type — hand us a future date and we step straight past
-        the deadline you were trying to tell us about.
+        due. We count forward from the date you type. A date in the future makes us skip past the
+        deadline you were trying to tell us about.
       </p>
 
       {
         weightUnknown && (
           <p class="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            This unit has no GVWR on file, so every weight-conditional rule below stays ON. An
-            unknown weight is treated as fully regulated, never as exempt — one needless reminder
-            costs a minute, one missed inspection costs the truck. Fill the GVWR in above and the
-            list gets shorter only if the truck genuinely is lighter.
+            This truck has no GVWR on file, so every weight rule below stays ON. We treat an
+            unknown weight as fully regulated, never as exempt. One extra reminder costs you a
+            minute. One missed inspection costs you the truck. Fill in the GVWR above and the
+            list gets shorter only if the truck really is lighter.
           </p>
         )
       }
@@ -565,7 +625,7 @@ const today = new Date().toISOString().slice(0, 10)
                           />
                         </label>
                         <p class="mt-1.5 text-xs text-ink-500">{anchor.help}</p>
-                        <p class="mt-1 text-xs text-ink-300">Drives: {anchor.drives}</p>
+                        <p class="mt-1 text-xs text-ink-300">Used for: {anchor.drives}</p>
                         {anchor.weightNote && (
                           <p class="mt-1 text-xs text-ink-300">{anchor.weightNote}</p>
                         )}
@@ -576,7 +636,7 @@ const today = new Date().toISOString().slice(0, 10)
                         */}
                         {anchor.weightNote && weightUnknown && (
                           <p class="mt-1.5 inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
-                            GVWR unknown — this one stays on
+                            No GVWR on file, so this one stays on
                           </p>
                         )}
                         {live && (
@@ -603,8 +663,8 @@ const today = new Date().toISOString().slice(0, 10)
           Save dates
         </button>
         <span class="text-sm text-ink-500">
-          Saving adds a new entry. Nothing already recorded is overwritten, and a box you leave
-          blank changes nothing.
+          Saving adds a new entry. Nothing already saved is erased, and a box you leave blank
+          changes nothing.
         </span>
       </div>
     </form>
@@ -618,10 +678,10 @@ const today = new Date().toISOString().slice(0, 10)
         <div class={card}>
           <h2 class="text-lg font-semibold tracking-tight">Everything recorded for this unit</h2>
           <p class="mt-1 text-sm text-ink-500">
-            Kept, not replaced: a superseded date is the evidence that this unit was in order
-            during the period it covered. The <strong>latest date</strong> is the one in force —
-            not the one typed most recently — so a correction that moves a date EARLIER only takes
-            effect once you withdraw the wrong entry.
+            We keep old dates instead of replacing them. An old date is the proof this unit was in
+            order during the time it covered. The <strong>latest date</strong> is the one we use,
+            not the one you typed last. So to move a date to an EARLIER one, withdraw the wrong
+            entry first.
           </p>
 
           <div class="mt-4 overflow-x-auto rounded-xl border border-ink-100">
@@ -652,7 +712,7 @@ const today = new Date().toISOString().slice(0, 10)
                         */}
                         {!collected && (
                           <span class="mt-0.5 block text-xs text-ink-300">
-                            No rule for a {kindLabel(vehicle.kind).toLowerCase()} reads this
+                            No rule for a {kindLabel(vehicle.kind).toLowerCase()} uses this date
                           </span>
                         )}
                         {r.note && <span class="mt-0.5 block text-xs text-ink-300">{r.note}</span>}

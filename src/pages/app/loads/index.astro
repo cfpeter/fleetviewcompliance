@@ -174,7 +174,7 @@ const loadWord = (n: number) => (n === 1 ? 'load' : 'loads')
 const missing = charted ? Math.max(0, (totalCount ?? rows.length) - rows.length) : 0
 const missingClause =
   missing > 0 &&
-  `${missing} older ${loadWord(missing)} did not fit in one request and are on no chart here — the oldest ones, so it is the start of this page's figures that is short.`
+  `${missing} older ${loadWord(missing)} did not fit in one request, so they are on no chart here. They are the oldest ones, so the left side of each chart is short.`
 
 /**
  * What the revenue columns do not cover.
@@ -187,17 +187,17 @@ const missingClause =
  */
 const revenueCoverage = months
   ? [
-      'Booked rates, by the month the load was entered — not money received. Nothing on a load records when it delivered or when it paid.',
+      'These are booked rates, grouped by the month you entered the load. This is not money you received. A load does not record the day it delivered or the day it was paid.',
       months.window.unpricedLoads > 0 &&
-        `${months.window.unpricedLoads} ${loadWord(months.window.unpricedLoads)} here carry no rate yet and are in no column. A load with no rate is not a $0 load.`,
+        `${months.window.unpricedLoads} ${loadWord(months.window.unpricedLoads)} here have no rate yet, so they are in no column. A load with no rate is not a $0 load.`,
       months.window.quotedLoads + months.window.cancelledLoads > 0 &&
-        `${months.window.quotedLoads + months.window.cancelledLoads} quoted or cancelled ${loadWord(months.window.quotedLoads + months.window.cancelledLoads)} are left out; neither is money anyone owes.`,
+        `${months.window.quotedLoads + months.window.cancelledLoads} quoted or cancelled ${loadWord(months.window.quotedLoads + months.window.cancelledLoads)} are left out. Nobody owes you money on those.`,
       months.window.writtenOffCents > 0 &&
-        `${formatCents(months.window.writtenOffCents)} of what is drawn has been written off, so the columns overstate what will be collected.`,
+        `${formatCents(months.window.writtenOffCents)} of what is drawn here was written off, so the columns show more than you will collect.`,
       months.outside.countedLoads + months.outside.unpricedLoads > 0 &&
-        `${months.outside.countedLoads + months.outside.unpricedLoads} older ${loadWord(months.outside.countedLoads + months.outside.unpricedLoads)} are before this axis starts.`,
+        `${months.outside.countedLoads + months.outside.unpricedLoads} older ${loadWord(months.outside.countedLoads + months.outside.unpricedLoads)} are older than the first month shown.`,
       months.undated > 0 &&
-        `${months.undated} ${loadWord(months.undated)} have no readable booking date and could not be placed at all.`,
+        `${months.undated} ${loadWord(months.undated)} have no booking date we can read, so they are on no column.`,
       missingClause,
     ]
       .filter(Boolean)
@@ -214,9 +214,9 @@ const revenueCoverage = months
  */
 const mixCoverage = mix
   ? [
-      'Bands are counts of loads, not dollars — twelve small loads waiting on payment sit wider than one large one.',
+      'Each band counts loads, not dollars. Twelve small loads waiting on payment look wider than one big one.',
       mix.unpricedLoads > 0 &&
-        `${mix.unpricedLoads} of them carry no rate, so the amounts below are lower than the real figures.`,
+        `${mix.unpricedLoads} of them have no rate, so the amounts below are lower than the real ones.`,
       mix.quotedLoads + mix.cancelledLoads > 0 &&
         `${mix.quotedLoads + mix.cancelledLoads} quoted or cancelled ${loadWord(mix.quotedLoads + mix.cancelledLoads)} are not on this bar.`,
       missingClause,
@@ -236,7 +236,7 @@ const awaiting = mix ? sliceOf(mix, 'awaiting') : undefined
 const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) : 0
 ---
 
-<App title="Loads" subtitle="Where each load is, and where its money is. Those are two questions.">
+<App title="Loads" subtitle="Where each load is, and where its money is. Those are two different questions.">
   {notice && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{notice}</p>}
 
   <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -261,7 +261,7 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
         type="search"
         name="q"
         value={q}
-        placeholder="Search by load number or broker reference…"
+        placeholder="Search by load number or broker reference"
         aria-label="Search loads by load number or broker reference"
         class="w-full rounded-xl border border-ink-100 bg-white py-3 pr-4 pl-10 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
       />
@@ -304,8 +304,8 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
         <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
           <p class="font-medium">No loads yet</p>
           <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
-            Type in the load you just booked. The broker's reference number off the rate
-            confirmation is enough to start — the rate and the stops can follow.
+            Add the load you just booked. The broker's number from the rate confirmation is enough
+            to start. You can add the rate and the stops later.
           </p>
           <a
             href="/app/loads/new"
@@ -316,10 +316,10 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
         </div>
       ) : (
         <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
-          <p class="font-medium">Nothing matches this view</p>
+          <p class="font-medium">No load matches</p>
           <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
-            You have <span class="tabular-nums">{totalCount}</span> loads on file. This search and
-            tab together match none of them.
+            You have <span class="tabular-nums">{totalCount}</span> loads. None of them match this
+            search and this tab together.
           </p>
           <a
             href="/app/loads"
@@ -418,6 +418,11 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
                       )}
                     </td>
 
+                    {/* The empty lane is the only cell here that links
+                        somewhere other than the load. A load with no stops has
+                        no lane and no detention clock, so this is not a fact to
+                        read past — it is the one row on the board that still
+                        needs work, and the stops page is where that work is. */}
                     <td class="px-4 py-3 whitespace-nowrap">
                       {lane.origin ? (
                         <span>
@@ -426,7 +431,12 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
                           {lane.destination ?? <span class="text-ink-300">no delivery stop</span>}
                         </span>
                       ) : (
-                        <span class="text-ink-300">no stops yet</span>
+                        <a
+                          href={`/app/loads/${l.id}/stops`}
+                          class="text-ink-300 hover:text-brand-600 hover:underline"
+                        >
+                          no stops yet
+                        </a>
                       )}
                     </td>
                   </tr>
@@ -476,29 +486,29 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
             }))}
             max={revenueCeiling}
             axisLabel={revenueCeiling > 0 ? `Full height ${compactMoney(revenueCeiling)}` : undefined}
-            emptyMessage="No rates have been typed on any load yet, so there is nothing to draw here."
+            emptyMessage="No load has a rate on it yet, so there is nothing to draw here."
           />
           {months.window.countedLoads > 0 && (
             <p class="mt-3 text-sm text-ink-500">
               <span class="font-medium text-ink-900 tabular-nums">
                 {formatCents(months.window.totalCents)}
               </span>{' '}
-              booked across {months.window.countedLoads} priced{' '}
-              {loadWord(months.window.countedLoads)}. The last column is the month still running, so
-              it is a part month.
+              booked on {months.window.countedLoads}{' '}
+              {loadWord(months.window.countedLoads)} that have a rate. The last column is the month
+              we are in now, so it is not a full month.
             </p>
           )}
         </Figure>
 
         <Figure
           title="Where the money is"
-          subtitle="Each load by its billing state — which is a different question from where the truck is"
+          subtitle="Each load by its billing status. That is a different question from where the truck is"
           coverage={mixCoverage}
         >
           <Proportion
             segments={mix.slices}
             total={mix.total}
-            emptyMessage="Nothing on the board is past the quote stage yet."
+            emptyMessage="No load on the board has moved past a quote yet."
           />
           <div class="mt-3 space-y-1 text-sm text-ink-500">
             {ready && ready.count > 0 && (
@@ -507,13 +517,13 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
                   {ready.count} {loadWord(ready.count)}
                 </span>{' '}
                 ready to invoice and not sent —{' '}
-                <span class="tabular-nums">{formatCents(ready.cents)}</span>. That is the only money
+                <span class="tabular-nums">{formatCents(ready.cents)}</span>. This is the only money
                 on this bar you can move today.
               </p>
             )}
             {awaiting && awaiting.count > 0 && (
               <p>
-                {awaiting.count} invoiced and waiting on somebody else —{' '}
+                {awaiting.count} invoiced and waiting to be paid —{' '}
                 <span class="tabular-nums">{formatCents(awaiting.cents)}</span>.
               </p>
             )}

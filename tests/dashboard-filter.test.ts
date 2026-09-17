@@ -24,6 +24,7 @@ import {
   viewNoun,
   visibleSections,
 } from '../src/lib/dashboard.ts'
+import { dueLine } from '../src/lib/rules/index.ts'
 
 const VIEWS: readonly DashboardView[] = ['all', 'overdue', 'unknown', 'soon']
 
@@ -149,4 +150,105 @@ test('every view has a noun for the "showing … only" line', () => {
   const nouns = VIEWS.map(viewNoun)
   assert.ok(nouns.every((n) => n.length > 0))
   assert.equal(new Set(nouns).size, VIEWS.length, 'two views describe themselves the same way')
+})
+
+// ------------------------------------------- the row must not argue with the tile
+
+/**
+ * The "Due in 45 days: 0" bug, pinned.
+ *
+ * The tile counts `current` rows only, and it is right to: a schedule we worked
+ * out unaided, with no record that the last cycle was done, is not a confirmed
+ * deadline. But the row rendered the same `date · countdown` for every standing,
+ * so an IFTA return sat on screen reading "Not sure · Oct 31, 2026 · in 45 days"
+ * directly under a tile insisting nothing was due in 45 days. Two numbers from
+ * the same array, contradicting each other in one glance, on the one screen the
+ * whole product is trust.
+ *
+ * These assert the ROW side of that. The bucket side is `soon` in the page,
+ * which takes `current` and nothing else — deliberately, and permanently.
+ */
+const at = (iso: string) => new Date(`${iso}T00:00:00Z`)
+
+test('an unknown row never prints a bare countdown, however confident its date', () => {
+  // The exact row from the bug: a real quarter-end we can compute on our own,
+  // with nothing telling us the previous quarter was ever filed.
+  const line = dueLine({
+    status: { standing: 'unknown', nextDue: at('2026-10-31'), needs: ['last completion date'] },
+    daysUntil: 45,
+  })
+
+  assert.ok(line.includes('Oct 31, 2026'), `the date itself must still be shown: ${line}`)
+  assert.ok(
+    !/\bin \d+ days\b/.test(line),
+    `an unknown row promised slack it cannot verify: ${line}`,
+  )
+  assert.ok(!/\b45\b/.test(line), `the countdown survived in another shape: ${line}`)
+
+  // The wording, pinned. The date is real and stays; what is unverified is the
+  // PREVIOUS cycle, and the line has to say which of the two it doubts. This
+  // used to read "if nothing was missed" — true, but a condition the reader has
+  // to unpack, and most of the owners on this product do not read English
+  // fluently. It now states the fact outright. Anything replacing it must still
+  // name the date and must still refuse to imply the previous cycle was done.
+  assert.equal(line, 'Oct 31, 2026 · we have no record of the last one')
+})
+
+test('no unknown row, dated or not, ever reads as a countdown', () => {
+  // Not just the 45-day case. "today" and "tomorrow" are countdowns too, and a
+  // row that reaches either of those while we cannot verify it is the same lie
+  // told more urgently.
+  for (const daysUntil of [0, 1, 2, 45, 400, undefined]) {
+    const line = dueLine({
+      status: { standing: 'unknown', nextDue: at('2026-10-31') },
+      daysUntil,
+    })
+    assert.ok(
+      !/\bin \d+ days\b|\btoday\b|\btomorrow\b/.test(line),
+      `unknown + daysUntil=${daysUntil} rendered a countdown: ${line}`,
+    )
+  }
+})
+
+test('an unknown row with no date at all reads as a question, not as a broken cell', () => {
+  // `missing_data`: no anchor, so nothing to count from. This rendered "— · no
+  // date", which an owner reads as the app failing rather than as the app
+  // waiting on him — and waiting on him is the entire point of this section.
+  const line = dueLine({ status: { standing: 'unknown', needs: ['medical_card_expires'] } })
+
+  assert.ok(!line.includes('—'), `an em dash is not an answer: ${line}`)
+  assert.ok(line.length > 0 && !/^\s*$/.test(line), 'an empty cell says nothing at all')
+  assert.equal(line, 'no date yet')
+})
+
+test('a current row keeps its countdown — that is the one standing that earns it', () => {
+  // The other half of the fix. Removing the countdown everywhere would have been
+  // a cure worse than the bug: `current` is the standing where both the date and
+  // the last completion are known, so the number is a fact.
+  const line = dueLine({
+    status: { standing: 'current', nextDue: at('2026-10-31'), lastDue: at('2026-07-31') },
+    daysUntil: 45,
+  })
+  assert.equal(line, 'Oct 31, 2026 · in 45 days')
+})
+
+test('an overdue row counts backward from what was missed, not forward', () => {
+  const line = dueLine({
+    status: { standing: 'overdue', nextDue: at('2026-10-31'), lastDue: at('2026-07-31') },
+    daysUntil: 45,
+  })
+  assert.ok(line.startsWith('was due Jul 31, 2026'), line)
+  assert.ok(!line.includes('Oct'), `an overdue row showed the next cycle as if it were the due one`)
+})
+
+test('dates render in UTC, so a deadline never slides a day for the reader', () => {
+  // Every date in the engine is a UTC midnight. Formatted in the reader's zone,
+  // half of them print as the day before — which in this domain is a deadline
+  // that moves, and the one direction this product refuses to be wrong in.
+  assert.ok(
+    dueLine({
+      status: { standing: 'current', nextDue: at('2027-01-01') },
+      daysUntil: 100,
+    }).startsWith('Jan 1, 2027'),
+  )
 })

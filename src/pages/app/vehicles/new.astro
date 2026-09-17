@@ -19,6 +19,7 @@ import App from '../../../layouts/App.astro'
 import {
   parseOptionalInt,
   parseStateCode,
+  parseVin,
   textOrNull,
   upperOrNull,
   VEHICLE_KINDS,
@@ -72,6 +73,15 @@ if (Astro.request.method === 'POST') {
     return reject('Tell us whether this is a power unit or a trailer.')
   }
 
+  // Parsed rather than merely uppercased, and parsed BEFORE the insert. Two
+  // things ride on it: CARB matches Clean Truck Check on this string, so a VIN
+  // wrong by one character is a truck whose state record we never find; and
+  // `vehicles_vin_unique` below compares strings, so a VIN typed in chunks with
+  // spaces slips past the duplicate guard that is the only thing stopping the
+  // same tractor being added twice.
+  const vin = parseVin(form.get('vin'))
+  if (!vin.ok) return reject(vin.message)
+
   const year = parseOptionalInt(form.get('model_year'), {
     label: 'Year',
     min: 1900,
@@ -102,7 +112,7 @@ if (Astro.request.method === 'POST') {
       carrier_id: carrierId,
       kind,
       unit_number: textOrNull(form.get('unit_number')),
-      vin: upperOrNull(form.get('vin')),
+      vin: vin.value,
       make: textOrNull(form.get('make')),
       model: textOrNull(form.get('model')),
       model_year: year.value,
@@ -120,7 +130,7 @@ if (Astro.request.method === 'POST') {
     // violated" but "you already have this truck".
     const raw = error?.message ?? 'The vehicle was not saved.'
     const message = raw.includes('vehicles_vin_unique')
-      ? 'That VIN is already on a vehicle in your fleet. Search for it from the list rather than adding it twice.'
+      ? 'That VIN is already on a vehicle in your fleet. Find it from the list instead of adding it twice.'
       : raw
     return reject(message)
   }
@@ -155,8 +165,8 @@ const field =
           What is it? <span class="text-red-600">*</span>
         </legend>
         <p class="mt-1 text-xs text-ink-500">
-          This decides which deadlines the record gets. A tractor and the trailer behind it are
-          inspected separately and each keeps its own paperwork, so they go in as two vehicles.
+          This decides which deadlines this record gets. A tractor and its trailer are inspected
+          separately and each keeps its own paperwork, so add them as two vehicles.
         </p>
         <div class="mt-2 grid gap-3 sm:grid-cols-2">
           {
@@ -193,7 +203,7 @@ const field =
             class={`${field} tabular-nums`}
           />
           <span class="mt-1 block text-xs text-ink-500">
-            What you call it in the yard. Without it we fall back to the VIN.
+            What you call it in the yard. If you leave it blank, we show the VIN instead.
           </span>
         </label>
 
@@ -201,19 +211,26 @@ const field =
           <span class="text-sm font-medium">
             VIN <span class="font-normal text-ink-300">(optional)</span>
           </span>
+          {/*
+            maxlength is 24 and not 17 on purpose. The parser strips spaces and
+            hyphens, which is exactly how a VIN gets typed off a door plate in
+            chunks — and a hard 17 would silently swallow the last characters of
+            a correctly-typed VIN the moment he put a space in it. Over-length is
+            refused with a sentence instead.
+          */}
           <input
             type="text"
             name="vin"
             value={prior('vin')}
-            maxlength="17"
+            maxlength="24"
             autocapitalize="characters"
             spellcheck="false"
             placeholder="17 characters"
             class={`${field} font-mono uppercase`}
           />
           <span class="mt-1 block text-xs text-ink-500">
-            CARB reads the VIN to set your Clean Truck Check months, so it is worth a walk to the
-            door.
+            CARB uses the VIN to set your Clean Truck Check months, so it is worth a walk to the
+            door. Spaces and dashes are fine. We take them out.
           </span>
         </label>
       </div>
@@ -297,10 +314,9 @@ const field =
         blank is not the same as exempt.
       */}
       <p class="mt-3 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
-        Leave the GVWR blank if you do not know it. Blank means unknown, and we treat an
-        unknown-weight truck as fully regulated — you will see every weight-conditional deadline
-        until you fill it in. Guessing a number is the one thing that can quietly switch a real
-        deadline off.
+        Leave the GVWR blank if you do not know it. Blank means unknown. We treat a truck of
+        unknown weight as fully regulated, so you will see every weight-based deadline until you
+        fill it in. Do not guess: a wrong weight can switch off a real deadline.
       </p>
 
       <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">

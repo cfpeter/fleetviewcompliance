@@ -213,9 +213,13 @@ test('the headline reports dates typed AND rows cleared, because they differ', (
     }),
   ])
   assert.equal(rowsSettledBy(editor.subjects[0], ['periodic_inspection_date']), 2)
-  assert.equal(savedHeadline(1, 2), '1 date saved — 2 items off this list.')
-  assert.equal(savedHeadline(1, 1), '1 date saved — 1 item off this list.')
-  assert.equal(savedHeadline(0, 0), 'Nothing saved — every box was left blank.')
+  // Two short sentences rather than one joined by an em dash. Both numbers are
+  // still reported — that is the invariant — but the readers of this screen are
+  // mostly not fluent in English, and a dash mid-sentence is a join they have to
+  // work out before they can read either half.
+  assert.equal(savedHeadline(1, 2), '1 date saved. 2 items off this list.')
+  assert.equal(savedHeadline(1, 1), '1 date saved. 1 item off this list.')
+  assert.equal(savedHeadline(0, 0), 'Nothing saved. Every box was left blank.')
 })
 
 test('a subject with no table to file against is counted, never silently dropped', () => {

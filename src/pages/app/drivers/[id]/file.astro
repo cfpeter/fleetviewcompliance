@@ -123,9 +123,8 @@ const name = `${driver.first_name} ${driver.last_name}`.trim()
       {
         outstanding.length === 0 ? (
           <p class="mt-2 rounded-lg bg-ink-50 px-4 py-3 text-sm">
-            Every item below is on file as of the date above. That is a statement about this
-            carrier's records on that date, and nothing more — the documents themselves have not
-            been examined by anyone here.
+            Every item below is on file as of the date above. This only says what this carrier's
+            records showed on that date. Nobody here has looked at the documents themselves.
           </p>
         ) : (
           <ol class="mt-3 space-y-2">
@@ -180,13 +179,13 @@ const name = `${driver.first_name} ${driver.last_name}`.trim()
     <footer class="mt-8 border-t border-ink-100 pt-5 text-xs text-ink-500">
       <p>
         This is a record of what this carrier holds and what was observed on the date above. It is
-        not a certification of compliance, and it is not a statement that any document in it is
-        genuine, current, or sufficient — only that the carrier's own records showed what is
-        printed here, on that date.
+        not a certification of compliance. It does not say that any document in it is genuine,
+        current, or enough. It says only that the carrier's own records showed what is printed
+        here, on that date.
       </p>
       <p class="mt-2">
-        Deadline dates are computed from the Federal Motor Carrier Safety Regulations and the
-        California rules cited beside each item.
+        Deadline dates come from the Federal Motor Carrier Safety Regulations and the California
+        rules listed beside each item.
         {/* Kept on one line: tests/proof-binder.test.ts matches this sentence exactly, and
             a line wrap in the middle of it would pass review and fail the guard. */}
         FleetView Compliance is not affiliated with FMCSA, the DOT, or any government agency.

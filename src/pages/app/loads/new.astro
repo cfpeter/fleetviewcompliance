@@ -74,7 +74,7 @@ if (Astro.request.method === 'POST') {
   if (intent !== 'create') {
     // An unrecognised intent is a bug or a crafted post; either way it must not
     // fall through and render the form as though this were a GET.
-    return reject('That button did not tell us what to do. Try again.')
+    return reject('That button did not say what to do. Try again.')
   }
 
   const loadNumber = textOrNull(form.get('load_number'))
@@ -87,7 +87,7 @@ if (Astro.request.method === 'POST') {
    */
   if (!loadNumber && !brokerReference) {
     return reject(
-      'Give the load a number — ours or the broker’s. Everything else can be filled in later, but without one of these the load cannot be searched for.',
+      'Enter a load number or a broker reference. You can fill in everything else later. Without one of these two numbers you cannot find this load again.',
     )
   }
 
@@ -161,7 +161,7 @@ if (Astro.request.method === 'POST') {
     // The dropdown wins over the free-text box when both are filled — she picked
     // a record deliberately, and the text box is usually just left over from
     // typing before she spotted the customer in the list.
-    if (!UUID.test(chosen)) return reject('That customer could not be read. Pick it again.')
+    if (!UUID.test(chosen)) return reject('We could not read that customer. Pick it again.')
     customerId = chosen
   } else if (typedName) {
     // Match an existing customer BEFORE inserting. Without this, every
@@ -187,7 +187,7 @@ if (Astro.request.method === 'POST') {
         .select('id')
         .single()
       if (createError || !created) {
-        return reject(createError?.message ?? 'That customer could not be saved.')
+        return reject(createError?.message ?? 'We could not save that customer.')
       }
       customerId = created.id
     }
@@ -227,7 +227,7 @@ if (Astro.request.method === 'POST') {
     .select('id')
     .single()
 
-  if (error || !data) return reject(error?.message ?? 'That load could not be saved.')
+  if (error || !data) return reject(error?.message ?? 'We could not save this load.')
 
   // 303, spelled out. Astro.redirect() defaults to 302, and a 302 lets the
   // browser repeat the POST on a refresh or a back — which here books the same
@@ -263,17 +263,16 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
 
 <App
   title="Add a load"
-  subtitle="The broker&#8217;s reference number is enough to start. The rest can follow the rate confirmation."
+  subtitle="You only need the broker&#8217;s reference number to start. Add the rest later."
 >
   <div class="max-w-3xl">
     {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
 
     <form method="POST" class="space-y-4">
       <div class={card}>
-        <h2 class="font-medium tracking-tight">Reference numbers</h2>
+        <h2 class="font-medium tracking-tight">Load numbers</h2>
         <p class="mt-1 text-sm text-ink-500">
-          One of these two is all we insist on, because they are the only way to find this load
-          again.
+          Enter at least one of these two. They are the only way to find this load again.
         </p>
 
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
@@ -290,11 +289,11 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
               name="broker_reference"
               value={prior('broker_reference')}
               autofocus
-              placeholder="Off the rate confirmation"
+              placeholder="From the rate confirmation"
               class={`${field} tabular-nums`}
             />
             <span class="mt-1 block text-xs text-ink-500">
-              What the broker calls this load. This is what you will search by when they call.
+              The broker's own number for this load. Search by this number when the broker calls.
             </span>
           </label>
 
@@ -309,7 +308,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
               class={`${field} tabular-nums`}
             />
             <span class="mt-1 block text-xs text-ink-500">
-              Your own numbering, if you use one. Leave it blank if you do not.
+              Your own number, if you use one. Leave it blank if you do not.
             </span>
           </label>
         </div>
@@ -343,8 +342,9 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
               class={field}
             />
             <span class="mt-1 block text-xs text-ink-500">
-              Saved as a customer you can reuse. A name that already exists is matched rather than
-              duplicated. If you pick from the list, the list wins.
+              We save this as a customer you can use again. If the name is already on the list, we
+              use that one instead of making a second one. If you also pick from the list, the list
+              wins.
             </span>
           </label>
         </div>
@@ -415,8 +415,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
       <div class={card}>
         <h2 class="font-medium tracking-tight">Rate</h2>
         <p class="mt-1 text-sm text-ink-500">
-          Type dollars. Everything is stored to the cent, so what you enter here is what the invoice
-          will say.
+          Enter dollars. We keep the cents. What you type here is what the invoice says.
         </p>
 
         <div class="mt-4 grid gap-4 sm:grid-cols-3">
@@ -462,7 +461,8 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
               />
             </div>
             <span class="mt-1 block text-xs text-ink-500">
-              A deduction, like a lumper or an advance, goes in as a negative.
+              On a load, money taken off goes in as a negative. A lumper or a fuel advance looks
+              like -150.00. Money the broker adds goes in as a plain positive number.
             </span>
           </label>
         </div>
@@ -471,8 +471,8 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
       <div class={card}>
         <h2 class="font-medium tracking-tight">Detention terms</h2>
         <p class="mt-1 text-sm text-ink-500">
-          Off the rate confirmation, as numbers rather than a sentence in an attachment. These are
-          the terms that decide whether four hours at a dock is billable.
+          Copy these numbers from the rate confirmation. They decide whether you can bill a long
+          wait at a dock.
         </p>
 
         <div class="mt-4 grid gap-4 sm:grid-cols-3">
@@ -527,10 +527,10 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
           <span>
             <span class="text-sm font-medium">The broker must pre-approve detention</span>
             <span class="mt-1 block text-xs text-ink-500">
-              Tick this and the driver has to call before the free hours run out, or the detention
-              is not billable however long he sits. Left unticked, we record that we do not know
-              yet rather than that it is not required — the load page is where a definite "no
-              pre-approval needed" gets set.
+              Tick this if the driver must call the broker before the free hours run out. If he
+              does not call, you cannot bill the wait, however long he sits. If you leave it
+              unticked we record "not known yet". We do not record "not needed". You set a clear
+              "not needed" on the load page.
             </span>
           </span>
         </label>

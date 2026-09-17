@@ -36,8 +36,24 @@ if (password.length < 8) {
 }
 
 // A seeded account with a known password must never exist in production.
-if ((e.PUBLIC_SITE_URL ?? '').includes('fleetviewcompliance.com') && !process.env.ALLOW_SEED) {
-  console.error('PUBLIC_SITE_URL looks like production. Refusing.')
+//
+// Matched on the HOST, not on a substring of the URL. dev.fleetviewcompliance.com
+// CONTAINS the production domain, so a substring test refuses the exact database
+// this script exists to seed — and a guard that blocks the ordinary path is one
+// you learn to prefix with ALLOW_SEED=1 every single time, which is also what you
+// will type on the day it was right. The two hosts are the production custom
+// domains in wrangler.jsonc; anything else (dev, localhost, a preview) is fair game.
+const PRODUCTION_HOSTS = ['fleetviewcompliance.com', 'www.fleetviewcompliance.com']
+// Parsed by hand rather than with `new URL`, which throws on a value that was
+// written without a scheme — and a throw here would skip the check entirely.
+const siteHost = (e.PUBLIC_SITE_URL ?? '')
+  .trim()
+  .replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+  .split('/')[0]
+  .split(':')[0]
+  .toLowerCase()
+if (PRODUCTION_HOSTS.includes(siteHost) && !process.env.ALLOW_SEED) {
+  console.error(`PUBLIC_SITE_URL points at production (${siteHost}). Refusing.`)
   console.error('Set ALLOW_SEED=1 only if you are certain this is a dev database.')
   process.exit(1)
 }

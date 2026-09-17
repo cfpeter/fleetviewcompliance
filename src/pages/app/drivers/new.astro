@@ -10,6 +10,7 @@
  */
 import App from '../../../layouts/App.astro'
 import { US_STATE_CODES, formDate, formText, todayInCalifornia } from '../../../lib/drivers.ts'
+import { parsePhone } from '../../../lib/phone.ts'
 
 const supabase = Astro.locals.supabase!
 const carrierId = Astro.locals.carrierId!
@@ -38,7 +39,16 @@ if (Astro.request.method === 'POST') {
     // string on the way out: a date of birth and a phone number in a URL land in
     // every access log between here and her desk, which is not a trade worth
     // making to repopulate a form that the browser was already guarding.
-    if (!first || !last) return back('A first and a last name are the two things we cannot store a driver without.')
+    if (!first || !last) return back('We need a first name and a last name to save a driver.')
+
+    // Blank is still perfectly fine — "a name is enough" is the promise at the
+    // top of this page and a required phone box is a box she invents a number
+    // for. What is NOT fine is storing something undialable: this column is
+    // where a compliance reminder is delivered, so a number with a word in it is
+    // a driver who is never told his medical card expired, on a record that
+    // looks like we have his number.
+    const phone = parsePhone(form.get('phone'), 'Phone')
+    if (!phone.ok) return back(phone.message)
 
     const { data, error } = await supabase
       .from('drivers')
@@ -50,7 +60,7 @@ if (Astro.request.method === 'POST') {
         carrier_id: carrierId,
         first_name: first,
         last_name: last,
-        phone: formText(form, 'phone'),
+        phone: phone.value,
         email: formText(form, 'email'),
         cdl_number: formText(form, 'cdl_number'),
         cdl_state: formText(form, 'cdl_state'),
@@ -81,7 +91,7 @@ const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
 ---
 
-<App title="Add a driver" subtitle="A name is enough. The rest can follow the paperwork.">
+<App title="Add a driver" subtitle="A name is enough to start. The rest can wait for the paperwork.">
   <div class="max-w-2xl">
     {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
 
@@ -102,7 +112,16 @@ const field =
           <span class="text-sm font-medium">
             Phone <span class="font-normal text-ink-300">(optional)</span>
           </span>
-          <input type="tel" name="phone" class={`${field} tabular-nums`} />
+          <input
+            type="tel"
+            name="phone"
+            placeholder="(818) 334-0168"
+            class={`${field} tabular-nums`}
+          />
+          <span class="mt-1 block text-xs text-ink-500">
+            This is where his reminders go. Type ten digits and nothing else. An extension or a
+            note next to the number makes it impossible to dial.
+          </span>
         </label>
         <label class="block">
           <span class="text-sm font-medium">
@@ -148,9 +167,9 @@ const field =
           </span>
           <input type="date" name="hired_on" max={today} class={`${field} tabular-nums`} />
           <span class="mt-1 block text-xs text-ink-500">
-            Five federal deadlines are counted from this day — the qualification file, the road
-            test, the pre-employment Clearinghouse query, and the 30-day driving-record and
-            previous-employer checks.
+            Five federal deadlines are counted from this day: the qualification file, the road
+            test, the pre-employment Clearinghouse query, and the 30-day driving record and
+            previous employer checks.
           </span>
         </label>
       </div>
@@ -161,7 +180,7 @@ const field =
         </span>
         <input type="date" name="date_of_birth" max={today} class={`${field} tabular-nums`} />
         <span class="mt-1 block text-xs text-ink-500">
-          Needed to request a driving record or run a Clearinghouse query. Nothing else reads it.
+          Needed to request a driving record or run a Clearinghouse query. Nothing else uses it.
         </span>
       </label>
 

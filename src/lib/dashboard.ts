@@ -99,12 +99,12 @@ export function emptyFilterState(view: DashboardView): { title: string; body: st
     case 'overdue':
       return {
         title: 'Nothing is overdue',
-        body: 'Every deadline we have a date for is still ahead of you. The ones we cannot date are under "Missing a date" — those carry the same exposure as an expired one.',
+        body: 'Every deadline we have a date for is still ahead of you. The ones with no date are under "Missing a date". Those carry the same risk as an expired one.',
       }
     case 'unknown':
       return {
         title: 'We have a date for everything',
-        body: 'Nothing is waiting on you for a date. Every rule we track has something to count from, so every row on this dashboard is a real answer rather than a guess.',
+        body: 'Nothing is waiting on you. Every rule we track has a date to count from, so every row on this dashboard is a real answer, not a guess.',
       }
     case 'soon':
       return {

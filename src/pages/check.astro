@@ -19,6 +19,7 @@ import {
   type FederalResult,
 } from '../lib/fmcsa.ts'
 import { mcs150Status } from '../lib/mcs150.ts'
+import { operationLabel } from '../lib/onboarding.ts'
 
 const raw = Astro.url.searchParams.get('dot') ?? ''
 const dot = normalizeDot(raw)
@@ -68,10 +69,16 @@ const onFile = Number(authRows[0]?.bipd_file)
 const insuranceShort =
   Number.isFinite(required) && Number.isFinite(onFile) && onFile < required
 
-const title = carrier ? `USDOT ${dot} · ${carrier.legal_name ?? 'Carrier'}` : 'Check your DOT number'
+const title = carrier
+  ? `USDOT ${dot} · ${carrier.legal_name ?? 'Carrier'}`
+  : 'Check your USDOT number'
 ---
 
-<Public title={title} description="Look up a carrier's federal record and upcoming deadlines." noindex>
+<Public
+  title={title}
+  description="Type a USDOT number. See the federal record and the next deadlines. Free."
+  noindex
+>
   <section class="mx-auto max-w-4xl px-4 py-10 sm:px-6 sm:py-14">
     <form method="GET" action="/check" class="mb-8 flex max-w-md flex-col gap-3 sm:flex-row">
       <input
@@ -94,23 +101,24 @@ const title = carrier ? `USDOT ${dot} · ${carrier.legal_name ?? 'Carrier'}` : '
 
     {!dot && raw && (
       <p class="mb-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-        That does not look like a USDOT number. It is between one and eight digits.
+        That is not a USDOT number. A USDOT number has 1 to 8 digits, numbers only. Check it and
+        type it again.
       </p>
     )}
 
     {failed && (
       <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
-        The federal data service did not answer just now. That is their end, not yours — try again
-        in a moment.
+        The federal database did not answer. The problem is on their side, not yours. Wait a minute
+        and press Check again.
       </p>
     )}
 
     {dot && !failed && !carrier && (
       <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
-        <p class="font-medium">No carrier found for USDOT {dot}</p>
+        <p class="font-medium">We found no carrier with USDOT {dot}</p>
         <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
-          Check the digits. Brand-new registrations can also take a few days to appear in the
-          public file.
+          Check the number and try again. If you registered in the last few days, your record may
+          not be in the public file yet.
         </p>
       </div>
     )}
@@ -142,34 +150,38 @@ const title = carrier ? `USDOT ${dot} · ${carrier.legal_name ?? 'Carrier'}` : '
 
         {carrier.status_code === 'I' && (
           <p class="mt-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            <strong>"Inactive" here means one specific thing</strong> — the biennial MCS-150 update
-            was not completed (49 CFR 390.19(b)(4)). It is not a safety finding. Filing the update
-            clears it.
+            <strong>Inactive means one thing:</strong> your MCS-150 update was not filed. It is not
+            a safety problem. File the update and the status clears. Rule: 49 CFR 390.19(b)(4).
           </p>
         )}
 
         <div class="mt-6 grid gap-4 sm:grid-cols-3">
           <div class={card}>
-            <div class="text-xs tracking-wide text-ink-500 uppercase">Power units</div>
+            <div class="text-xs tracking-wide text-ink-500 uppercase">Trucks</div>
             <div class="mt-1 text-3xl font-semibold tabular-nums">{num(carrier.power_units)}</div>
           </div>
           <div class={card}>
             <div class="text-xs tracking-wide text-ink-500 uppercase">Drivers</div>
             <div class="mt-1 text-3xl font-semibold tabular-nums">{num(carrier.total_drivers)}</div>
-            <div class="mt-1 text-xs text-ink-500">{num(carrier.total_cdl)} hold a CDL</div>
+            <div class="mt-1 text-xs text-ink-500">{num(carrier.total_cdl)} have a CDL</div>
           </div>
           <div class={card}>
             <div class="text-xs tracking-wide text-ink-500 uppercase">Operation</div>
             <div class="mt-1 text-lg font-semibold">
-              {carrier.carrier_operation === 'A' ? 'Interstate' : 'Intrastate'}
+              {/* operationLabel, not a ternary. A blank field in the federal file is
+                  not a statement that he runs intrastate only, and that distinction
+                  decides which half of the rule catalogue he is shown. */}
+              {operationLabel(carrier.carrier_operation)}
             </div>
             <div class="mt-1 text-xs text-ink-500">
-              {carrier.hm_ind === 'Y' ? 'Carries hazardous materials' : 'No hazmat flag on file'}
+              {carrier.hm_ind === 'Y'
+                ? 'Carries hazardous materials'
+                : 'No hazardous materials on file'}
             </div>
           </div>
         </div>
 
-        <h2 class="mt-10 text-xl font-semibold tracking-tight">What we can already tell you</h2>
+        <h2 class="mt-10 text-xl font-semibold tracking-tight">What we can tell you now</h2>
 
         <div class="mt-4 space-y-4">
           {mcs150 && (
@@ -184,7 +196,7 @@ const title = carrier ? `USDOT ${dot} · ${carrier.legal_name ?? 'Carrier'}` : '
               ]}
             >
               <div class="flex flex-wrap items-center gap-2">
-                <p class="font-medium">MCS-150 biennial update</p>
+                <p class="font-medium">MCS-150 update (every 2 years)</p>
                 <span
                   class:list={[
                     'rounded-md px-2 py-0.5 text-xs font-medium',
@@ -196,10 +208,10 @@ const title = carrier ? `USDOT ${dot} · ${carrier.legal_name ?? 'Carrier'}` : '
                   ]}
                 >
                   {mcs150.state === 'overdue'
-                    ? 'Overdue'
+                    ? 'Late'
                     : mcs150.state === 'unknown'
                       ? 'Not sure'
-                      : 'Current'}
+                      : 'Up to date'}
                 </span>
               </div>
 
@@ -209,38 +221,37 @@ const title = carrier ? `USDOT ${dot} · ${carrier.legal_name ?? 'Carrier'}` : '
                     Was due {fmt(mcs150.lastDue)}
                   </p>
                   <p class="mt-2 text-sm text-ink-700">
-                    The federal record shows your last filing on {fmt(lastFiled!)}, which is before
-                    that deadline. This is the most likely reason a carrier shows as Inactive, and
-                    filing the update is what clears it.
+                    The federal record shows your last filing on {fmt(lastFiled!)}. That is older
+                    than the deadline above, so your update is late. This is the most common reason
+                    a carrier shows as Inactive. File the update and it clears.
                   </p>
                   <p class="mt-2 text-sm text-ink-500">
-                    Your next one after that falls {fmt(mcs150.nextDue)}.
+                    Your next deadline after that is {fmt(mcs150.nextDue)}.
                   </p>
                 </>
               ) : mcs150.state === 'unknown' ? (
                 <>
                   <p class="mt-1 text-2xl font-semibold tabular-nums">{fmt(mcs150.nextDue)}</p>
                   <p class="mt-2 text-sm text-ink-500">
-                    We could not read a last-filed date from the federal record, so we cannot tell
-                    you whether you are current — only when the next one falls. We would rather say
-                    that than guess.
+                    The federal record does not show the date of your last filing. So we cannot say
+                    if you are up to date. We can only show you the next deadline.
                   </p>
                 </>
               ) : (
                 <>
                   <p class="mt-1 text-2xl font-semibold tabular-nums">{fmt(mcs150.nextDue)}</p>
                   <p class="mt-2 text-sm text-ink-500">
-                    Last filed {fmt(lastFiled!)}, which covers the deadline on{' '}
+                    You filed on {fmt(lastFiled!)}. That covers the deadline of{' '}
                     {fmt(mcs150.lastDue)}.
                   </p>
                 </>
               )}
 
               <p class="mt-3 text-xs text-ink-500">
-                Your filing month comes from the last digit of your DOT number and the year from the
-                digit before it, so yours falls in {mcs150.oddYears ? 'odd' : 'even'}-numbered years
-                — 49 CFR 390.19T(b). Missing it carries a civil penalty and deactivation of the
-                USDOT number.
+                Your filing month comes from the last digit of your USDOT number. The year comes
+                from the digit before it. You file in {mcs150.oddYears ? 'odd' : 'even'}-numbered
+                years. Rule: 49 CFR 390.19T(b). If you miss it, FMCSA can fine you and turn off
+                your USDOT number.
               </p>
             </div>
           )}
@@ -268,10 +279,10 @@ const title = carrier ? `USDOT ${dot} · ${carrier.legal_name ?? 'Carrier'}` : '
               </ul>
               {money(authRows[0]?.min_cov_amount) && (
                 <p class="mt-3 text-sm text-ink-500">
-                  Liability required {money(authRows[0]?.min_cov_amount)}, on file{' '}
+                  Liability insurance required: {money(authRows[0]?.min_cov_amount)}. On file:{' '}
                   {money(authRows[0]?.bipd_file) ?? '—'}.
                   {insuranceShort && (
-                    <strong class="text-red-700"> That is below the requirement.</strong>
+                    <strong class="text-red-700"> This is less than the law requires.</strong>
                   )}
                 </p>
               )}
@@ -282,10 +293,10 @@ const title = carrier ? `USDOT ${dot} · ${carrier.legal_name ?? 'Carrier'}` : '
             <div class={card}>
               <p class="font-medium">Operating authority</p>
               <p class="mt-2 text-sm text-ink-500">
-                No authority record came back for this DOT number. That is not the same as having
-                none — the federal authority file does not cover every carrier, and an
-                intrastate-only carrier never needed one. We would confirm this with you rather
-                than guess.
+                We found no authority record for this USDOT number. This does not mean you have no
+                authority. The federal file does not list every carrier, and a carrier that drives
+                only inside one state never needed one. We will check this with you. We will not
+                guess.
               </p>
             </div>
           )}
@@ -294,33 +305,32 @@ const title = carrier ? `USDOT ${dot} · ${carrier.legal_name ?? 'Carrier'}` : '
             <div class="rounded-xl border border-ink-100 bg-white p-5">
               <p class="font-medium">Operating authority</p>
               <p class="mt-2 text-sm text-ink-500">
-                We could not reach the federal authority file just now, so we are not going to tell
-                you anything about your authority — including that it looks fine. Reload in a
-                moment.
+                We could not reach the federal authority file. We do not know your authority status
+                right now, so we are showing nothing here. Wait a minute and reload this page.
               </p>
             </div>
           )}
         </div>
 
         <div class="mt-10 rounded-2xl border border-ink-100 bg-ink-50 p-6 sm:p-8">
-          <h2 class="text-xl font-semibold tracking-tight">And what we cannot see from here</h2>
+          <h2 class="text-xl font-semibold tracking-tight">What we cannot see here</h2>
           <p class="mt-2 text-sm text-ink-500">
-            The federal file holds no driver-level data at all. Medical card expiries, CDL
-            expiries, annual MVR reviews, Clearinghouse queries, your CHP terminal inspection and
-            your Clean Truck Check dates all live in your office. Those are the ones that actually
-            park a truck — and the ones we would set up with you once, then watch.
+            The federal file has no driver records. Medical card dates, CDL dates, yearly MVR
+            reviews, Clearinghouse checks, your CHP terminal inspection and your Clean Truck Check
+            dates are only in your office. These are the dates that stop a truck. We set them up
+            with you one time, then we watch them for you.
           </p>
           <a
             href="/pricing"
             class="mt-5 inline-block rounded-xl bg-ink-900 px-7 py-3.5 font-semibold text-white transition hover:bg-ink-700"
           >
-            See what it costs →
+            See the price →
           </a>
         </div>
 
         <p class="mt-8 text-xs text-ink-300">
-          Carrier data from the FMCSA public census and authority files, retrieved live. FleetView
-          Compliance is not affiliated with FMCSA, the DOT, or any government agency.
+          This carrier data comes live from the FMCSA public census and authority files. FleetView
+          Compliance is not part of FMCSA, the DOT, or any government agency.
         </p>
       </>
     )}

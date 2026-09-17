@@ -37,6 +37,18 @@
  */
 
 import type { CensusRow } from './fmcsa.ts'
+import { toE164 } from './phone.ts'
+
+/**
+ * Re-exported rather than moved-and-forgotten.
+ *
+ * `toE164` now lives in phone.ts because the driver and customer forms need the
+ * same definition of "a number we can actually reach" that this flow needed
+ * first — and two parsers would be two definitions. It is exported from here so
+ * that every existing importer, and the tests that attack it as a filter on
+ * census rubbish, keep pointing at one implementation.
+ */
+export { toE164 }
 
 // ----------------------------------------------------------------- policy
 
@@ -139,34 +151,6 @@ export interface ClaimOption {
  * exactly the information we chose to reveal and nothing else.
  */
 const BULLETS = '•••'
-
-/**
- * A census phone as E.164, or null when it is not a number we can send to.
- *
- * Strict on purpose, for two separate reasons that happen to want the same rule:
- * Twilio rejects anything that is not E.164 (and reports it as a failed send
- * long after the page has told the user a code is coming), and a mask that shows
- * the last four digits of a five-digit field has revealed almost all of it. A
- * value that is not a plausible North American number is therefore not a channel
- * at all — better a carrier who goes to manual review than a code sent into the
- * void with a confident message on screen.
- */
-export function toE164(raw: string | null | undefined): string | null {
-  const digits = (raw ?? '').replace(/\D/g, '')
-  const national = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits
-  if (national.length !== 10) return null
-
-  // NANP: neither the area code nor the exchange may start with 0 or 1. This
-  // rejects the placeholder rubbish in the older census rows — 1111111111 and
-  // friends — before we spend a message on it.
-  if (!/^[2-9]\d\d[2-9]\d{6}$/.test(national)) return null
-
-  // Ten of the same digit passes the rule above (9999999999) and is never a
-  // real line. The census has these.
-  if (/^(\d)\1{9}$/.test(national)) return null
-
-  return `+1${national}`
-}
 
 /**
  * The phone, masked to its last four digits.

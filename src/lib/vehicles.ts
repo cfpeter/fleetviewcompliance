@@ -361,6 +361,253 @@ export function parseStateCode(raw: FormDataEntryValue | null): Parsed<string | 
   return { ok: true, value: s }
 }
 
+// ---------------------------------------------------------------------------
+// VIN
+// ---------------------------------------------------------------------------
+//
+// The VIN is the join key for the two promises this product is sold on. CARB
+// matches a Clean Truck Check record on the VIN, and a roadside or § 396.17
+// inspection report is filed against it. A VIN that is wrong by one character
+// is not a cosmetic defect: it is a truck whose federal and state records this
+// product will never find, reported on a dashboard that looks complete.
+//
+// It is also the column under the `vehicles_vin_unique` partial index, which is
+// what stops the same truck being added twice. That index compares STRINGS, so
+// whatever the owner types has to be reduced to one spelling before it reaches
+// Postgres or the guard is defeated by a space — see `normalizeVin`.
+
+/** Characters excluded from the 17-character standard, so they can never be typed into one. */
+const VIN_FORBIDDEN_LETTERS = ['I', 'O', 'Q'] as const
+
+/** 49 CFR 565: seventeen characters on anything built for US sale since 1981. */
+export const VIN_MODERN_LENGTH = 17
+
+/**
+ * The shortest string we are willing to call a VIN.
+ *
+ * Eight, and the number is a judgement rather than a standard — there was no
+ * standard before 1981, which is the whole reason a floor is needed. Pre-1981
+ * serials on equipment a small fleet still runs bottom out around here: a 1978
+ * trailer or a converter dolly carries an eight-to-thirteen character serial and
+ * nothing longer. Every typo the audit turned up sits far below it.
+ *
+ * Chosen permissive on purpose. A record refused the VIN still gets every
+ * deadline it is owed — a trailer's only rule is § 396.17 and that runs off a
+ * date, not a VIN — so the cost of turning away a genuine oddity is one empty
+ * box, while the cost of storing a three-character stub is a field that reads as
+ * answered and matches nothing, forever.
+ */
+export const VIN_MIN_LENGTH = 8
+
+/**
+ * One spelling of whatever was typed: trimmed, stripped of spaces and hyphens,
+ * uppercased.
+ *
+ * THIS IS WHAT MAKES THE DUPLICATE GUARD WORK. `vehicles_vin_unique` is a
+ * partial unique index on (carrier, VIN); it is a string comparison, so
+ * '1FUJGLD8XLSKR1234' and '1FUJGLD8X LSKR1234' are two different trucks to
+ * Postgres and the owner adds the same tractor twice with no warning. Hyphens
+ * and spaces are exactly how a VIN gets typed off a door plate in chunks, so
+ * they come out here rather than being argued about on the form.
+ */
+export function normalizeVin(raw: string): string {
+  return raw.replace(/[\s-]/g, '').trim().toUpperCase()
+}
+
+/**
+ * Transliteration from 49 CFR 565.15(c), as two strings read in step.
+ *
+ * Written this way rather than as twenty-three separate entries because the one
+ * failure mode that matters is a single letter given the wrong value: the
+ * checksum then disagrees with perfectly good VINs and the page nags about
+ * trucks that are fine, which trains the owner to ignore it. Side by side the
+ * three runs are visible at a glance — A-H is 1-8, J-N is 1-5, P and R are 7 and
+ * 9, S-Z is 2-9 — and I, O and Q are simply absent. That absence IS the reason
+ * the standard excludes them from a 17-character VIN.
+ */
+const VIN_LETTERS = 'ABCDEFGHJKLMNPRSTUVWXYZ'
+const VIN_LETTER_VALUES = '12345678123457923456789'
+
+/** Positional weights, position 1 to 17. Position 9 weighs 0 because it IS the check digit. */
+const VIN_WEIGHTS = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2]
+
+/**
+ * The check digit a 17-character VIN ought to carry at position 9, or null when
+ * the string is not the shape that has one.
+ *
+ * Exported because the vehicle page shows it. A mismatch is a real signal —
+ * position 9 is a weighted checksum over the other sixteen characters, so it
+ * catches nearly every single-character slip and every transposition of two
+ * adjacent ones, which is what a VIN copied by hand off a door plate actually
+ * suffers from.
+ */
+export function vinCheckDigit(vin: string): string | null {
+  const v = normalizeVin(vin)
+  if (v.length !== VIN_MODERN_LENGTH) return null
+  let sum = 0
+  for (let i = 0; i < VIN_MODERN_LENGTH; i++) {
+    const c = v[i]
+    // -1 is I, O, Q or anything else with no value in the table, and it means
+    // the string cannot carry a check digit at all rather than that it carries a
+    // failing one. Returning null keeps those two apart for the caller.
+    const at = VIN_LETTERS.indexOf(c)
+    const value = c >= '0' && c <= '9' ? Number(c) : at === -1 ? -1 : Number(VIN_LETTER_VALUES[at])
+    if (value < 0) return null
+    sum += value * VIN_WEIGHTS[i]
+  }
+  const remainder = sum % 11
+  return remainder === 10 ? 'X' : String(remainder)
+}
+
+/**
+ * True when a stored 17-character VIN disagrees with its own check digit.
+ *
+ * ADVISORY, NEVER A REFUSAL, and that is the decision worth defending. A failed
+ * check digit is usually a typo, but "usually" is not "always": small trailer
+ * and converter-dolly builders do ship VINs that fail this arithmetic, and a
+ * truck that was never built for US sale has no reason to satisfy it at all.
+ * Refusing on a failed check digit would lock a real unit out of the product
+ * entirely, with no override, over a rule its manufacturer broke. A false
+ * refusal here costs the owner his truck; a false warning costs him ten seconds
+ * at the door plate. So the page renders this beside the field and saves
+ * anyway.
+ *
+ * False for anything that is not a 17-character VIN. A pre-1981 serial has no
+ * check digit, and flagging one for failing a test that did not exist when it
+ * was stamped would teach the owner to ignore the flag.
+ */
+export function vinCheckDigitMismatch(vin: string | null | undefined): boolean {
+  const v = normalizeVin(String(vin ?? ''))
+  if (v.length !== VIN_MODERN_LENGTH) return false
+  const expected = vinCheckDigit(v)
+  return expected !== null && expected !== v[8]
+}
+
+/**
+ * A VIN as the owner typed it, normalised — or a refusal that says why.
+ *
+ * Blank is still blank. The VIN box is optional and stays optional: he may have
+ * to walk to the door to read it, and "put in what you know" is the whole
+ * posture of the add form. NULL also has to be the empty answer rather than '',
+ * because the partial unique index treats '' as a VALUE and two trucks saved
+ * with the box untouched would collide over a VIN neither of them has.
+ *
+ * WHAT IT REFUSES, AND WHY EACH ONE:
+ *
+ * Anything but letters and digits. Punctuation left after the hyphens and
+ * spaces come out is a paste of something that was not a VIN.
+ *
+ * Longer than 17. No VIN in any era has been, so this is a doubled paste or two
+ * fields run together — and it would be truncated or rejected by Postgres later
+ * with a message about a column.
+ *
+ * Shorter than eight. See VIN_MIN_LENGTH: below that it is a partial entry, and
+ * a partial VIN is worse than an empty one because it looks answered and will
+ * never match a Clean Truck Check or inspection record.
+ *
+ * I, O or Q in a 17-character VIN. The standard left those three letters out so
+ * they could never be confused with 1 and 0, which means a manufacturer cannot
+ * have stamped one — at seventeen characters, an I was typed by a person.
+ * Below seventeen the rule is deliberately NOT applied: a 1978 trailer's serial
+ * predates the standard and may legitimately contain an O, and refusing it
+ * would be enforcing a rule against the one case short VINs exist for.
+ */
+export function parseVin(raw: FormDataEntryValue | string | null): Parsed<string | null> {
+  const vin = normalizeVin(String(raw ?? ''))
+  if (vin === '') return { ok: true, value: null }
+
+  if (!/^[A-Z0-9]+$/.test(vin)) {
+    return {
+      ok: false,
+      message: 'A VIN is letters and digits only. Leave it blank if you do not have it with you.',
+    }
+  }
+
+  if (vin.length > VIN_MODERN_LENGTH) {
+    return {
+      ok: false,
+      message: `That VIN is ${vin.length} characters. No VIN has ever been longer than ${VIN_MODERN_LENGTH}. Check that it was not pasted twice.`,
+    }
+  }
+
+  if (vin.length < VIN_MIN_LENGTH) {
+    return {
+      ok: false,
+      message: `That VIN is only ${vin.length} character${vin.length === 1 ? '' : 's'}. A VIN is ${VIN_MODERN_LENGTH} characters on anything built since 1981. Only much older units have shorter ones. Half a VIN is worse than none: it looks complete, and it will never match your Clean Truck Check or your inspection report.`,
+    }
+  }
+
+  if (vin.length === VIN_MODERN_LENGTH) {
+    const found = VIN_FORBIDDEN_LETTERS.filter((c) => vin.includes(c))
+    if (found.length > 0) {
+      return {
+        ok: false,
+        message: `A 17-character VIN never contains the letter ${found.join(' or ')}. Those letters were left out of the standard so nobody would confuse them with 1 and 0. Check the door plate.`,
+      }
+    }
+  }
+
+  return { ok: true, value: vin }
+}
+
+/**
+ * A VIN on an EDIT form: the rules above, except that a value the owner did not
+ * touch is let through exactly as it is already stored.
+ *
+ * WHY THIS EXISTS. `parseVin` arrived after the rows did. Two of the five VINs
+ * in the dev database fail it — a three-character stub, and a seventeen-character
+ * string with an I in it — and with the strict parser on the edit page those two
+ * trucks could not be SAVED AT ALL. Not the VIN box: the whole record. An owner
+ * correcting a BIT inspection date was turned away over a field he never put a
+ * cursor in, told about a VIN he was not editing, with no way through short of
+ * inventing one. A rule written today must not take yesterday's record hostage.
+ *
+ * So the question this asks is not "is that a good VIN" but "did he CHANGE it".
+ * What he typed gets the full rules, because typing is the keystroke where a
+ * wrong character enters the system and becomes a truck CARB never finds. What
+ * he left alone gets out of his way.
+ *
+ * BYTE FOR BYTE, and this is the half to be careful with. The stored string goes
+ * back untouched: not uppercased, not stripped of spaces, not even trimmed.
+ * Re-normalising a value nobody edited is a silent rewrite of the owner's data
+ * on a save that was about something else — and because `vehicles_vin_unique`
+ * compares STRINGS, it would also change which rows that index thinks are the
+ * same truck, quietly, as a side effect of a date entry.
+ *
+ * `stored` must be WHAT THE FORM DISPLAYED. On the vehicle page that is the raw
+ * `vin` column — the input is `value={vehicle.vin ?? ''}` with no formatting
+ * pass, so an untouched box posts those exact bytes back. If that input ever
+ * grows a formatter, this argument has to follow it: comparing against the raw
+ * column then reads every untouched field as edited and the lockout returns.
+ */
+export function parseVinEdit(
+  raw: FormDataEntryValue | string | null,
+  stored: string | null | undefined,
+): Parsed<string | null> {
+  const submitted = String(raw ?? '')
+  const parsed = parseVin(submitted)
+
+  // Blank and anything that parses are already answered above: blank is NULL —
+  // the box is optional and stays optional, because "put in what you know" and a
+  // VIN can follow the paperwork — and a good VIN is reduced to the one spelling
+  // the duplicate guard needs. Only a REFUSAL is this function's business.
+  if (parsed.ok) return parsed
+
+  // Trimmed on both sides, and nothing else. A text input posts its value with
+  // surrounding whitespace intact, so calling ' 234' a different answer from
+  // '234' would refuse a field nobody touched — the exact bug this is here to
+  // fix. Anything beyond the trim would start grandfathering values that do
+  // genuinely differ from what he was shown, which is how a typed-in typo gets
+  // in wearing the old value's clothes.
+  if (typeof stored === 'string' && submitted.trim() === stored.trim()) {
+    return { ok: true, value: stored }
+  }
+
+  // Changed, and still not a VIN. A person typed this, so he gets exactly the
+  // sentence the add form would have given him.
+  return parsed
+}
+
 /**
  * Today as 'YYYY-MM-DD', in UTC.
  *

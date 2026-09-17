@@ -43,8 +43,14 @@ import {
   subjectHrefFor,
 } from '../../lib/dashboard-dates.ts'
 import { loadDeadlines } from '../../lib/deadlines.ts'
+import {
+  REMINDER_ORIGIN,
+  REMINDER_ORIGIN_NOTE,
+  loadReminders,
+  type ReminderItem,
+} from '../../lib/reminders.ts'
 import { resolveAnchor } from '../../lib/rules/anchors.ts'
-import { SOON_DAYS, standingPill } from '../../lib/rules/index.ts'
+import { SOON_DAYS, dueLine, standingPill } from '../../lib/rules/index.ts'
 
 const supabase = Astro.locals.supabase!
 const carrierId = Astro.locals.carrierId!
@@ -57,9 +63,16 @@ const view = parseDashboardView(Astro.url.searchParams.get('show'))
 // No .eq('carrier_id', ...) below. RLS already scopes both of these to the
 // signed-in user's carrier; repeating the filter here would say in code that we
 // do not quite trust the policy.
-const [{ data: carrier }, items] = await Promise.all([
+const [{ data: carrier }, items, reminders] = await Promise.all([
   supabase.from('carriers').select('legal_name, dot_number').eq('id', carrierId).single(),
   loadDeadlines(supabase, carrierId),
+  // The owner's own list, on the same screen as the law's — because he has one
+  // morning, not two. They are kept in a SEPARATE array all the way to the
+  // markup rather than merged into `items`: a DeadlineItem carries a citation
+  // and a link to the regulation, a reminder carries neither, and the only way
+  // to put a reminder in that array is to invent the one thing it must never
+  // have. See the note above the reminder rows below.
+  loadReminders(supabase, null),
 ])
 
 /**
@@ -157,7 +170,7 @@ if (Astro.request.method === 'POST') {
     // One input per question, so this is unreachable from the form — but a
     // planner that can refuse must never be allowed to refuse silently.
     if (conflicts.length > 0) {
-      return fail('Two different dates were typed for the same question.')
+      return fail('You typed two different dates for the same question.')
     }
 
     if (supersede.length > 0) {
@@ -206,25 +219,34 @@ const later = items.filter(
 )
 const manual = items.filter((i) => i.status.standing === 'unsupported')
 
-const fmt = (d?: Date) =>
-  d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : '—'
+/**
+ * The reminders, in the same buckets, on the same day boundary.
+ *
+ * A reminder is only ever overdue or current — the owner typed the date, so
+ * there is nothing to be unsure about — which is why there is no reminder half
+ * to the `unknown` bucket and why the "Missing a date" tile does not move.
+ */
+const reminderOverdue = reminders.filter((r) => r.status.standing === 'overdue')
+const reminderSoon = reminders.filter((r) => r.daysUntil >= 0 && r.daysUntil <= SOON_DAYS)
+const reminderLater = reminders.filter((r) => r.daysUntil > SOON_DAYS)
 
-const when = (days?: number) => {
-  if (days === undefined) return 'no date'
-  if (days < 0) return `${Math.abs(days)} days ago`
-  if (days === 0) return 'today'
-  if (days === 1) return 'tomorrow'
-  return `in ${days} days`
-}
+// The date line moved to `dueLine` in src/lib/rules/index.ts, next to
+// `standingPill`. It lived here as two helpers and one ternary, which is how an
+// `unknown` row came to print "in 45 days" under a "Not sure" pill while the
+// tile above it read "Due in 45 days: 0" — a decision this page cannot test.
 
 const subjectHref = (t: string, id: string | null) =>
   t === 'driver' ? `/app/drivers/${id}` :
   t === 'power_unit' || t === 'trailer' ? `/app/vehicles/${id}` : '/app/settings'
 
+// `reminders` rides along on each section rather than being merged into `items`.
+// The two lists are ranked the same way and read on the same screen, and they
+// are still two lists: one is a rule somebody else wrote, one is a line this
+// owner typed.
 const sections = [
-  { key: 'overdue', title: 'Overdue', items: overdue, tone: 'border-red-200 bg-red-50/40' },
-  { key: 'unknown', title: 'We need a date from you', items: unknown, tone: 'border-ink-100 bg-white' },
-  { key: 'soon', title: `Coming up in the next ${SOON_DAYS} days`, items: soon, tone: 'border-amber-200 bg-amber-50/40' },
+  { key: 'overdue', title: 'Overdue', items: overdue, reminders: reminderOverdue, tone: 'border-red-200 bg-red-50/40' },
+  { key: 'unknown', title: 'We need a date from you', items: unknown, reminders: [] as ReminderItem[], tone: 'border-ink-100 bg-white' },
+  { key: 'soon', title: `Coming up in the next ${SOON_DAYS} days`, items: soon, reminders: reminderSoon, tone: 'border-amber-200 bg-amber-50/40' },
 ] as const
 
 // Filtering is a `.filter` over the SAME array, in the same order, every time.
@@ -232,17 +254,24 @@ const sections = [
 // per view, "unknown ranks with overdue" becomes a thing a future edit can undo
 // on the page while the engine still reports it correctly, and nothing throws.
 const visible = sections.filter((s) => showsSection(view, s.key))
-const shownCount = visible.reduce((n, s) => n + s.items.length, 0)
+const shownCount = visible.reduce((n, s) => n + s.items.length + s.reminders.length, 0)
 
 // Tile counts come off the WHOLE set, never off the filtered one. The counts are
 // the reason he opens the page at all — a tile that reads "0 overdue" merely
 // because he is standing inside the "Missing a date" filter would be a lie told
 // by the one number he checks first, and he would stop believing the other three.
+//
+// THE COUNTS INCLUDE REMINDERS, and they have to. The tile is the first number
+// he reads and the section under it is the list he acts on; a tile that counted
+// only regulations while the Overdue section showed four rows would be the one
+// number on this page he checks first, disagreeing with the rows directly below
+// it. He would stop believing the other three.
+const trackedCount = items.length + reminders.length
 const tiles = [
   {
     view: 'overdue',
     label: 'Overdue',
-    count: overdue.length,
+    count: overdue.length + reminderOverdue.length,
     noun: 'these',
     bg: 'bg-red-50/40',
     idleBorder: 'border-red-200',
@@ -262,7 +291,7 @@ const tiles = [
   {
     view: 'soon',
     label: `Due in ${SOON_DAYS} days`,
-    count: soon.length,
+    count: soon.length + reminderSoon.length,
     noun: 'these',
     bg: 'bg-white',
     idleBorder: 'border-ink-100',
@@ -274,8 +303,8 @@ const tiles = [
   // control that would push the other four further apart under his thumb.
   {
     view: 'all',
-    label: 'Tracking',
-    count: items.length,
+    label: 'All items',
+    count: trackedCount,
     noun: 'everything',
     bg: 'bg-white',
     idleBorder: 'border-ink-100',
@@ -323,9 +352,14 @@ const runwayCoverage =
     // left block already carries the count; this only has to say why it is not
     // on the timeline.
     runway.undated > 0 &&
-      `${runway.undated} with no date yet, counted on the left rather than on the timeline.`,
+      `${runway.undated} have no date yet. They are counted on the left, not on the chart.`,
     runway.unschedulable > 0 &&
-      `${runway.unschedulable} more have no schedule we can compute; they are listed below.`,
+      `${runway.unschedulable} more have no schedule we can work out. They are in the list below.`,
+    // The timeline is drawn from the RULES. Saying so is the honest half of
+    // showing both lists in one table underneath: a shape that counted the
+    // owner's own errands as deadlines would make a quiet November look busy
+    // for a reason no regulation is responsible for.
+    reminders.length > 0 && 'Your own reminders are not on this timeline. They are in the list below.',
   ]
     .filter(Boolean)
     .join(' ') || undefined
@@ -432,7 +466,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
         {/* One sentence, one tap out. The count is repeated here rather than left
             on the tile alone because this line is what he reads after the page
             moves under him — the tiles are above his thumb, this is under it. */}
-        <span>Showing <span class="font-medium text-ink-900">{viewNoun(view)}</span> only — {shownCount} of {items.length} tracked.</span>
+        <span>Showing only <span class="font-medium text-ink-900">{viewNoun(view)}</span>. {shownCount} of {trackedCount} items.</span>
         <a href="/app" class="font-medium text-brand-600 hover:underline">Show everything</a>
       </p>
     )
@@ -452,7 +486,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
       <Figure
         class="mt-6"
         title="The next 13 weeks"
-        subtitle="How many deadlines land in each week ahead"
+        subtitle="How many deadlines fall in each week ahead"
         coverage={runwayCoverage}
       >
         <Runway runway={runway} overdueHref="/app?show=overdue" undatedHref="/app?show=unknown" />
@@ -461,11 +495,11 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
   }
 
   {
-    items.length === 0 && view === 'all' && (
+    trackedCount === 0 && view === 'all' && (
       <div class="mt-6 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
-        <p class="font-medium">Nothing to show yet</p>
+        <p class="font-medium">Nothing here yet</p>
         <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
-          Add a driver or a truck and the deadlines that attach to them appear here.
+          Add a driver or a truck. Their deadlines will show up here.
         </p>
         <a
           href="/app/drivers/new"
@@ -521,8 +555,8 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
   {
     view === 'unknown' && withdrawn && (
       <p class="mt-4 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
-        Entry withdrawn. It stays in the history as a record of what was believed and when; the
-        next most recent date takes over.
+        Date withdrawn. We keep it in the history, so you can still see what was on file and
+        when. The next most recent date is now the one we use.
       </p>
     )
   }
@@ -537,15 +571,15 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
         </p>
         {overdueRose && (
           <p class="mt-1 text-xs text-emerald-900">
-            One of those is already past due, so it moved to <strong class="font-medium">Overdue</strong>{' '}
-            rather than off this list. That is the date doing its job — the obligation was always
-            late, we just could not see it until you told us.
+            One of these dates is already past, so it moved to{' '}
+            <strong class="font-medium">Overdue</strong> instead of leaving this list. It was
+            already late. We could not see it until you gave us the date.
           </p>
         )}
         {receipt.length > 0 && (
           <>
             <p class="mt-1 text-xs text-emerald-900">
-              Read them back before you go. A wrong year is easiest to catch now.
+              Check these dates now. A wrong year is easy to miss later.
             </p>
             <ul class="mt-3 divide-y divide-emerald-200/70 border-t border-emerald-200/70">
               {receipt.map((r) => (
@@ -583,9 +617,9 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
           <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">{unknown.length}</span>
         </h2>
         <p class="mt-1 max-w-2xl text-sm text-ink-500">
-          These are not "fine" — until we have the date your exposure is the same as if it had
-          already expired, which is why they sit with the overdue ones. Open one record, type what
-          you know, leave the rest for later.
+          These are not OK. Without the date, your risk is the same as if it had already expired.
+          That is why they sit with the overdue ones. Open one record, type what you know, and
+          leave the rest for later.
         </p>
 
         {editor.groups.map((g) => (
@@ -624,8 +658,8 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
           /* Said out loud rather than quietly dropped. A row he can see on the
              dashboard and cannot find here is a list he stops believing. */
           <p class="mt-5 text-xs text-ink-500 tabular-nums">
-            {editor.unrecordable} more are about people or places we cannot file a date against
-            yet, so they are not on this screen.
+            {editor.unrecordable} more are about people or places we cannot save a date for yet,
+            so they are not on this screen.
           </p>
         )}
       </section>
@@ -643,7 +677,8 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
           </span>
         </h2>
         <p class="mt-1 max-w-2xl text-sm text-ink-500">
-          Type what you have in front of you; the rest keeps. A blank box changes nothing.
+          Type what you have in front of you. Leave the rest for later. A blank box changes
+          nothing.
         </p>
 
         <div class="mt-3 rounded-xl border border-ink-100 bg-white">
@@ -656,7 +691,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
               href="/app?show=unknown"
               class="shrink-0 rounded-lg border border-ink-100 px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50"
             >
-              All {editor.subjectCount}
+              Back to all {editor.subjectCount}
             </a>
           </div>
 
@@ -685,8 +720,8 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                 <div class="rounded-lg border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3">
                   <p class="text-sm font-medium">{q.label}</p>
                   <p class="mt-0.5 text-xs text-ink-500">
-                    This one lives on {q.elsewhere?.where ?? 'another screen'}, not here — we keep
-                    one answer for it, never two.
+                    This date lives on {q.elsewhere?.where ?? 'another screen'}, not here. We keep
+                    one answer for it, not two.
                   </p>
                   {q.elsewhere?.href && (
                     <a
@@ -712,7 +747,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                   a row he saw on the list and cannot find here is a list he
                   stops believing. */}
               <p class="mt-1 text-xs text-ink-300">
-                {q.settles.length > 1 && `Answers ${q.settles.length}: `}
+                {q.settles.length > 1 && `This date answers ${q.settles.length} rules: `}
                 {q.settles.map((r, n) => (
                   <>
                     {n > 0 && ' · '}
@@ -742,7 +777,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                  box silently. */
               <details class="border-t border-ink-100 pt-4">
                 <summary class="cursor-pointer text-sm font-medium text-ink-500 select-none">
-                  {focus.onlyIfItApplies.length} more that only apply to some records
+                  {focus.onlyIfItApplies.length} more that only apply in some cases
                 </summary>
                 <div class="mt-4 space-y-5">
                   {focus.onlyIfItApplies.map((q) => (
@@ -769,8 +804,8 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                 <div class="rounded-lg border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3">
                   <p class="text-sm font-medium">{q.label}</p>
                   <p class="mt-0.5 text-xs text-ink-500">
-                    This one lives on {q.elsewhere?.where ?? 'another screen'}, not here — we keep
-                    one answer for it, never two.
+                    This date lives on {q.elsewhere?.where ?? 'another screen'}, not here. We keep
+                    one answer for it, not two.
                   </p>
                   {q.elsewhere?.href && (
                     <a
@@ -796,7 +831,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                   a row he saw on the list and cannot find here is a list he
                   stops believing. */}
               <p class="mt-1 text-xs text-ink-300">
-                {q.settles.length > 1 && `Answers ${q.settles.length}: `}
+                {q.settles.length > 1 && `This date answers ${q.settles.length} rules: `}
                 {q.settles.map((r, n) => (
                   <>
                     {n > 0 && ' · '}
@@ -821,8 +856,8 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
 
         <div class="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white p-4">
           <span class="flex-1 text-sm text-ink-500">
-            Blank boxes change nothing. Saving adds a new entry; nothing already recorded is
-            overwritten.
+            A blank box changes nothing. Saving adds a new entry. Nothing already saved is
+            erased.
           </span>
           <button
             type="submit"
@@ -841,19 +876,21 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
     view !== 'unknown' &&
     visible.map(
       (s) =>
-        s.items.length > 0 && (
+        s.items.length + s.reminders.length > 0 && (
           <section class="mt-8">
             <h2 class="text-lg font-semibold tracking-tight">
               {s.title}
               <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">
-                {s.items.length}
+                {s.items.length + s.reminders.length}
               </span>
             </h2>
 
             {s.key === 'unknown' && (
               <p class="mt-1 text-sm text-ink-500">
-                These are not "fine". Until we have the date, your exposure is the same as if it
-                had already expired — so they sit with the overdue ones, not at the bottom.{' '}
+                These are not OK. Without the date, your risk is the same as if it had already
+                expired. That is why they sit with the overdue ones, not at the bottom. The date
+                on these rows is the next one on the schedule, not a confirmed deadline, so we do
+                not count them in "Due in {SOON_DAYS} days".{' '}
                 {/* The bridge. This table is for reading; the editor behind this
                     link is for answering, and without a way across, the reading
                     view is the only one he ever finds. */}
@@ -863,12 +900,25 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
               </p>
             )}
 
+            {s.reminders.length > 0 && (
+              /* Said above the table, every time reminders appear in one.
+                 Colour alone is not allowed to carry this: the badge in the
+                 last column says the word, and this line says what the word
+                 means. Short, because it is read on a phone. */
+              <p class="mt-1 text-sm text-ink-500">
+                {REMINDER_ORIGIN_NOTE}{' '}
+                <a href="/app/reminders" class="font-medium text-brand-600 hover:underline">
+                  My reminders →
+                </a>
+              </p>
+            )}
+
             <div class={`mt-3 overflow-x-auto rounded-xl border ${s.tone}`}>
               <table class="w-full min-w-[48rem] text-sm">
                 <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
                   <tr>
                     <th class="px-4 py-3 font-medium">What</th>
-                    <th class="px-4 py-3 font-medium">Who / which</th>
+                    <th class="px-4 py-3 font-medium">Who or what</th>
                     <th class="px-4 py-3 font-medium">Due</th>
                     <th class="px-4 py-3 font-medium">Rule</th>
                   </tr>
@@ -882,7 +932,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                           <div class="font-medium">{i.rule.title}</div>
                           {i.status.standing === 'unknown' && i.status.needs && (
                             <div class="mt-0.5 text-xs text-ink-300">
-                              needs {i.status.needs.join(', ').replaceAll('_', ' ')}
+                              We need: {i.status.needs.join(', ').replaceAll('_', ' ')}
                             </div>
                           )}
                         </td>
@@ -905,11 +955,9 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                           <span class:list={['rounded-md px-2 py-0.5 text-xs font-medium', pill.className]}>
                             {pill.label}
                           </span>
-                          <div class="mt-1 tabular-nums">
-                            {i.status.standing === 'overdue'
-                              ? `was due ${fmt(i.status.lastDue ?? i.status.nextDue)}`
-                              : `${fmt(i.status.nextDue)} · ${when(i.daysUntil)}`}
-                          </div>
+                          {/* A countdown here is a promise of slack, so only a
+                              `current` row gets one. See `dueLine`. */}
+                          <div class="mt-1 tabular-nums">{dueLine(i)}</div>
                         </td>
                         <td class="px-4 py-3 text-xs text-ink-500">
                           <a
@@ -920,6 +968,91 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                           >
                             {i.rule.citation}
                           </a>
+                        </td>
+                      </tr>
+                    )
+                  })}
+
+                  {/* ------------------------------------ the owner's own rows
+
+                      In the SAME table, under the same heading, ranked in the
+                      same bucket — because he has one morning and one list to
+                      work through, and a second table further down the page is
+                      a table nobody scrolls to on a phone.
+
+                      Told apart three ways, none of them new vocabulary and none
+                      of them colour alone:
+
+                        1. The last column. Every regulation prints a CFR or CVC
+                           citation there, linked to the text of the law. These
+                           print the words "Your reminder" and link to nothing,
+                           because there is nothing to look up. That column is
+                           where an owner already looks to find out what the rule
+                           is, so it is where the answer "there is no rule"
+                           belongs.
+                        2. The tint, in the same brand blue the page already uses
+                           for "this one is yours to judge" — the `unsupported`
+                           pill and the "You have to check these yourself" block.
+                        3. The sentence above the table, which says what the
+                           badge means in words.
+
+                      The standing pill and the date line are NOT changed. Late
+                      is late whoever set the date, and a second vocabulary for
+                      time would be the thing that actually confuses him.
+
+                      Last within the bucket, deliberately. When a federal
+                      deadline and an errand are both overdue, the one that stops
+                      a truck is the one to read first.
+                  */}
+                  {s.reminders.map((r) => {
+                    const pill = standingPill(r.status.standing)
+                    return (
+                      <tr class="bg-brand-500/[0.05] hover:bg-brand-500/[0.09]">
+                        <td class="px-4 py-3">
+                          <div class="font-medium">{r.title}</div>
+                          {r.note && (
+                            <div class="mt-0.5 max-w-sm text-xs text-ink-500">{r.note}</div>
+                          )}
+                        </td>
+                        <td class="px-4 py-3">
+                          {r.subject.href ? (
+                            <a
+                              href={r.subject.href}
+                              class="font-medium hover:text-brand-600 hover:underline"
+                            >
+                              {r.subject.label}
+                            </a>
+                          ) : (
+                            <span>{r.subject.label}</span>
+                          )}
+                          {/* The words the nav uses — "Trucks", "Drivers" — not
+                              the column names. */}
+                          <div class="text-xs text-ink-300">
+                            {r.subject.kind === 'carrier'
+                              ? 'your company'
+                              : r.subject.kind === 'vehicle'
+                                ? 'truck'
+                                : 'driver'}
+                          </div>
+                        </td>
+                        <td class="px-4 py-3 whitespace-nowrap">
+                          <span
+                            class:list={['rounded-md px-2 py-0.5 text-xs font-medium', pill.className]}
+                          >
+                            {pill.label}
+                          </span>
+                          <div class="mt-1 tabular-nums">{dueLine(r)}</div>
+                        </td>
+                        <td class="px-4 py-3 text-xs">
+                          {/* No link. Nothing to look up IS the fact. */}
+                          <span
+                            class:list={[
+                              'rounded-md px-2 py-0.5 font-medium',
+                              REMINDER_ORIGIN.className,
+                            ]}
+                          >
+                            {REMINDER_ORIGIN.label}
+                          </span>
                         </td>
                       </tr>
                     )
@@ -943,9 +1076,9 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
       <section class="mt-8">
         <h2 class="text-lg font-semibold tracking-tight">You have to check these yourself</h2>
         <p class="mt-1 max-w-2xl text-sm text-ink-500">
-          These are real obligations we cannot put a date on — either they are continuous duties
-          rather than deadlines, or the schedule depends on something no public record holds. We
-          would rather list them than invent a date.
+          These are real duties, but we cannot put a date on them. Some are ongoing duties with no
+          deadline. For the rest, the schedule depends on something no public record holds. We
+          list them here instead of making up a date.
         </p>
         {/*
           Blue, where the section above it is amber, and the separation is the
@@ -971,7 +1104,27 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
   {
     view === 'all' && later.length > 0 && (
       <p class="mt-8 text-sm text-ink-500 tabular-nums">
-        {later.length} more are current and not due for a while.
+        {later.length} more are up to date and not due for a while.
+      </p>
+    )
+  }
+
+  {/* The way in, on the resting view only. A carrier with no reminders never
+      finds a feature he has not been told exists, and the sentence says what
+      the thing is for rather than naming it. */}
+  {
+    view === 'all' && (
+      <p class="mt-3 flex flex-wrap items-center gap-2 text-sm text-ink-500">
+        <span class="tabular-nums">
+          {reminders.length === 0
+            ? 'You can add your own reminders: insurance, truck payment, appointments.'
+            : reminderLater.length > 0
+              ? `${reminderLater.length} of your own reminders are further out.`
+              : 'Your own reminders are in the list above.'}
+        </span>
+        <a href="/app/reminders" class="font-medium text-brand-600 hover:underline">
+          My reminders →
+        </a>
       </p>
     )
   }

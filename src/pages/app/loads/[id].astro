@@ -67,7 +67,7 @@ function toBoard(message: string): Response {
   return Astro.redirect(`/app/loads?error=${encodeURIComponent(message)}`, 303)
 }
 
-const NOT_YOURS = 'That load is not on your board.'
+const NOT_YOURS = 'That load is not in your account.'
 
 // A hand-edited URL like /app/loads/abc is not a missing row, it is a failed
 // uuid cast — Postgres raises, and without this check the dispatcher gets
@@ -106,7 +106,7 @@ if (Astro.request.method === 'POST') {
     // Guarded rather than passed through: an unrecognised value reaches Postgres
     // as `invalid input value for enum load_status`, which is a 500 in place of
     // a status change.
-    if (!isLoadStatus(requested)) return fail('That is not a status we recognise.')
+    if (!isLoadStatus(requested)) return fail('That status is not one we know. Pick one from the list.')
 
     /**
      * ONLY `status`. Not `billing`, not `exception`.
@@ -130,7 +130,9 @@ if (Astro.request.method === 'POST') {
 
   if (intent === 'set_billing') {
     const requested = String(form.get('billing') ?? '')
-    if (!isBillingStatus(requested)) return fail('That is not a billing status we recognise.')
+    if (!isBillingStatus(requested)) {
+      return fail('That billing status is not one we know. Pick one from the list.')
+    }
     // Only `billing`. Moving the money does not move the truck: a load can be
     // invoiced off a signed BOL while it is still in_transit on the next leg.
     const failed = await patch({ billing: requested })
@@ -143,7 +145,7 @@ if (Astro.request.method === 'POST') {
     // '' is the "no exception" option and means NULL, which is a real answer —
     // the detention was resolved — and the only way to clear one.
     if (requested !== '' && !isLoadException(requested)) {
-      return fail('That is not an exception we recognise.')
+      return fail('That exception is not one we know. Pick one from the list.')
     }
     /**
      * The exception is recorded ALONGSIDE the status, never instead of it.
@@ -169,14 +171,14 @@ if (Astro.request.method === 'POST') {
      * from form data, which is exactly what a busy-state script does.
      */
     if (!form.has('broker_reference')) {
-      return fail('That submission did not include the load fields — nothing was changed.')
+      return fail('This form did not send the load fields. Nothing was changed. Try again.')
     }
 
     const loadNumber = textOrNull(form.get('load_number'))
     const brokerReference = textOrNull(form.get('broker_reference'))
     if (!loadNumber && !brokerReference) {
       return fail(
-        'Keep at least one of the two numbers — ours or the broker’s. Without one the load cannot be searched for.',
+        'Keep at least one of the two numbers: your load number or the broker reference. Without one of them you cannot find this load again.',
       )
     }
 
@@ -255,7 +257,7 @@ if (Astro.request.method === 'POST') {
     const typedName = textOrNull(form.get('customer_name'))
 
     if (chosen) {
-      if (!UUID.test(chosen)) return fail('That customer could not be read. Pick it again.')
+      if (!UUID.test(chosen)) return fail('We could not read that customer. Pick it again.')
       customerId = chosen
     } else if (typedName) {
       const { data: existing, error: lookupError } = await supabase
@@ -275,7 +277,7 @@ if (Astro.request.method === 'POST') {
           .select('id')
           .single()
         if (createError || !created) {
-          return fail(createError?.message ?? 'That customer could not be saved.')
+          return fail(createError?.message ?? 'We could not save that customer.')
         }
         customerId = created.id
       }
@@ -375,7 +377,7 @@ const smallButton =
 /** The subtitle says the lane when we know it, and says so plainly when we do not. */
 const subtitle = lane.origin
   ? `${lane.origin} → ${lane.destination ?? 'no delivery stop yet'}`
-  : 'No stops entered yet'
+  : 'No stops yet'
 ---
 
 <App title={loadLabel(load)} subtitle={subtitle}>
@@ -383,8 +385,8 @@ const subtitle = lane.origin
   {
     added && (
       <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-        Load added. It is booked and not ready to invoice — move each of those separately as the
-        day goes on.
+        Load added. Its status is Booked and its billing is Not ready. You move each of those on
+        its own.
       </p>
     )
   }
@@ -392,14 +394,14 @@ const subtitle = lane.origin
   {
     statusMoved && (
       <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-        Moved to {loadStatusLabel(statusMoved)}. Billing was not touched.
+        Status moved to {loadStatusLabel(statusMoved)}. The billing did not change.
       </p>
     )
   }
   {
     billingMoved && (
       <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-        Billing moved to {billingStatusLabel(billingMoved)}. The load still says{' '}
+        Billing moved to {billingStatusLabel(billingMoved)}. The load status is still{' '}
         {loadStatusLabel(load.status)}.
       </p>
     )
@@ -412,9 +414,9 @@ const subtitle = lane.origin
         </p>
       ) : (
         <p class="mb-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          Flagged as {exceptionLabel(exceptionMoved)}. The load is still{' '}
-          {loadStatusLabel(load.status)} — the exception sits beside the status, it does not
-          replace it.
+          Marked as {exceptionLabel(exceptionMoved)}. The load status is still{' '}
+          {loadStatusLabel(load.status)}. An exception sits next to the status. It does not replace
+          it.
         </p>
       ))
   }
@@ -429,7 +431,7 @@ const subtitle = lane.origin
     <div class="flex items-baseline gap-2">
       <span class="text-xs tracking-wide text-ink-500 uppercase">Broker ref</span>
       <span class="text-lg font-semibold tracking-tight tabular-nums">
-        {load.broker_reference ?? <span class="font-normal text-ink-300">none on file</span>}
+        {load.broker_reference ?? <span class="font-normal text-ink-300">not on file</span>}
       </span>
     </div>
     <div class="flex flex-wrap items-center gap-1">
@@ -452,7 +454,7 @@ const subtitle = lane.origin
   <div class="grid gap-6 lg:grid-cols-[1fr_minmax(0,22rem)]">
     <form method="POST" class="space-y-4">
       <div class={card}>
-        <h2 class="text-lg font-semibold tracking-tight">Reference numbers</h2>
+        <h2 class="text-lg font-semibold tracking-tight">Load numbers</h2>
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
           <label class="block">
             <span class="text-sm font-medium">Broker reference</span>
@@ -494,8 +496,8 @@ const subtitle = lane.origin
             <span class="text-sm font-medium">…or type a new one</span>
             <input type="text" name="customer_name" placeholder="e.g. TQL" class={field} />
             <span class="mt-1 block text-xs text-ink-500">
-              Only used when the dropdown is left blank. An existing name is matched rather than
-              duplicated.
+              We use this only if you leave the list above blank. If the name is already on the
+              list, we use that customer.
             </span>
           </label>
         </div>
@@ -564,7 +566,7 @@ const subtitle = lane.origin
             <span>
               <span class="text-sm font-medium">Hazmat</span>
               <span class="mt-1 block text-xs text-ink-500">
-                A placarded load carries its own inspection and paperwork rules at any weight.
+                A placarded load has its own inspection and paperwork rules, at any weight.
               </span>
             </span>
           </label>
@@ -574,7 +576,7 @@ const subtitle = lane.origin
       <div class={card}>
         <h2 class="text-lg font-semibold tracking-tight">Rate</h2>
         <p class="mt-1 text-sm text-ink-500">
-          Dollars in, cents stored. What you type here is what the invoice will say.
+          Enter dollars. We keep the cents. What you type here is what the invoice says.
         </p>
         <div class="mt-4 grid gap-4 sm:grid-cols-3">
           <label class="block">
@@ -616,7 +618,8 @@ const subtitle = lane.origin
               />
             </div>
             <span class="mt-1 block text-xs text-ink-500">
-              A deduction goes in as a negative.
+              On a load, money taken off goes in as a negative, like -150.00. Money the broker adds
+              goes in as a plain positive number.
             </span>
           </label>
         </div>
@@ -632,7 +635,7 @@ const subtitle = lane.origin
           <span>
             <span class="text-sm font-medium">Factored</span>
             <span class="mt-1 block text-xs text-ink-500">
-              This invoice goes to the factoring company rather than straight to the broker.
+              This invoice goes to the factoring company, not to the broker.
             </span>
           </span>
         </label>
@@ -641,8 +644,8 @@ const subtitle = lane.origin
       <div class={card}>
         <h2 class="text-lg font-semibold tracking-tight">Detention terms</h2>
         <p class="mt-1 text-sm text-ink-500">
-          As numbers, off the rate confirmation, rather than a sentence in an attachment nobody
-          opens while the driver is sitting at a dock.
+          Copy these numbers from the rate confirmation. They decide whether you can bill a long
+          wait at a dock.
         </p>
         <div class="mt-4 grid gap-4 sm:grid-cols-3">
           <label class="block">
@@ -691,13 +694,13 @@ const subtitle = lane.origin
           }
           <select name="detention_requires_preapproval" class={field}>
             <option value="" selected={load.detention_requires_preapproval === null}>
-              Not stated — check the rate confirmation
+              Not known yet — check the rate confirmation
             </option>
             <option value="yes" selected={load.detention_requires_preapproval === true}>
               Yes — the driver must call before the free hours run out
             </option>
             <option value="no" selected={load.detention_requires_preapproval === false}>
-              No — detention accrues without a call
+              No — detention counts without a call
             </option>
           </select>
         </label>
@@ -707,8 +710,8 @@ const subtitle = lane.origin
         <h2 class="text-lg font-semibold tracking-tight">Notes</h2>
         <textarea name="notes" rows="4" class={field}>{load.notes ?? ''}</textarea>
         <p class="mt-1 text-xs text-ink-500">
-          Anything the fields above have no box for — a gate code, who signed, what the broker
-          promised on the phone.
+          Anything with no box above: a gate code, who signed, what the broker promised on the
+          phone.
         </p>
       </div>
 
@@ -725,7 +728,7 @@ const subtitle = lane.origin
           Back to loads
         </a>
         <span class="text-xs text-ink-300">
-          This form does not touch the status, the billing or the exception.
+          This form does not change the status, the billing or the exception.
         </span>
       </div>
     </form>
@@ -754,7 +757,7 @@ const subtitle = lane.origin
         </button>
         <p class="mt-2 text-xs text-ink-500">
           Moving this never changes the billing. A delivered load that is not ready to invoice is
-          the normal state of a load whose POD has not come in yet.
+          normal. It means the POD has not come in yet.
         </p>
       </form>
 
@@ -774,17 +777,17 @@ const subtitle = lane.origin
           Record exception
         </button>
         <p class="mt-2 text-xs text-ink-500">
-          This sits beside the status, it does not replace it. A detained load is still at the
-          shipper, which is where you would go looking for the truck.
+          An exception sits next to the status. It does not replace it. A detained load is still at
+          the shipper, and that is where the truck is.
         </p>
         {
           load.exception === 'detained' && (
             <p class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
               {load.detention_requires_preapproval === true
-                ? 'This broker requires pre-approval. The claim is only billable if the driver called before the free hours ran out.'
+                ? 'This broker needs pre-approval. You can only bill this wait if the driver called before the free hours ran out.'
                 : load.detention_requires_preapproval === null
-                  ? 'Nobody has recorded whether this broker requires pre-approval. Check the rate confirmation before the free hours run out — after that it is too late to ask.'
-                  : 'No pre-approval needed on this one. Detention accrues from the end of the free hours.'}
+                  ? 'Nobody has said whether this broker needs pre-approval. Check the rate confirmation before the free hours run out. After that it is too late to ask.'
+                  : 'This broker needs no pre-approval. Detention starts when the free hours end.'}
             </p>
           )
         }
@@ -805,7 +808,7 @@ const subtitle = lane.origin
           Move billing
         </button>
         <p class="mt-2 text-xs text-ink-500">
-          Independent of where the truck is. An invoice can go out against a signed BOL while the
+          This is separate from where the truck is. You can invoice against a signed BOL while the
           truck is still on the road.
         </p>
       </form>
@@ -838,17 +841,37 @@ const subtitle = lane.origin
           </div>
         </dl>
         <p class="mt-2 text-xs text-ink-500">
-          An em dash is a rate nobody has typed yet, which is not the same as zero.
+          A dash means nobody has typed that rate yet. A dash is not $0.00.
         </p>
       </div>
 
       <div class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">Stops</div>
+        <div class="flex items-baseline justify-between gap-3">
+          <div class="text-xs tracking-wide text-ink-500 uppercase">Stops</div>
+          {
+            stops.length > 0 && (
+              <a
+                href={`/app/loads/${id}/stops`}
+                class="text-sm font-medium text-brand-600 hover:underline"
+              >
+                Edit stops
+              </a>
+            )
+          }
+        </div>
         {
           stops.length === 0 ? (
-            <p class="mt-2 text-sm text-ink-500">
-              None entered yet, so this load has no lane and no detention clock.
-            </p>
+            <>
+              <p class="mt-2 text-sm text-ink-500">
+                No stops yet. Without stops this load has no lane and no detention clock.
+              </p>
+              <a
+                href={`/app/loads/${id}/stops`}
+                class="mt-2 inline-block text-sm font-medium text-brand-600 hover:underline"
+              >
+                Add a stop →
+              </a>
+            </>
           ) : (
             <ol class="mt-2 divide-y divide-ink-100 text-sm">
               {stops.map((s) => (

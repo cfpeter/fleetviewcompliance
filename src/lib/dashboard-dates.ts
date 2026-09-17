@@ -392,10 +392,10 @@ export function rowsSettledBy(subject: DateSubject, answerKeys: Iterable<string>
 
 /** The headline after a save. Reports both numbers, always. */
 export function savedHeadline(saved: number, cleared: number): string {
-  if (saved === 0) return 'Nothing saved — every box was left blank.'
+  if (saved === 0) return 'Nothing saved. Every box was left blank.'
   const dates = saved === 1 ? '1 date saved' : `${saved} dates saved`
   const rows = cleared === 1 ? '1 item off this list' : `${cleared} items off this list`
-  return `${dates} — ${rows}.`
+  return `${dates}. ${rows}.`
 }
 
 /**

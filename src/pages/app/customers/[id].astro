@@ -39,6 +39,7 @@ import {
   statusPillClass,
   totalRateCents,
 } from '../../../lib/loads.ts'
+import { formatPhone, parsePhoneEdit, toE164 } from '../../../lib/phone.ts'
 
 const supabase = Astro.locals.supabase!
 const id = Astro.params.id ?? ''
@@ -81,6 +82,35 @@ if (Astro.request.method === 'POST') {
     const days = parseDaysToPay(form.get('days_to_pay'))
     if (!days.ok) return fail(days.message)
 
+    // The stored phone, read here rather than taken from `customer` below: the
+    // page load runs AFTER this block, so on a POST there is no row in scope
+    // yet. No carrier filter — RLS already scopes it, and a customer that is not
+    // ours comes back null without deciding anything, because the UPDATE below
+    // is still the one place that answers "is this broker in your book".
+    const { data: current } = await supabase
+      .from('customers')
+      .select('phone')
+      .eq('id', id)
+      .maybeSingle()
+
+    // Same rule as the add form for anything TYPED here, because two parsers
+    // would be two answers to "can we reach this broker?". Blank is still a fine
+    // answer; a number with a word in it is not, and storing it is how a
+    // dispatcher finds out at the dock that the line she has on file was never
+    // dialable.
+    //
+    // The value that was ALREADY here is the exception. Every phone in the book
+    // predates the rule, and this handler refuses the whole submit on a bad
+    // phone — so the strict parser turns an owner opening this page to correct
+    // the payment terms into an owner who cannot save them, over a field she
+    // never touched. Nobody is blocked on a field they did not edit, and
+    // refusing the legacy row buys nothing today: SMS is not switched on yet, so
+    // nothing is being sent to it while it sits there. Grandfathered through
+    // untouched, flagged beside the field; change it to something we still
+    // cannot dial and it is refused as before.
+    const phone = parsePhoneEdit(form.get('phone'), current?.phone, 'Phone')
+    if (!phone.ok) return fail(phone.message)
+
     const { data, error } = await supabase
       .from('customers')
       .update({
@@ -88,7 +118,7 @@ if (Astro.request.method === 'POST') {
         mc_number: docketOrNull(form.get('mc_number')),
         dot_number: dot.value,
         contact_name: textOrNull(form.get('contact_name')),
-        phone: textOrNull(form.get('phone')),
+        phone: phone.value,
         email: textOrNull(form.get('email')),
         billing_email: textOrNull(form.get('billing_email')),
         billing_address: textOrNull(form.get('billing_address')),
@@ -230,9 +260,9 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
  */
 const revenueCoverage = months
   ? [
-      'Booked rates, by the month the load was entered — not money received. Nothing on a load records when it delivered or when it paid.',
+      'Booked rates, by the month the load was entered. This is not money received. Nothing on a load records when it delivered or when it paid.',
       history.length > loads.length &&
-        `Drawn from ${missing > 0 ? '' : 'all '}${history.length} loads on file for them; the table below is the last ${loads.length}.`,
+        `Drawn from ${missing > 0 ? '' : 'all '}${history.length} loads on file for them. The table below is only the last ${loads.length}.`,
       months.window.unpricedLoads > 0 &&
         `${months.window.unpricedLoads} ${loadWord(months.window.unpricedLoads)} here carry no rate yet and are in no column.`,
       months.window.quotedLoads + months.window.cancelledLoads > 0 &&
@@ -267,7 +297,7 @@ const mixCoverage = mix
       mix.quotedLoads + mix.cancelledLoads > 0 &&
         `${mix.quotedLoads + mix.cancelledLoads} quoted or cancelled ${loadWord(mix.quotedLoads + mix.cancelledLoads)} are not on this bar.`,
       missing > 0 && `${missing} older ${loadWord(missing)} did not fit in one request.`,
-      'Nothing here records the day a payment landed, so this cannot tell you how long they actually take — only what is still out.',
+      'Nothing here records the day a payment arrived, so this cannot tell you how long they really take. It only shows what is still out.',
     ]
       .filter(Boolean)
       .join(' ')
@@ -284,7 +314,7 @@ const problemSlice = mix ? sliceOf(mix, 'problem') : undefined
 // database.
 const termsLine =
   customer.days_to_pay === null
-    ? 'They have never given you payment terms, so there is nothing here to measure the wait against.'
+    ? 'They have never given you payment terms, so there is nothing to compare the wait against.'
     : customer.days_to_pay === 0
       ? 'Their agreed terms are payment on delivery.'
       : `Their agreed terms are ${customer.days_to_pay} days from a clean invoice.`
@@ -312,6 +342,16 @@ const subtitle = customer.mc_number
   ? `Docket ${customer.mc_number}`
   : 'No MC number on file'
 
+// Advisory, and deliberately not a save-time refusal — see parsePhoneEdit. The
+// save lets a legacy number through so nobody is blocked on a field they did not
+// touch, and the cost is a number that reads as answered when it is not. On this
+// page that is the line a dispatcher dials at 5am with a load sitting, so it is
+// said here, on the record, rather than found out at the dock.
+// Keyed off what the box SHOWS, not off the column: '' is supposed to reach
+// Postgres as NULL and a row written before that rule still holds one, and an
+// advisory pointing at a visibly empty field is a warning nobody can act on.
+const phoneUndialable = formatPhone(customer.phone) !== '' && toE164(customer.phone) === null
+
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
 const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
@@ -322,8 +362,8 @@ const field =
   {
     added && (
       <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-        Customer added. Add their USDOT number when you have it and we will check their operating
-        authority every time you open this page.
+        Customer added. Add their USDOT number when you have it. Then we will check their
+        operating authority every time you open this page.
       </p>
     )
   }
@@ -341,9 +381,8 @@ const field =
         <p class="mt-1 text-sm text-ink-700">
           Every docket on file for USDOT <span class="tabular-nums">{federal?.state === 'checked' ? federal.dot : ''}</span>{' '}
           reads {authorityRows.map((a) => a.op_auth_status).filter(Boolean).join(', ')}. A broker
-          without active authority cannot lawfully arrange your freight, and both your insurer and
-          your factor will look at this before anyone pays the invoice. Worth a phone call before
-          the next load.
+          without active authority cannot legally arrange your freight. Your insurer and your
+          factor both check this before anyone pays the invoice. Call them before the next load.
         </p>
       </div>
     )
@@ -392,12 +431,26 @@ const field =
         </label>
         <label class="block">
           <span class="text-sm font-medium">Phone</span>
+          {/*
+            Read as a person reads it, stored as E.164. The two are deliberately
+            different: E.164 is what makes two spellings of one number compare
+            equal, and it is also what nobody recognises as their own broker's
+            line at a glance.
+          */}
           <input
             type="tel"
             name="phone"
-            value={customer.phone ?? ''}
+            value={formatPhone(customer.phone)}
+            placeholder="(818) 334-0168"
             class={`${field} tabular-nums`}
           />
+          {
+            phoneUndialable && (
+              <span class="mt-1.5 inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                We cannot dial or text this number as it is written. We saved it anyway.
+              </span>
+            )
+          }
         </label>
       </div>
 
@@ -415,7 +468,7 @@ const field =
             class={field}
           />
           <span class="mt-1 block text-xs text-ink-500">
-            Invoices sent to the dispatch address are invoices nobody pays.
+            Invoices sent to the dispatch address do not get paid.
           </span>
         </label>
       </div>
@@ -436,7 +489,8 @@ const field =
           class={`${field} tabular-nums`}
         />
         <span class="mt-1 block text-xs text-ink-500">
-          Left blank it stays blank. A guessed 30 on this screen is a payment term we invented.
+          If you leave it blank, it stays blank. A guessed 30 here would be a payment term we made
+          up.
         </span>
       </label>
 
@@ -468,16 +522,16 @@ const field =
             <>
               <div class="mt-1 text-3xl font-semibold text-ink-300 tabular-nums">—</div>
               <p class="mt-2 text-sm text-ink-500">
-                Not recorded. That is not "they pay quickly" — it is a question nobody has asked
-                them yet, and it is the first thing to settle before the second load.
+                Not recorded. This does not mean they pay fast. It means nobody has asked them
+                yet. Settle it before the second load.
               </p>
             </>
           ) : (
             <>
               <div class="mt-1 text-3xl font-semibold tabular-nums">{customer.days_to_pay}</div>
               <p class="mt-2 text-sm text-ink-500">
-                Agreed terms, in days from a clean invoice. What actually happens is what the loads
-                below will eventually tell you.
+                Agreed terms, in days from a clean invoice. The loads below will show you what
+                really happens.
               </p>
             </>
           )
@@ -513,9 +567,9 @@ const field =
 
             {federal.state === 'mc_only' && (
               <p class="mt-2 text-sm text-ink-500">
-                We have a docket number for them and no USDOT number. The public authority file is
-                looked up by USDOT number, so we have not checked — this says nothing either way
-                about their authority. Add their USDOT number above and this fills in.
+                We have a docket number for them but no USDOT number. The public authority file is
+                searched by USDOT number, so we have not checked. This says nothing about their
+                authority either way. Add their USDOT number above and this fills in.
               </p>
             )}
 
@@ -539,8 +593,8 @@ const field =
                 </ul>
                 <p class="mt-3 text-xs text-ink-500">
                   Read live from the federal authority file for USDOT{' '}
-                  <span class="tabular-nums">{federal.dot}</span>. It is the record your insurer and
-                  your factor read too.
+                  <span class="tabular-nums">{federal.dot}</span>. Your insurer and your factor
+                  read the same record.
                 </p>
               </>
             )}
@@ -552,17 +606,18 @@ const field =
                 <strong class="font-medium text-ink-700">
                   That is not the same as having none.
                 </strong>{' '}
-                The federal authority file does not cover every entity — an intrastate-only operator
-                never needed authority, and some entities simply are not in it. Treat this as "we
-                did not find one", not as "there is none", and confirm it with them.
+                The federal authority file does not cover every company. A company that only
+                operates inside one state never needed authority, and some companies are simply
+                not in the file. Read this as "we did not find one", not as "there is none". Ask
+                them to confirm.
               </p>
             )}
 
             {federal.state === 'checked' && federal.authority.state === 'error' && (
               <p class="mt-2 text-sm text-ink-500">
-                We could not reach the federal authority file just now, so we are not going to tell
-                you anything about their authority — including that it looks fine. Nothing here has
-                been checked. Reload in a moment.
+                We could not reach the federal authority file just now. So we will not tell you
+                anything about their authority, not even that it looks fine. Nothing here has been
+                checked. Try again in a moment.
               </p>
             )}
 
@@ -586,8 +641,8 @@ const field =
                 )}
                 {federal.census.state === 'none' && (
                   <>
-                    No entry in the federal carrier census for this USDOT number. Brokers routinely
-                    have none — that file lists carriers — so this is not a finding about them.
+                    No entry in the federal carrier census for this USDOT number. That file lists
+                    carriers, so most brokers have no entry. This says nothing bad about them.
                   </>
                 )}
                 {federal.census.state === 'error' && (
@@ -609,8 +664,8 @@ const field =
   {
     historyFailed && (
       <p class="mt-8 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-        Their load history could not be read just now, so there are no charts on this page. That is
-        not "you have hauled nothing for them" — it is no answer.
+        We could not read their load history just now, so there are no charts on this page. This
+        does not mean you have hauled nothing for them. It means we have no answer.
       </p>
     )
   }
@@ -650,7 +705,7 @@ const field =
 
         <Figure
           title="Where their money is"
-          subtitle="Their loads by billing state — which is a different question from where the trucks are"
+          subtitle="Their loads by billing status. This is a different question from where the trucks are"
           coverage={mixCoverage}
         >
           <Proportion
@@ -678,7 +733,7 @@ const field =
             {problemSlice && problemSlice.count > 0 && (
               <p class="text-red-700">
                 {problemSlice.count} {loadWord(problemSlice.count)} short paid, in dispute or
-                written off — <span class="tabular-nums">{formatCents(problemSlice.cents)}</span>.
+                written off: <span class="tabular-nums">{formatCents(problemSlice.cents)}</span>.
               </p>
             )}
             {awaitingSlice?.count === 0 && <p>{termsLine}</p>}
@@ -691,22 +746,23 @@ const field =
   <div class="mt-8">
     <h2 class="text-lg font-semibold tracking-tight">Recent loads</h2>
     <p class="mt-1 max-w-3xl text-sm text-ink-500">
-      The last ten we booked with them. Where the truck is and where the money is are two separate
-      columns on purpose — a load can be delivered and still unpaid, and that is the pair worth
+      The last ten loads you booked with them. Where the truck is and where the money is are two
+      separate columns. A load can be delivered and still unpaid, and that is the pair worth
       reading on a customer page.
     </p>
 
     {
       loadsFailed ? (
         <p class="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          The load history could not be read just now. This is not "no loads" — it is no answer.
+          We could not read the load history just now. This does not mean there are no loads. It
+          means we have no answer.
         </p>
       ) : loads.length === 0 ? (
         <div class="mt-4 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
           <p class="font-medium">No loads for this customer yet</p>
           <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
             Loads booked against this customer will appear here, newest first, with what each one
-            pays and whether the money has landed.
+            pays and whether the money has arrived.
           </p>
         </div>
       ) : (

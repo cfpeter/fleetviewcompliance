@@ -86,7 +86,7 @@ const emptyAll = all.length === 0 && !q
 
 <App
   title="Trucks"
-  subtitle="Power units and trailers. Each unit of a combination carries its own inspection clock."
+  subtitle="Power units and trailers. A tractor and its trailer each have their own inspection dates."
 >
   {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
   {
@@ -172,11 +172,11 @@ const emptyAll = all.length === 0 && !q
   {
     shown.length === 0 ? (
       <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
-        <p class="font-medium">{emptyAll ? 'No trucks yet' : 'Nothing here'}</p>
+        <p class="font-medium">{emptyAll ? 'No trucks yet' : 'Nothing here matches'}</p>
         <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
           {emptyAll
-            ? 'Add a power unit or a trailer. You can put in just the unit number now and fill in the VIN, the weight and the dates whenever you have them.'
-            : 'No vehicle in this view matches. Try the All tab, or a shorter piece of the VIN.'}
+            ? 'Add a power unit or a trailer. You can start with just the unit number. Add the VIN, the weight and the dates later.'
+            : 'No vehicle in this view matches. Try the All tab, or type a shorter part of the VIN.'}
         </p>
         {emptyAll && (
           <a
@@ -261,9 +261,8 @@ const emptyAll = all.length === 0 && !q
     all.some((v) => v.gvwr_lbs === null) && (
       <p class="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
         <span class="tabular-nums">{all.filter((v) => v.gvwr_lbs === null).length}</span> of these
-        have no GVWR on file. That does not exempt them: a truck of unknown weight is treated as
-        fully regulated, so every weight-conditional deadline stays switched on until you tell us
-        otherwise.
+        have no GVWR on file. That does not make them exempt. We treat a truck of unknown weight
+        as fully regulated, so every weight-based deadline stays on until you fill the weight in.
       </p>
     )
   }

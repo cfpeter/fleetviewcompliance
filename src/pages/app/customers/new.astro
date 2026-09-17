@@ -16,6 +16,7 @@ import {
   parseDotNumber,
   textOrNull,
 } from '../../../lib/customers.ts'
+import { parsePhone } from '../../../lib/phone.ts'
 
 const supabase = Astro.locals.supabase!
 const carrierId = Astro.locals.carrierId!
@@ -51,6 +52,13 @@ if (Astro.request.method === 'POST') {
     const days = parseDaysToPay(form.get('days_to_pay'))
     if (!days.ok) return back(days.message)
 
+    // Blank stays blank — a company name is enough, as the subtitle says. But a
+    // number with a word in it is not a number: this is the line she rings when
+    // a load is sitting on a dock, and "call cell 818..." stored as typed is a
+    // broker she believes she can reach and cannot.
+    const phone = parsePhone(form.get('phone'), 'Phone')
+    if (!phone.ok) return back(phone.message)
+
     const { data, error } = await supabase
       .from('customers')
       .insert({
@@ -63,7 +71,7 @@ if (Astro.request.method === 'POST') {
         mc_number: docketOrNull(form.get('mc_number')),
         dot_number: dot.value,
         contact_name: textOrNull(form.get('contact_name')),
-        phone: textOrNull(form.get('phone')),
+        phone: phone.value,
         email: textOrNull(form.get('email')),
         billing_email: textOrNull(form.get('billing_email')),
         billing_address: textOrNull(form.get('billing_address')),
@@ -92,7 +100,7 @@ const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
 ---
 
-<App title="Add a customer" subtitle="A company name is enough. The rest can follow the rate con.">
+<App title="Add a customer" subtitle="A company name is enough to start. The rest can follow the rate con.">
   <div class="max-w-2xl">
     {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
 
@@ -101,7 +109,7 @@ const field =
         <span class="text-sm font-medium">Company name <span class="text-red-600">*</span></span>
         <input type="text" name="name" required autofocus class={field} />
         <span class="mt-1 block text-xs text-ink-500">
-          The name on the rate confirmation, not the name the dispatcher answers the phone with.
+          Use the name on the rate confirmation, not the name the dispatcher says on the phone.
         </span>
       </label>
 
@@ -112,7 +120,7 @@ const field =
           </span>
           <input type="text" name="mc_number" placeholder="MC123456" class={`${field} tabular-nums`} />
           <span class="mt-1 block text-xs text-ink-500">
-            Keep the prefix if there is one — MC, MX and FF are three different kinds of authority.
+            Keep the prefix if there is one. MC, MX and FF are three different kinds of authority.
           </span>
         </label>
         <label class="block">
@@ -127,7 +135,7 @@ const field =
             class={`${field} tabular-nums`}
           />
           <span class="mt-1 block text-xs text-ink-500">
-            Worth finding. With this we can check their operating authority against the public
+            Worth finding. With this number we can check their operating authority in the public
             federal record every time you open their page.
           </span>
         </label>
@@ -144,7 +152,12 @@ const field =
           <span class="text-sm font-medium">
             Phone <span class="font-normal text-ink-300">(optional)</span>
           </span>
-          <input type="tel" name="phone" class={`${field} tabular-nums`} />
+          <input
+            type="tel"
+            name="phone"
+            placeholder="(818) 334-0168"
+            class={`${field} tabular-nums`}
+          />
         </label>
       </div>
 
@@ -161,8 +174,8 @@ const field =
           </span>
           <input type="email" name="billing_email" class={field} />
           <span class="mt-1 block text-xs text-ink-500">
-            Kept apart from the dispatch email on purpose. Invoices sent to the dispatcher are
-            invoices nobody pays.
+            Keep this separate from the dispatch email. Invoices sent to the dispatcher do not
+            get paid.
           </span>
         </label>
       </div>
@@ -186,8 +199,8 @@ const field =
           class={`${field} tabular-nums`}
         />
         <span class="mt-1 block text-xs text-ink-500">
-          Their agreed terms, in days. Left blank it stays blank — we would rather show nothing than
-          guess 30 on the screen you use to decide whether you can afford to take the load.
+          Their agreed terms, in days. If you leave it blank, it stays blank. We would rather show
+          nothing than guess 30 on the screen you use to decide if you can take the load.
         </span>
       </label>
 

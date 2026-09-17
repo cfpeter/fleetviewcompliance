@@ -14,6 +14,7 @@ import {
   statusPillClass,
   todayInCalifornia,
 } from '../../../lib/drivers.ts'
+import { formatPhone } from '../../../lib/phone.ts'
 
 const supabase = Astro.locals.supabase!
 
@@ -96,7 +97,7 @@ const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
 const today = todayInCalifornia()
 ---
 
-<App title="Drivers" subtitle="Everyone who can be dispatched, and what is on file for them.">
+<App title="Drivers" subtitle="Everyone you can dispatch, and what you have on file for them.">
   {notice && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{notice}</p>}
 
   <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -158,8 +159,8 @@ const today = todayInCalifornia()
         <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
           <p class="font-medium">No drivers yet</p>
           <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
-            Add the people you dispatch. A name is enough to start — the dates can follow as the
-            paperwork turns up.
+            Add the people you dispatch. A name is enough to start. The dates can follow when the
+            paperwork comes in.
           </p>
           <a
             href="/app/drivers/new"
@@ -170,10 +171,10 @@ const today = todayInCalifornia()
         </div>
       ) : (
         <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
-          <p class="font-medium">Nobody matches this view</p>
+          <p class="font-medium">No driver matches</p>
           <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
-            You have <span class="tabular-nums">{totalCount}</span> drivers on file. This search and
-            tab together match none of them.
+            You have <span class="tabular-nums">{totalCount}</span> drivers on file. None of them
+            match this search and this tab.
           </p>
           <a
             href="/app/drivers?status=all"
@@ -211,8 +212,12 @@ const today = todayInCalifornia()
                     >
                       {d.last_name}, {d.first_name}
                     </a>
+                    {/* Stored as E.164, read the way a person reads it. A roster
+                        of forty '+1818...' strings is a roster nobody scans. */}
                     {(d.phone || d.email) && (
-                      <div class="text-xs text-ink-300 tabular-nums">{d.phone || d.email}</div>
+                      <div class="text-xs text-ink-300 tabular-nums">
+                        {d.phone ? formatPhone(d.phone) : d.email}
+                      </div>
                     )}
                   </td>
                   <td class="px-4 py-3">

@@ -47,7 +47,7 @@ function toBoard(message: string): Response {
   return Astro.redirect(`/app/dispatch?error=${encodeURIComponent(message)}`, 303)
 }
 
-const NOT_YOURS = 'That load is not on your board.'
+const NOT_YOURS = 'That load is not in your account.'
 
 // A hand-edited URL like /app/loads/abc/assign is not a missing row, it is a
 // failed uuid cast: Postgres raises, and without this check the dispatcher gets
@@ -428,10 +428,10 @@ if (Astro.request.method === 'POST') {
   if (intent !== 'assign') return back(posted)
 
   if (!ASSIGNABLE.has(load.status) || load.exception === 'cancelled') {
-    return fail(posted, `Load ${loadLabel(load)} is ${load.status.replace(/_/g, ' ')} and cannot be assigned.`)
+    return fail(posted, `Load ${loadLabel(load)} is ${load.status.replace(/_/g, ' ')}. You cannot assign it.`)
   }
 
-  if (!posted.driver) return fail(posted, 'Pick a driver before assigning this load.')
+  if (!posted.driver) return fail(posted, 'Pick a driver first.')
   // Same person in both seats. Postgres will happily store it — two nullable FKs
   // to the same table with no constraint between them — and the result is a
   // team run with one man on it, and hours-of-service maths built on a fiction.
@@ -456,14 +456,14 @@ if (Astro.request.method === 'POST') {
   if (driverRow.status !== 'active') {
     return fail(
       posted,
-      `${driverName(driverRow)} is ${driverRow.status} and cannot be dispatched. Put the driver back on the active roster first.`,
+      `${driverName(driverRow)} is ${driverRow.status}, so you cannot dispatch this driver. Put the driver back on the active roster first.`,
     )
   }
 
   const coDriverRow = posted.co_driver ? drivers.find((d) => d.id === posted.co_driver) : undefined
   if (posted.co_driver && !coDriverRow) return fail(posted, 'That co-driver is not on your roster.')
   if (coDriverRow && coDriverRow.status !== 'active') {
-    return fail(posted, `${driverName(coDriverRow)} is ${coDriverRow.status} and cannot be dispatched.`)
+    return fail(posted, `${driverName(coDriverRow)} is ${coDriverRow.status}, so you cannot dispatch this driver.`)
   }
 
   /** The same three checks for a unit: ours, the right kind, and not sold. */
@@ -476,7 +476,7 @@ if (Astro.request.method === 'POST') {
     // against trailer rules while the screen and the paperwork both call it the
     // tractor — a record that disagrees with itself about what is under the load.
     if (v.kind !== kind) return `${unitName(v)} is not a ${role}.`
-    if (v.status === 'sold') return `${unitName(v)} has been sold and cannot be dispatched.`
+    if (v.status === 'sold') return `${unitName(v)} is marked sold, so you cannot dispatch it.`
     return null
   }
   const tractorProblem = checkUnit(posted.tractor, 'power_unit', 'tractor')
@@ -501,7 +501,7 @@ if (Astro.request.method === 'POST') {
   if (assessment.blocked) {
     return fail(
       posted,
-      `${assessment.blocks[0].message} This load cannot be assigned until that is put right.`,
+      `${assessment.blocks[0].message} You cannot assign this load until that is fixed.`,
     )
   }
 
@@ -516,7 +516,7 @@ if (Astro.request.method === 'POST') {
     if (!acknowledged || !typed) {
       return fail(
         posted,
-        'This assignment has warnings. Tick the box and say why you are going ahead — an override nobody can trace is an override that gets denied later.',
+        'This load has warnings. You must tick the box and type why you are sending it out anyway. We save your name and your reason with this load.',
       )
     }
     /**
@@ -668,7 +668,7 @@ const SEVERITY_PILL = {
   {
     assessment.blocked && (
       <div class="mb-5 rounded-xl border border-red-200 bg-red-50/40 p-5">
-        <p class="font-medium text-red-800">This load cannot go out as selected.</p>
+        <p class="font-medium text-red-800">This load cannot go out with these people or trucks.</p>
         <ul class="mt-3 space-y-3 text-sm">
           {assessment.slots
             .filter((s) => s.issues.some((i) => i.severity === 'block'))
@@ -680,15 +680,15 @@ const SEVERITY_PILL = {
                     <p class="text-red-800">{i.message}</p>
                   ))}
                 <a href={s.href} class="mt-1 inline-block font-medium text-brand-600 hover:underline">
-                  Open {s.name}'s record and put the date right →
+                  Open {s.name} and fix the date →
                 </a>
               </li>
             ))}
         </ul>
         <p class="mt-4 text-sm text-red-700">
-          Nothing else about this load is wrong. Pick somebody else and it goes out now, or fix the
-          date above and come straight back — this is not a decision anyone here can wave through,
-          because the driver is not qualified to operate until it is put right.
+          Nothing else about this load is wrong. Pick somebody else and it can go out now, or fix
+          the date above and come straight back. Nobody can override this one. It is not legal to
+          run until it is fixed.
         </p>
       </div>
     )
@@ -705,7 +705,7 @@ const SEVERITY_PILL = {
         <div>
           <h2 class="text-lg font-semibold tracking-tight">Who is taking it</h2>
           <p class="mt-1 text-sm text-ink-500">
-            Pick, then check. Nothing is written until you press Assign at the bottom.
+            First pick. Then check. Nothing is saved until you press Assign at the bottom.
           </p>
         </div>
 
@@ -762,7 +762,7 @@ const SEVERITY_PILL = {
 
               <label class="block">
                 <span class="text-sm font-medium">
-                  Trailer <span class="font-normal text-ink-300">(blank for power-only)</span>
+                  Trailer <span class="font-normal text-ink-300">(leave blank for power-only)</span>
                 </span>
                 <select name="trailer" class={field}>
                   <option value="">— none —</option>
@@ -785,7 +785,7 @@ const SEVERITY_PILL = {
             Check these
           </button>
           <span class="text-sm text-ink-500">
-            Checking reloads the page with their compliance on it. No data is changed.
+            This reloads the page and shows their compliance. Nothing is saved.
           </span>
         </div>
       </form>
@@ -828,10 +828,10 @@ const SEVERITY_PILL = {
                       ]}
                     >
                       {blocks.length > 0
-                        ? 'Cannot be dispatched'
+                        ? 'Cannot go out'
                         : warns.length > 0
-                          ? `${warns.length} to acknowledge`
-                          : 'Nothing outstanding'}
+                          ? `${warns.length} ${warns.length === 1 ? 'warning' : 'warnings'}`
+                          : 'All clear'}
                     </span>
                   </div>
 
@@ -863,8 +863,8 @@ const SEVERITY_PILL = {
                   }
                   {s.unknownSubject && (
                     <p class="mt-3 text-sm text-ink-500">
-                      The rule engine has no rows for {s.name}. That is not the same as a clean
-                      record — it usually means the record is not on the active roster.{' '}
+                      We have no compliance rows for {s.name}. That is not the same as a clean
+                      record. It usually means the record is not on the active roster.{' '}
                       <a href={s.href} class="font-medium text-brand-600 hover:underline">
                         Check the record
                       </a>
@@ -897,8 +897,8 @@ const SEVERITY_PILL = {
             <div class="space-y-3 rounded-xl border border-amber-300 bg-amber-50 p-4">
               <p class="text-sm text-amber-900">
                 <span class="font-medium tabular-nums">{assessment.warns.length}</span>
-                {assessment.warns.length === 1 ? ' warning' : ' warnings'} on this assignment. None
-                of them stops the truck, and none of them goes unrecorded either.
+                {assessment.warns.length === 1 ? ' warning' : ' warnings'} on this load. None of
+                them stops the truck. We save all of them with your name.
               </p>
               <label class="flex items-start gap-2 text-sm">
                 <input
@@ -908,21 +908,22 @@ const SEVERITY_PILL = {
                   class="mt-0.5 size-4 rounded border-ink-300"
                 />
                 <span class="text-amber-900">
-                  I have read the warnings above and I am dispatching this load anyway.
+                  I read the warnings above. I am sending this load out anyway. My name is saved
+                  with this decision.
                 </span>
               </label>
               <label class="block">
-                <span class="text-sm font-medium text-amber-900">Why</span>
+                <span class="text-sm font-medium text-amber-900">Why are you sending it anyway?</span>
                 <textarea
                   name="override_reason"
                   rows="3"
-                  placeholder="e.g. Card renewed Friday, copy is in the truck, office has the paperwork Monday."
+                  placeholder="Example: medical card renewed Friday. Copy is in the truck. Office gets the paper Monday."
                   class={field}
                 />
                 <span class="mt-1 block text-xs text-amber-800">
-                  Stored against this assignment with your name on it. Six months from now, in front
-                  of an auditor or a claims adjuster, this sentence is the difference between a
-                  judgement call and a shrug.
+                  We save this with your name and today's date. In six months, when an auditor or an
+                  insurance adjuster asks why this load went out, this sentence is the answer. Write
+                  it so somebody else can understand it.
                 </span>
               </label>
             </div>
@@ -945,8 +946,8 @@ const SEVERITY_PILL = {
           {
             assessment.blocked && (
               <span class="text-sm text-red-700">
-                Disabled — and the server refuses it as well, so a re-enabled button gets the same
-                answer.
+                This button is off. The server refuses this load as well, so turning the button back
+                on changes nothing.
               </span>
             )
           }
@@ -992,8 +993,7 @@ const SEVERITY_PILL = {
             </>
           ) : (
             <p class="mt-2 text-sm text-ink-500">
-              Nobody yet. This load is sitting at the top of the dispatch board until it has a
-              driver.
+              Nobody yet. This load stays at the top of the dispatch board until it has a driver.
             </p>
           )
         }
@@ -1041,9 +1041,8 @@ const SEVERITY_PILL = {
 
       <div class="rounded-xl border border-brand-500/30 bg-brand-500/[0.04] p-4">
         <p class="text-sm text-brand-700">
-          A driver who was qualified on Monday can be unqualified by Thursday, so this check runs
-          against today's dates every time the page is opened — not against whatever was true when
-          the load was booked.
+          A driver can be qualified on Monday and not qualified by Thursday. This check uses today's
+          date every time you open the page. It does not use the date the load was booked.
         </p>
       </div>
     </div>

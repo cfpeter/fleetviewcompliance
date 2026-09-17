@@ -183,5 +183,62 @@ export function standingPill(standing: Standing): { label: string; className: st
   }
 }
 
+const DUE_FORMAT: Intl.DateTimeFormatOptions = {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  timeZone: 'UTC',
+}
+
+/** UTC, always. Every date in this engine is a UTC midnight, and rendering one
+ *  in the reader's zone moves half the year's deadlines back a day. */
+const onDate = (d?: Date) => (d ? d.toLocaleDateString('en-US', DUE_FORMAT) : '—')
+
+const countdown = (days: number) => {
+  if (days < 0) return `${Math.abs(days)} days ago`
+  if (days === 0) return 'today'
+  if (days === 1) return 'tomorrow'
+  return `in ${days} days`
+}
+
+/**
+ * The date line under the pill — and the sentence it must never say.
+ *
+ * `unknown` used to fall through to the same `date · countdown` as `current`, so
+ * a row whose pill read "Not sure" still printed a flat "in 45 days", while the
+ * tile directly above it read "Due in 45 days: 0" — the soon bucket takes only
+ * `current`. A counter and a countdown contradicting each other in one glance,
+ * on the screen whose entire job is trust.
+ *
+ * THE BUCKET IS RIGHT AND STAYS RIGHT. An `unknown` that still carries a date is
+ * a schedule we can work out unaided — IFTA's quarter end, the MCS-150 formula —
+ * with no record that the previous cycle was ever done. The date is real; the
+ * SLACK is the invention. He may be late on the cycle before this one right now,
+ * which is the whole reason these rank with overdue rather than below current.
+ * So the countdown is the part that goes: it is the only part that was false.
+ *
+ * Deliberately not "our estimate". Oct 31 is not a guess — it is the statutory
+ * quarter end — and calling it one would replace a false countdown with a false
+ * date. What is unverified is the PREVIOUS cycle, so that is what we print: the
+ * line says plainly that we hold no record of the last one, rather than leaving
+ * the reader to unpack a condition ("if nothing was missed") and work out for
+ * himself which half of it we are unsure about.
+ *
+ * An `unknown` with NO date is the `missing_data` half: nothing to count from at
+ * all. That rendered "— · no date", which reads as a broken cell rather than as
+ * a question waiting on him.
+ */
+export function dueLine(item: { status: Status; daysUntil?: number }): string {
+  const s = item.status
+  if (s.standing === 'overdue') return `was due ${onDate(s.lastDue ?? s.nextDue)}`
+  if (!s.nextDue) return 'no date yet'
+  if (s.standing === 'unknown') return `${onDate(s.nextDue)} · we have no record of the last one`
+  // The countdown is reserved for `current`, where the date is known AND the
+  // last cycle is known to have been done. Nothing else earns a number.
+  return item.daysUntil === undefined
+    ? onDate(s.nextDue)
+    : `${onDate(s.nextDue)} · ${countdown(item.daysUntil)}`
+}
+
 /** Due within this many days counts as "coming up" on the dashboard. */
 export const SOON_DAYS = 45

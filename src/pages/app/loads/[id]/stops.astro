@@ -15,6 +15,7 @@
  * control that does nothing on one bar of signal.
  */
 import App from '../../../../layouts/App.astro'
+import { formatPhone, parsePhone } from '../../../../lib/phone.ts'
 import {
   APPOINTMENT_TYPES,
   STOP_TYPES,
@@ -90,7 +91,7 @@ const fail = (message: string, stopId = '') =>
 const toLoads = (message: string) =>
   Astro.redirect(`/app/loads?error=${encodeURIComponent(message)}`, 303)
 
-const NOT_YOURS = 'That load is not on your board.'
+const NOT_YOURS = 'That load is not in your account.'
 const STOP_GONE = 'That stop is no longer on this load.'
 
 // A hand-edited URL like /app/loads/abc/stops is not a missing row, it is a
@@ -187,11 +188,23 @@ function readStopFields(form: FormData):
   // in fact a hard appointment, which is the one mistake on this page that
   // refuses a load.
   if (rawAppointment !== '' && !isAppointmentType(rawAppointment)) {
-    return { ok: false, message: 'That is not an appointment type we recognise.' }
+    return { ok: false, message: 'That appointment type is not one we know. Pick one from the list.' }
   }
 
   const state = parseStopState(form.get('state'))
   if (!state.ok) return { ok: false, message: state.message }
+
+  // The receiver's number, held to the same rule as every other phone in the
+  // product, because it is the one a driver sitting at a gate is given to call.
+  // 'ask the broker' or a number with an extension trailing it is a stop that
+  // reads as though somebody can be reached at it, and the dispatcher finds out
+  // otherwise while the clock that settles the detention argument is running.
+  // Blank stays allowed — a stop with no contact is honest about having none.
+  // Refused through this function's own channel so it surfaces the way every
+  // other field error on this page does: one 303, the banner, and the row
+  // re-opened at the field it is about.
+  const phone = parsePhone(form.get('phone'), 'Phone')
+  if (!phone.ok) return { ok: false, message: phone.message }
 
   const windowStart = localInputToIso(String(form.get('window_start') ?? ''))
   const windowEnd = localInputToIso(String(form.get('window_end') ?? ''))
@@ -199,7 +212,7 @@ function readStopFields(form: FormData):
   // free-time clock both read it, and a window that closes before it opens
   // makes every stop look late forever.
   if (windowStart && windowEnd && new Date(windowEnd) < new Date(windowStart)) {
-    return { ok: false, message: 'The appointment window ends before it starts.' }
+    return { ok: false, message: 'The window closes before it opens. Check the two times.' }
   }
 
   return {
@@ -212,7 +225,7 @@ function readStopFields(form: FormData):
       state: state.value,
       zip: formText(form, 'zip'),
       contact_name: formText(form, 'contact_name'),
-      phone: formText(form, 'phone'),
+      phone: phone.value,
       appointment_type: rawAppointment === '' ? null : rawAppointment,
       window_start: windowStart,
       window_end: windowEnd,
@@ -289,7 +302,7 @@ if (Astro.request.method === 'POST') {
     // claim the broker throws out — better to catch the transposed digits while
     // the dispatcher still has the driver on the phone.
     if (arrived && departed && new Date(departed) < new Date(arrived)) {
-      return fail('That departure is before the arrival — check the times.', stopId)
+      return fail('The departure time is before the arrival time. Check both times.', stopId)
     }
 
     const { data, error } = await supabase
@@ -305,7 +318,7 @@ if (Astro.request.method === 'POST') {
 
   if (intent === 'move_stop') {
     const direction = String(form.get('dir') ?? '')
-    if (direction !== 'up' && direction !== 'down') return fail('That is not a direction.')
+    if (direction !== 'up' && direction !== 'down') return fail('That is not a direction we know.')
 
     const { rows, error } = await fetchStops()
     if (error) return fail(error)
@@ -336,7 +349,7 @@ if (Astro.request.method === 'POST') {
     // free and the plan is over the list that actually exists.
     const writeError = await runWrites(planAfterRemoval(rows, stopId))
     if (writeError) {
-      return fail(`The stop was removed, but renumbering the rest failed: ${writeError}`)
+      return fail(`The stop was removed, but we could not renumber the rest: ${writeError}`)
     }
     return go('?removed=1')
   }
@@ -428,24 +441,24 @@ const arrow =
 
 <App
   title={`Stops · ${loadName}`}
-  subtitle={`${stops.length} ${stops.length === 1 ? 'stop' : 'stops'} · ${load.status}`}
+  subtitle={`${stops.length} ${stops.length === 1 ? 'stop' : 'stops'} · ${load.status.replace(/_/g, ' ')}`}
 >
   {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
-  {added && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop added to the end of the run.</p>}
+  {added && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop added at the end of the run.</p>}
   {saved && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop saved.</p>}
-  {timed && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Times recorded.</p>}
-  {moved && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop moved. The rest renumbered with it.</p>}
-  {removed && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop removed and the run renumbered.</p>}
+  {timed && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Times saved.</p>}
+  {moved && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop moved. The other stops were renumbered.</p>}
+  {removed && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop removed. The other stops were renumbered.</p>}
   {
     renumbered !== null &&
       (renumbered === 0 ? (
         <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
-          Nothing to renumber — the stops were already 1 to {stops.length}.
+          Nothing to renumber. The stops were already 1 to {stops.length}.
         </p>
       ) : (
         <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-          Numbering repaired in <span class="tabular-nums">{renumbered}</span>
-          {renumbered === 1 ? ' write.' : ' writes.'}
+          Stop numbers fixed on <span class="tabular-nums">{renumbered}</span>
+          {renumbered === 1 ? ' stop.' : ' stops.'}
         </p>
       ))
   }
@@ -457,10 +470,10 @@ const arrow =
         class="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4"
       >
         <div class="min-w-0 flex-1">
-          <p class="font-medium text-amber-900">The stop numbers have a hole in them</p>
+          <p class="font-medium text-amber-900">The stop numbers are wrong</p>
           <p class="mt-0.5 text-sm text-amber-800">
-            The driver's "stop 3" and this screen's stop 3 are now different stops. This happens
-            when a renumber was interrupted partway; the order below is right, the numbers are not.
+            Stop 3 on this screen may not be the stop 3 you gave the driver. This happens when
+            renumbering stopped partway. The order below is right. The numbers are not.
           </p>
         </div>
         <button
@@ -507,7 +520,7 @@ const arrow =
         <dd class="mt-1 text-sm font-medium">
           {
             load.detention_requires_preapproval === true ? (
-              <span class="text-amber-800">Required before the clock counts</span>
+              <span class="text-amber-800">Required — call before the clock counts</span>
             ) : load.detention_requires_preapproval === false ? (
               'Not required'
             ) : (
@@ -524,17 +537,17 @@ const arrow =
          hours elapsed, the call that had to be made has not been made. */
       load.detention_requires_preapproval === true && (
         <p class="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          This broker pays detention only if it was approved first. Call before the free time runs
-          out and write the approval into the stop's instructions — an unapproved claim on this load
-          is a claim that gets short-paid.
+          This broker pays detention only if you get approval first. Call before the free hours run
+          out. Then write who approved it, and when, in the stop instructions. Without that, the
+          broker will not pay for this wait.
         </p>
       )
     }
     {
       (load.free_hours_pickup === null || load.free_hours_delivery === null) && (
         <p class="mt-4 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
-          Free hours are missing from this load, so the stops below cannot say when a wait turned
-          into detention. The numbers are on the rate confirmation.
+          This load has no free hours on it, so the stops below cannot show when a wait becomes
+          detention. The free hours are on the rate confirmation.
         </p>
       )
     }
@@ -543,8 +556,7 @@ const arrow =
   {
     stops.length === 0 && (
       <p class="mb-4 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center text-sm text-ink-500">
-        No stops on this load yet. A load is an ordered list of them — two is the common shape, and
-        five is an ordinary Tuesday.
+        No stops on this load yet. Add them in the order the truck runs them.
       </p>
     )
   }
@@ -595,7 +607,7 @@ const arrow =
                     {s.company_name ?? <span class="text-ink-300">No company name</span>}
                   </p>
                   <p class="text-sm text-ink-500">
-                    {place || <span class="text-ink-300">No city on file</span>}
+                    {place || <span class="text-ink-300">No city</span>}
                     {s.zip && <span class="ml-1 tabular-nums">{s.zip}</span>}
                   </p>
                   {appointment ? (
@@ -688,14 +700,14 @@ const arrow =
                 {clock === null ? (
                   <p class="mt-3 text-sm text-ink-500">
                     {s.arrived_at
-                      ? 'On the dock now. The wait is measured once a departure is recorded.'
-                      : 'Detention is argued from these two times. Nothing else on the load proves the truck was there.'}
+                      ? 'The truck is on the dock now. We can measure the wait once you enter a departure time.'
+                      : 'These two times are your proof of the wait. Nothing else on the load shows the truck was there.'}
                   </p>
                 ) : clock.backwards ? (
                   <p class="mt-3 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
-                    This stop departed <span class="tabular-nums">{formatMinutes(clock.minutes)}</span>{' '}
-                    before it arrived. One of the two is mistyped, and a detention claim built on it
-                    will be thrown out.
+                    This stop left <span class="tabular-nums">{formatMinutes(clock.minutes)}</span>{' '}
+                    before it arrived. One of the two times is wrong. A detention claim built on it
+                    will be refused.
                   </p>
                 ) : (
                   <div class="mt-3 flex flex-wrap items-center gap-2 text-sm">
@@ -704,7 +716,7 @@ const arrow =
                     </span>
                     {clock.freeMinutes === null ? (
                       <span class="text-ink-500">
-                        · no free time on file for a {stopTypeLabel(s.stop_type).toLowerCase()}
+                        · no free hours on file for a {stopTypeLabel(s.stop_type).toLowerCase()}
                       </span>
                     ) : clock.over ? (
                       <span class="rounded-md bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900">
@@ -713,12 +725,12 @@ const arrow =
                       </span>
                     ) : (
                       <span class="text-ink-500">
-                        · inside the <span class="tabular-nums">{freeHours}h</span> free
+                        · still inside the <span class="tabular-nums">{freeHours}h</span> free
                       </span>
                     )}
                     {clock.over && clock.billableCents !== null && (
                       <span class="tabular-nums text-ink-500">
-                        · {formatCents(clock.billableCents)} at the rate on file
+                        · {formatCents(clock.billableCents)} at the rate on this load
                       </span>
                     )}
                   </div>
@@ -726,14 +738,14 @@ const arrow =
 
                 {clock?.over && load.detention_requires_preapproval === true && (
                   <p class="mt-2 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                    This broker requires pre-approval for detention. Unless somebody called before{' '}
+                    This broker needs pre-approval for detention. If nobody called before{' '}
                     {formatStopTime(s.arrived_at)} plus <span class="tabular-nums">{freeHours}h</span>,
-                    this wait is unbillable — put whoever approved it, and when, in the instructions.
+                    you cannot bill this wait. Write who approved it, and when, in the instructions.
                   </p>
                 )}
                 {clock?.over && clock.billableCents === null && (
                   <p class="mt-2 text-sm text-ink-500">
-                    No detention rate on this load, so there is nothing to invoice this against.
+                    This load has no detention rate, so we cannot put a dollar figure on this wait.
                   </p>
                 )}
               </div>
@@ -818,10 +830,19 @@ const arrow =
                   </label>
                   <label class="block">
                     <span class="text-sm font-medium">Phone</span>
+                    {/*
+                      Read back the way a person reads it, now that the column is
+                      normalised on the way in. Rendering the raw column would
+                      put '+18183340168' in the box the moment the parser did its
+                      job, which is the one spelling nobody recognises as a
+                      receiver's line — and re-posting it is a no-op, so nothing
+                      is lost by showing the readable form.
+                    */}
                     <input
                       type="tel"
                       name="phone"
-                      value={s.phone ?? ''}
+                      value={formatPhone(s.phone)}
+                      placeholder="(818) 334-0168"
                       class={`${field} tabular-nums`}
                     />
                   </label>
@@ -840,9 +861,9 @@ const arrow =
                     ))}
                   </select>
                   <span class="mt-1 block text-xs text-ink-500">
-                    A hard appointment missed is a refused load or a reschedule two days out. FCFS
-                    is a window: late costs waiting, not the load. Left unknown, nobody can tell the
-                    driver which one he is running against.
+                    Miss a hard appointment and the load can be refused, or pushed back two days.
+                    FCFS is a window: being late costs waiting time, not the load. If you leave this
+                    blank, nobody can tell the driver which one he has.
                   </span>
                 </label>
 
@@ -865,14 +886,14 @@ const arrow =
                       class={`${field} tabular-nums`}
                     />
                     <span class="mt-1 block text-xs text-ink-500">
-                      On a hard appointment both boxes are usually the same minute. Times are in the
-                      carrier's own day, not UTC.
+                      On a hard appointment both boxes are usually the same time. Times are your own
+                      local time.
                     </span>
                   </label>
                 </div>
 
                 <label class="block">
-                  <span class="text-sm font-medium">Reference numbers</span>
+                  <span class="text-sm font-medium">Reference numbers on this stop</span>
                   <input
                     type="text"
                     name="reference_numbers"
@@ -881,8 +902,8 @@ const arrow =
                     class={`${field} tabular-nums`}
                   />
                   <span class="mt-1 block text-xs text-ink-500">
-                    One field, because every broker names these differently and a fixed set of boxes
-                    guarantees the number the gate asks for ends up in the wrong one.
+                    One box, because every broker names these numbers differently. Put whatever the
+                    gate will ask for here.
                   </span>
                 </label>
 
@@ -956,8 +977,8 @@ const arrow =
 
                 {removing && (
                   <p class="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
-                    The stops after this one move up by one, so what the driver has been told is
-                    "stop {position + 1}" becomes stop {position}. Tell him before he gets there.
+                    Every stop after this one moves up by one. The stop you called stop{' '}
+                    {position + 1} becomes stop {position}. Tell the driver before he gets there.
                   </p>
                 )}
               </form>
