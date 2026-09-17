@@ -71,6 +71,17 @@ interface AnchorRow {
   occurred_on: string
 }
 
+/** One entry in the log — every date ever recorded, withdrawn ones included. */
+interface HistoryRow {
+  id: string
+  anchor_key: string
+  occurred_on: string
+  source: string
+  note: string | null
+  recorded_at: string
+  superseded_at: string | null
+}
+
 /**
  * The current date for each anchor, from the view that already does the picking.
  *
@@ -96,8 +107,8 @@ function back(params: string): Response {
   return Astro.redirect(`/app/drivers/${id}${params ? `?${params}` : ''}`, 303)
 }
 
-function fail(message: string): Response {
-  return back(`error=${encodeURIComponent(message)}`)
+function fail(message: string, hash = ''): Response {
+  return back(`error=${encodeURIComponent(message)}${hash}`)
 }
 
 /** Back to the roster, for every case where this driver is not ours to show. */
@@ -299,6 +310,36 @@ if (Astro.request.method === 'POST') {
     return back(`dates=${inserts.length}`)
   }
 
+  /**
+   * Withdraw one recorded date.
+   *
+   * The same write the truck page makes, for the same reason: typing a NEWER
+   * date over an old one is the ordinary correction and `save_dates` already
+   * handles it, but a date typed wrong in the OTHER direction cannot be fixed
+   * that way. The latest date wins, so an entry recorded as 2027 when it should
+   * have been 2017 can only be got rid of by withdrawing it. Without this the
+   * driver page had no way back from a typo — the truck page has had one all
+   * along, which is exactly the kind of split this page is being brought out of.
+   */
+  if (intent === 'withdraw_date') {
+    const recordId = String(form.get('record_id') ?? '')
+    if (!recordId) return fail('Nothing to withdraw.', '#history')
+
+    // Supersede, do not delete, and touch `superseded_at` and nothing else —
+    // that is all the append-only trigger permits. The date is immutable; the
+    // claim that it is still the live one is not. `.is('superseded_at', null)`
+    // keeps a double-click from moving the withdrawal time on a row that was
+    // already withdrawn.
+    const { error } = await supabase
+      .from('compliance_records')
+      .update({ superseded_at: new Date().toISOString() })
+      .eq('id', recordId)
+      .is('superseded_at', null)
+
+    if (error) return fail(error.message, '#history')
+    return back('withdrew=1#history')
+  }
+
   return back('')
 }
 
@@ -361,9 +402,24 @@ interface DriverSettlementRow {
 // The documents join the same round of reads. RLS scopes them to this carrier,
 // and the subject filter is what makes them THIS driver's — a document id is
 // never enough on its own, here or on the download route.
-const [current, { data: settlementData }, { data: documentData }, allDeadlines] =
-  await Promise.all([
+const [
+  current,
+  { data: historyRows },
+  { data: settlementData },
+  { data: documentData },
+  allDeadlines,
+] = await Promise.all([
   loadCurrentAnchors(),
+  // Every date ever recorded for this driver, not just the ones in force. The
+  // withdrawn ones are the point: an old medical card is the proof he was
+  // qualified while it ran, so nothing here is ever deleted.
+  supabase
+    .from('compliance_records')
+    .select('id, anchor_key, occurred_on, source, note, recorded_at, superseded_at')
+    .eq('subject_type', 'driver')
+    .eq('subject_id', id)
+    .order('occurred_on', { ascending: false })
+    .order('recorded_at', { ascending: false }),
   supabase
     .from('settlements')
     .select(
@@ -389,6 +445,18 @@ const [current, { data: settlementData }, { data: documentData }, allDeadlines] 
 ])
 
 const documents = (documentData ?? []) as unknown as DocumentRow[]
+const history = (historyRows ?? []) as unknown as HistoryRow[]
+
+/**
+ * The label for a recorded date.
+ *
+ * Every driver anchor applies to every driver, so unlike the truck page there is
+ * no "no rule uses this date any more" case to explain — a truck changes kind
+ * and its old dates stop being read, a driver does not. The fallback is the raw
+ * key, for a row written by an import under a name this build does not know.
+ */
+const driverAnchorLabel = (key: string) =>
+  DRIVER_ANCHORS.find((a) => a.key === key)?.label ?? key
 
 /**
  * The qualification ring.
@@ -469,6 +537,7 @@ const params = Astro.url.searchParams
 const error = params.get('error')
 const added = params.get('added') === '1'
 const saved = params.get('saved') === '1'
+const withdrew = params.get('withdrew') === '1'
 const datesSaved = params.has('dates') ? Number(params.get('dates')) : null
 
 /**
@@ -524,6 +593,18 @@ const field =
 const cardHeading = 'text-sm font-semibold tracking-tight'
 
 /**
+ * ON A PHONE THE ROWS ARE NOT ROWS.
+ *
+ * Identical to the truck page, and for the identical reason: the history table
+ * is wider than the card it sits in on a 375px screen, so below `sm` every cell
+ * becomes a block and from `sm` the same markup is a table again. ONE set of
+ * cells, not two. The pattern is written down in src/components/Documents.astro.
+ */
+const cell = 'block px-4 sm:table-cell sm:py-3'
+/** The column name, said on the block that has no column. */
+const said = 'text-ink-500 sm:hidden'
+
+/**
  * IS THE DRIVER RECORD OPEN WHEN THE PAGE LOADS?
  *
  * Twelve fields, 1,077px tall, at the top of a page the office opens to look at
@@ -556,6 +637,14 @@ const recordOpen = error !== null
   }
   {saved && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Saved.</p>}
   {
+    withdrew && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Date withdrawn. We keep it in the history, so you can still see what was on file and
+        when. The next most recent date is now the one we use.
+      </p>
+    )
+  }
+  {
     datesSaved !== null &&
       (datesSaved > 0 ? (
         <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -569,7 +658,20 @@ const recordOpen = error !== null
       ))
   }
 
-  <div class="grid gap-6 lg:grid-cols-[1fr_minmax(0,20rem)]">
+  {/*
+    `items-start`, and it is not decoration.
+
+    A grid stretches its children to the tallest one in the row by default. The
+    record card on the left is FOLDED shut most of the time — a summary and two
+    links, about 200px — while the rail on the right runs to three cards and the
+    best part of 900px. Stretched to match it, the card became an empty white
+    box most of a screen tall, which reads as a page that failed to load rather
+    than as a form somebody closed. Each column is its own height now.
+
+    The truck page carries the same line for the same reason: its record folds
+    away too, so without this it grows the identical hole.
+  */}
+  <div class="grid items-start gap-6 lg:grid-cols-[1fr_minmax(0,20rem)]">
     {/*
       THE RECORD IS FOLDED AWAY, ON `details` ALONE.
 
@@ -890,6 +992,23 @@ const recordOpen = error !== null
               </span>
             </dd>
           </div>
+          {/*
+            Why the ring above is missing, said where the status is — the same
+            sentence in the same place as the truck page. `dqf` is null for a
+            driver who is not active, so the circle simply is not there, and a
+            card that vanishes without a word reads as broken rather than as
+            switched off. This page had the disappearing ring and not the
+            explanation.
+          */}
+          {
+            !isActiveDriver(driver) && (
+              <div class="py-2">
+                <p class="text-xs text-ink-500">
+                  {DRIVER_NOT_ACTIVE_MEANS} Set him back to Active to start again.
+                </p>
+              </div>
+            )
+          }
           <div class="flex justify-between gap-4 py-2">
             <dt class="text-ink-500">Added</dt>
             <dd class="text-right tabular-nums">
@@ -918,7 +1037,8 @@ const recordOpen = error !== null
     The pay chart and the documents follow it. Both are things the office comes
     to this page to LOOK at; the dates are what it comes to fix.
   */}
-  <form method="POST" class="mt-8 space-y-4">
+  <section id="dates" class="mt-8 scroll-mt-24">
+  <form method="POST" class="space-y-4">
     <div>
       <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
       <p class="mt-1 max-w-3xl text-sm text-ink-500">
@@ -972,6 +1092,7 @@ const recordOpen = error !== null
       </button>
     </div>
   </form>
+  </section>
 
   {/*
     Pay, then the papers. This is the other half of what the office opens a
@@ -1125,6 +1246,140 @@ const recordOpen = error !== null
     says the physical happened, the file is the card that proves it.
   */}
   <Documents subjectType="driver" subjectId={id} documents={documents} noun="this driver" />
+
+  <!-- ----------------------------------------------------------- history -->
+
+  {/*
+    EVERY DATE EVER RECORDED, AND THE ONLY WAY BACK FROM A TYPO.
+
+    The truck page has had this since it was written; the driver page had
+    nothing of the kind, and that was not only a cosmetic split. `save_dates`
+    corrects a date by typing a newer one over it, and the LATEST date wins — so
+    a medical card entered as 2027 when the card says 2017 could not be fixed on
+    this page at all. It can now, the same way it is fixed on a truck: withdraw
+    the wrong entry and the next most recent date becomes the live one again.
+  */}
+  {
+    history.length > 0 && (
+      <section id="history" class="mt-8 scroll-mt-24">
+        <div class={card}>
+          <h2 class="text-lg font-semibold tracking-tight">Everything recorded for this driver</h2>
+          <p class="mt-1 text-sm text-ink-500">
+            We keep old dates instead of replacing them. An old date is the proof this driver was
+            qualified during the time it covered. The <strong>latest date</strong> is the one we
+            use, not the one you typed last. So to move a date to an EARLIER one, withdraw the
+            wrong entry first.
+          </p>
+
+          <div class="mt-4 overflow-x-auto rounded-xl border border-ink-100">
+            <table class="w-full text-sm sm:min-w-[46rem]">
+              {/*
+                No header line on a phone. Four column names above blocks that
+                are not columns explain nothing — each block says what it is in
+                its own words instead.
+              */}
+              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+                <tr>
+                  <th class="px-4 py-3 font-medium">What</th>
+                  <th class="px-4 py-3 font-medium">Date</th>
+                  <th class="px-4 py-3 font-medium">Recorded</th>
+                  <th class="px-4 py-3 font-medium">Source</th>
+                  <th class="px-4 py-3" />
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-ink-100">
+                {history.map((r) => {
+                  /*
+                    BY SLOT, NOT BY THE BARE ANCHOR KEY. `current` is keyed by
+                    `anchorSlot('driver', id, key)` because the planner it feeds
+                    is shared with the dashboard, where one submit spans the
+                    whole fleet. Looked up by `r.anchor_key` alone this never
+                    matches and not one row is ever badged "in force" — the same
+                    trap that once made every date on this page read as missing.
+                  */
+                  const inForce =
+                    current.get(anchorSlot('driver', id, r.anchor_key))?.id === r.id
+                  return (
+                    /* The block leads with WHAT the date is for, because that is
+                       what somebody is looking down this list for. The date and
+                       the badge that says whether it is the one in force follow
+                       it on the next line. */
+                    <tr class="block py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                      <td class={cell}>
+                        <span class="font-medium">{driverAnchorLabel(r.anchor_key)}</span>
+                        {r.note && <span class="mt-0.5 block text-xs text-ink-300">{r.note}</span>}
+                      </td>
+                      <td class={`${cell} mt-1 whitespace-nowrap tabular-nums sm:mt-0`}>
+                        <span class:list={[r.superseded_at ? 'text-ink-300 line-through' : '']}>
+                          {formatDate(r.occurred_on)}
+                        </span>
+                        {inForce && (
+                          <span class="ml-2 rounded-md bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-800">
+                            in force
+                          </span>
+                        )}
+                        {r.superseded_at && (
+                          <span class="ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs font-medium text-ink-500">
+                            withdrawn
+                          </span>
+                        )}
+                      </td>
+                      {/*
+                        The date keeps its own `nowrap`; the line it sits on does
+                        not. Run together as one unbreakable string this cell is
+                        wider than the card on a phone — one pixel of sideways
+                        scroll, which is the whole bug in miniature.
+                      */}
+                      <td
+                        class={`${cell} mt-0.5 text-xs text-ink-500 tabular-nums sm:mt-0 sm:text-sm sm:whitespace-nowrap`}
+                      >
+                        <span class="whitespace-nowrap">
+                          <span class={said}>Recorded </span>
+                          {formatDate(String(r.recorded_at).slice(0, 10))}
+                        </span>
+                        <span class="sm:hidden">
+                          {' · '}
+                          {r.source === 'fmcsa'
+                            ? 'Federal record'
+                            : r.source === 'import'
+                              ? 'Import'
+                              : 'You'}
+                        </span>
+                      </td>
+                      {/* The source, on its own line from `sm` up and folded
+                          into the line above on a phone: two words on a line of
+                          their own is a line an owner skips. */}
+                      <td class="hidden px-4 text-ink-500 sm:table-cell sm:py-3">
+                        {r.source === 'fmcsa' ? 'Federal record' : r.source === 'import' ? 'Import' : 'You'}
+                      </td>
+                      <td class={`${cell} sm:text-right sm:whitespace-nowrap`}>
+                        {!r.superseded_at && (
+                          /* Below `sm` this is a full-width bordered tap rather
+                             than a bare text link. It would otherwise be off the
+                             right edge of the screen entirely. */
+                          <form method="POST" class="mt-2 sm:mt-0">
+                            <input type="hidden" name="record_id" value={r.id} />
+                            <button
+                              type="submit"
+                              name="intent"
+                              value="withdraw_date"
+                              class="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-ink-100 px-3 text-sm font-medium text-red-600 hover:underline sm:min-h-0 sm:w-auto sm:rounded-none sm:border-0 sm:px-0 sm:font-normal"
+                            >
+                              Withdraw
+                            </button>
+                          </form>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    )
+  }
 
   <!-- ------------------------------------------------------------ delete -->
 

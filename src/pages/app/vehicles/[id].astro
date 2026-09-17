@@ -508,6 +508,22 @@ const cardHeading = 'text-sm font-semibold tracking-tight'
  * markup is a table again. ONE set of cells, not two. The pattern is written
  * down in src/components/Documents.astro.
  */
+/**
+ * IS THE VEHICLE RECORD OPEN WHEN THE PAGE LOADS?
+ *
+ * The same rule, and the same reasoning, as the driver page. Fourteen fields at
+ * the top of a page somebody opens to check when the BIT inspection was — a VIN
+ * and a plate are typed once and corrected about never, so the form is folded
+ * away and what it holds is printed on the summary instead.
+ *
+ * IT OPENS ON ITS OWN WHENEVER A SAVE WAS REFUSED. Every refusal here comes back
+ * through `fail()`, which redirects with `?error=`, and the message prints at the
+ * top of the page; a closed form under that message would be a failure with
+ * nothing on screen to fix. Keyed off the message rather than off which form
+ * produced it — the one version of this that a fifteenth field cannot break.
+ */
+const recordOpen = error !== null
+
 const cell = 'block px-4 sm:table-cell sm:py-3'
 /** The column name, said on the block that has no column. */
 const said = 'text-ink-500 sm:hidden'
@@ -549,11 +565,111 @@ const said = 'text-ink-500 sm:hidden'
       ))
   }
 
-  <div class="grid gap-6 lg:grid-cols-[1fr_minmax(0,20rem)]">
-    <form method="POST" class={card}>
-      <h2 class="text-lg font-semibold tracking-tight">The vehicle</h2>
+  {/*
+    `items-start`, and it is not decoration.
 
-      <div class="mt-4 grid gap-4 sm:grid-cols-2">
+    A grid stretches its children to the tallest one in the row by default. The
+    record card on the left folds shut — a summary and a link, about 200px —
+    while the rail on the right runs to three cards. Stretched to match it, the
+    card becomes an empty white box most of a screen tall, which reads as a page
+    that failed to load rather than as a form somebody closed. The driver page
+    carries the same line for the same reason.
+  */}
+  <div class="grid items-start gap-6 lg:grid-cols-[1fr_minmax(0,20rem)]">
+    {/*
+      THE RECORD IS FOLDED AWAY, ON `details` ALONE.
+
+      Word for word the treatment the driver page gives its record, because
+      these are the same screen with a different noun on it and an owner moves
+      between them all morning. No script runs in this app and none is needed:
+      `details` opens on a tap and from the keyboard by itself.
+
+      WHAT IS FOLDED AWAY IS THE TYPING, NOT THE ANSWERS. The summary keeps the
+      three facts somebody opens a unit for when he is not editing anything —
+      the number on the door, the VIN a report has to match, and the plate — so
+      the closed card still answers the question the page was opened with.
+      Collapsing is only worth doing if nothing he came for disappears;
+      otherwise it is hiding data and calling it tidying.
+
+      `open` is decided on the server, so a refused save always comes back with
+      the form already open under its own error message. See `recordOpen`.
+    */}
+    <div class="rounded-xl border border-ink-100 bg-white p-5">
+      <details open={recordOpen} class="group">
+        <summary
+          class="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-3 select-none [&::-webkit-details-marker]:hidden"
+        >
+          <h2 class="text-lg font-semibold tracking-tight">Vehicle record</h2>
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180"
+          >
+            <path d="M5 8l5 5 5-5"></path>
+          </svg>
+          {/* One word, and it goes when the form is open, where the form itself
+              says what it is for. */}
+          <span class="ml-auto text-sm font-medium text-brand-600 group-open:hidden">Change</span>
+
+          <span class="flex w-full flex-wrap gap-x-6 gap-y-1 text-sm">
+            <span class="whitespace-nowrap">
+              <span class="text-ink-500">Unit </span>
+              {
+                vehicle.unit_number ? (
+                  <span class="tabular-nums">{vehicle.unit_number}</span>
+                ) : (
+                  <span class="text-ink-300">not on file</span>
+                )
+              }
+            </span>
+            <span class="whitespace-nowrap">
+              <span class="text-ink-500">VIN </span>
+              {
+                vehicle.vin ? (
+                  <span class="font-mono uppercase">{vehicle.vin}</span>
+                ) : (
+                  <span class="text-ink-300">not on file</span>
+                )
+              }
+            </span>
+            <span class="whitespace-nowrap">
+              <span class="text-ink-500">Plate </span>
+              {
+                vehicle.plate ? (
+                  <span class="uppercase tabular-nums">
+                    {vehicle.plate}
+                    {vehicle.plate_state && ` ${vehicle.plate_state}`}
+                  </span>
+                ) : (
+                  <span class="text-ink-300">not on file</span>
+                )
+              }
+            </span>
+          </span>
+
+          {/*
+            The VIN advisory follows the VIN onto the summary, exactly as the
+            phone advisory does on the driver page. It used to sit under the
+            field, which is behind the fold now — and a VIN that CARB will never
+            match is precisely the thing that must not go quiet. The long
+            version, with what to do about it, is still under the field.
+          */}
+          {
+            vinNotice && (
+              <span class="w-full rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                This VIN will not match the state’s records.
+              </span>
+            )
+          }
+        </summary>
+
+        <form method="POST" class="mt-5 border-t border-ink-100 pt-5">
+      <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
           <span class="text-sm font-medium">Unit number</span>
           <input
@@ -704,11 +820,24 @@ const said = 'text-ink-500 sm:hidden'
         >
           Save vehicle
         </button>
+      </div>
+        </form>
+      </details>
+
+      {/*
+        OUTSIDE THE FOLD, like the driver page's pair. This is how you leave the
+        page, and a way out that only exists once you have opened an edit form is
+        not a way out — it was inside the form until now, beside the save button.
+      */}
+      <div class="mt-5 flex flex-wrap items-center gap-4 border-t border-ink-100 pt-4">
+        <a href="#dates" class="text-sm font-medium text-brand-600 hover:underline">
+          Compliance dates →
+        </a>
         <a href="/app/vehicles" class="text-sm font-medium text-brand-600 hover:underline">
           Back to trucks
         </a>
       </div>
-    </form>
+    </div>
 
     <div class="space-y-4">
       {
@@ -811,18 +940,20 @@ const said = 'text-ink-500 sm:hidden'
 
   <!-- ------------------------------------------------------------- dates -->
 
-  <section id="dates" class="mt-6 scroll-mt-24">
-    <form method="POST" class={card}>
-      <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
-      <p class="mt-1 text-sm text-ink-500">
-        Every box below wants the <strong>last time it happened</strong>, not the next time it is
-        due. We count forward from the date you type. A date in the future makes us skip past the
-        deadline you were trying to tell us about.
-      </p>
+  <section id="dates" class="mt-8 scroll-mt-24">
+    <form method="POST" class="space-y-4">
+      <div>
+        <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
+        <p class="mt-1 max-w-3xl text-sm text-ink-500">
+          Every box below wants the <strong>last time it happened</strong>, not the next time it
+          is due. We count forward from the date you type. A date in the future makes us skip
+          past the deadline you were trying to tell us about.
+        </p>
+      </div>
 
       {
         weightUnknown && (
-          <p class="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <p class="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
             This truck has no GVWR on file, so every weight rule below stays ON. We treat an
             unknown weight as fully regulated, never as exempt. One extra reminder costs you a
             minute. One missed inspection costs you the truck. Fill in the GVWR above and the
@@ -838,15 +969,13 @@ const said = 'text-ink-500 sm:hidden'
         ].map(
           (group) =>
             group.items.length > 0 && (
-              <div class="mt-6">
-                {/*
-                  The same heading the driver page gives its date groups. The two
-                  pages had two different treatments for one thing — 12px grey
-                  uppercase here, 16px black there — on screens an owner moves
-                  between all morning.
-                */}
+              /* One card per group, the container the driver page gives its own
+                 date groups. Both pages were already agreed on the heading; they
+                 disagreed about what the heading sat on — a bare block inside one
+                 long card here, a card of its own there. */
+              <div class={card}>
                 <h3 class={cardHeading}>{group.title}</h3>
-                <div class="mt-3 space-y-5">
+                <div class="mt-4 space-y-5">
                   {group.items.map((anchor) => {
                     const live = current.get(anchor.key)
                     return (
@@ -890,7 +1019,19 @@ const said = 'text-ink-500 sm:hidden'
         )
       }
 
-      <div class="mt-6 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+      {/*
+        STICKY, like the driver page's. This list runs to a dozen dates on a
+        tractor and the save button used to sit under the last of them — so on a
+        phone the way to save a date you had just typed at the top was to scroll
+        past everything you had not typed.
+      */}
+      <div
+        class="sticky bottom-0 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white/95 p-4 backdrop-blur"
+      >
+        <span class="flex-1 text-sm text-ink-500">
+          Saving adds a new entry. Nothing already saved is erased, and a box you leave blank
+          changes nothing.
+        </span>
         <button
           type="submit"
           name="intent"
@@ -899,10 +1040,6 @@ const said = 'text-ink-500 sm:hidden'
         >
           Save dates
         </button>
-        <span class="text-sm text-ink-500">
-          Saving adds a new entry. Nothing already saved is erased, and a box you leave blank
-          changes nothing.
-        </span>
       </div>
     </form>
   </section>
@@ -924,7 +1061,7 @@ const said = 'text-ink-500 sm:hidden'
 
   {
     history.length > 0 && (
-      <section id="history" class="mt-6 scroll-mt-24">
+      <section id="history" class="mt-8 scroll-mt-24">
         <div class={card}>
           <h2 class="text-lg font-semibold tracking-tight">Everything recorded for this unit</h2>
           <p class="mt-1 text-sm text-ink-500">
@@ -1059,7 +1196,7 @@ const said = 'text-ink-500 sm:hidden'
     instead — see src/lib/fleet/remove.ts for the list and
     0028_fleet_delete_guard.sql for the same list in the database.
   */}
-  <section id="delete" class="mt-6 scroll-mt-24">
+  <section id="delete" class="mt-8 scroll-mt-24">
     {
       !wantsDelete ? (
         <div class={card}>
