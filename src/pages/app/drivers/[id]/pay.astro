@@ -544,13 +544,17 @@ const primary =
                         <span class="text-sm font-medium">
                           Fuel surcharge <span class="text-red-600">*</span>
                         </span>
-                        <div class="mt-2 space-y-1.5">
-                          <label class="flex items-center gap-2 text-sm">
-                            <input type="radio" name="includes_fsc" value="yes" required class="size-4" />
+                        <div class="mt-2">
+                          {/* `.check-row` carries the 44px row and the whole-row
+                              tap target. No `size-4` here on purpose: utilities
+                              beat @layer base, so it would put these two back to
+                              16px while every other box in the app is 20px. */}
+                          <label class="check-row text-sm">
+                            <input type="radio" name="includes_fsc" value="yes" required />
                             Included in the percentage
                           </label>
-                          <label class="flex items-center gap-2 text-sm">
-                            <input type="radio" name="includes_fsc" value="no" required class="size-4" />
+                          <label class="check-row text-sm">
+                            <input type="radio" name="includes_fsc" value="no" required />
                             Not included. The carrier keeps it
                           </label>
                         </div>
@@ -559,25 +563,13 @@ const primary =
                         <span class="text-sm font-medium">
                           Accessorials <span class="text-red-600">*</span>
                         </span>
-                        <div class="mt-2 space-y-1.5">
-                          <label class="flex items-center gap-2 text-sm">
-                            <input
-                              type="radio"
-                              name="includes_accessorials"
-                              value="yes"
-                              required
-                              class="size-4"
-                            />
+                        <div class="mt-2">
+                          <label class="check-row text-sm">
+                            <input type="radio" name="includes_accessorials" value="yes" required />
                             Included in the percentage
                           </label>
-                          <label class="flex items-center gap-2 text-sm">
-                            <input
-                              type="radio"
-                              name="includes_accessorials"
-                              value="no"
-                              required
-                              class="size-4"
-                            />
+                          <label class="check-row text-sm">
+                            <input type="radio" name="includes_accessorials" value="no" required />
                             Not included. The carrier keeps them
                           </label>
                         </div>
