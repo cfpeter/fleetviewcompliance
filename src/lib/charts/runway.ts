@@ -21,9 +21,28 @@
  * So the unplaceable items are counted, returned alongside the weeks, and the
  * component renders them as a block at the left edge of the same axis. They are
  * not a footnote to the chart. They are the first thing on it.
+ *
+ * WHY EACH WEEK IS SPLIT IN TWO.
+ *
+ * Height alone says how many, not how urgent. A week holding four renewals due
+ * inside `SOON_DAYS` and a week holding four due at the far end of the quarter
+ * drew as the same column, so the crunch — the week he has to act on now — was
+ * only findable by reading the dates off the list underneath. Each week is
+ * therefore counted twice over: `soon` (inside the window) and `later`, and the
+ * component stacks amber on green.
+ *
+ * TWO COLOURS, NOT THREE. There is no red segment on any week here. Red means
+ * overdue in this app, an overdue item has no future date to place, and it is
+ * already drawn in the block at the left edge. A second urgency threshold — "due
+ * in a week is different from due in a month" — would also contradict the single
+ * `SOON_DAYS` line the tiles, the health ring and this chart all share, so the
+ * split uses that line and only that line.
  */
 import type { Standing } from '../rules/compute.ts'
+import { SOON_DAYS } from '../rules/index.ts'
 import { type Bucket, utcDay, weekBuckets } from './scale.ts'
+
+const MS_DAY = 86_400_000
 
 export interface RunwayItem {
   standing: Standing
@@ -31,7 +50,17 @@ export interface RunwayItem {
 }
 
 export interface RunwayWeek extends Bucket {
+  /** Everything placed in this week: `soon + later`. The height of the column. */
   count: number
+  /**
+   * Due inside `soonDays` — the amber part of the column.
+   *
+   * Amber sits on TOP of green in the stack, so the urgent part of a heavy week
+   * is the part at eye level against the white above the chart.
+   */
+  soon: number
+  /** Dated further out than `soonDays` — the green part, under the amber. */
+  later: number
   /** Set on the first week of each new month, so the axis can be labelled. */
   monthLabel: string | null
   isCurrent: boolean
@@ -56,8 +85,17 @@ export interface Runway {
   beyond: number
   /** Real obligations with no computable schedule. Counted so the caption can say so. */
   unschedulable: number
-  /** Items actually drawn on the weeks. */
+  /** Items actually drawn on the weeks. `soon + later`. */
   scheduled: number
+  /** Of the drawn items, the ones due inside `soonDays`. The amber total. */
+  soon: number
+  /** Of the drawn items, the ones dated further out than that. The green total. */
+  later: number
+  /**
+   * The window `soon` was measured against, carried so the legend can print the
+   * number in words instead of importing the rules engine to say "45 days".
+   */
+  soonDays: number
   /** Count the tallest column represents. Never below 1, so the axis divides. */
   max: number
   /** The busiest week, only when it holds more than one item. */
@@ -68,17 +106,52 @@ export interface Runway {
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 /**
+ * Is a countdown inside the window? BOTH SIDES OF ZERO, every time.
+ *
+ * Exported, and a named function rather than one inline comparison, because
+ * this is the fourth place in the codebase that has had to ask it and the first
+ * three all got it wrong in the same way. The dashboard's due-soon tile, the
+ * qualification binder's "Expires soon" pill and the health ring each shipped
+ * `days <= SOON_DAYS` on its own — and EVERY NEGATIVE NUMBER PASSES THAT. A
+ * pre-employment Clearinghouse query run the week the driver was hired comes
+ * back with a countdown like -2040, so twenty things finished years ago sat
+ * under a heading reading "Due in 45 days". The window has a near edge as well
+ * as a far one.
+ *
+ * It is deliberately a question about DAYS ALONE, which is why every caller has
+ * to settle `standing` first. Days alone cannot answer "is this handled": an
+ * overdue ROLLING rule can carry a POSITIVE countdown — last done five months
+ * ago, so past due, while the next occurrence computes to sixteen days out — and
+ * this function would call that "due soon" quite correctly and be drawing a debt
+ * as a plan. In `buildRunway` the `overdue` arm takes those before the loop ever
+ * reaches here.
+ */
+export function isDueSoon(days: number, soonDays = SOON_DAYS): boolean {
+  return days >= 0 && days <= soonDays
+}
+
+/**
  * Bucket a carrier's deadlines into weeks ahead.
  *
  * `horizonWeeks` defaults to 13 — one quarter, and the widest axis that still
  * gives each column a thumb's width on a 320px screen. Beyond that the columns
  * become stripes and the chart stops being readable at exactly the size it is
  * most often read.
+ *
+ * `soonDays` is a parameter only so the tests can pin the boundary, exactly as
+ * in `buildHealth`; every caller passes the app's one value.
  */
-export function buildRunway(items: readonly RunwayItem[], today: Date, horizonWeeks = 13): Runway {
+export function buildRunway(
+  items: readonly RunwayItem[],
+  today: Date,
+  horizonWeeks = 13,
+  soonDays = SOON_DAYS,
+): Runway {
   const weeks: RunwayWeek[] = weekBuckets(today, horizonWeeks).map((b, i, all) => ({
     ...b,
     count: 0,
+    soon: 0,
+    later: 0,
     monthLabel:
       i === 0 || b.start.getUTCMonth() !== all[i - 1].start.getUTCMonth()
         ? MONTHS[b.start.getUTCMonth()]
@@ -95,6 +168,8 @@ export function buildRunway(items: readonly RunwayItem[], today: Date, horizonWe
   let beyond = 0
   let unschedulable = 0
   let scheduled = 0
+  let soonTotal = 0
+  let laterTotal = 0
 
   for (const item of items) {
     if (item.standing === 'not_applicable') continue
@@ -152,6 +227,18 @@ export function buildRunway(items: readonly RunwayItem[], today: Date, horizonWe
     if (w) {
       w.count++
       scheduled++
+      // Asked about DAYS, but only after `standing` has already decided — see
+      // `isDueSoon`, and note that the `overdue` arm at the top of this loop is
+      // what keeps this line from ever seeing a past-due item that happens to
+      // have a positive countdown.
+      const days = Math.round((t - day.getTime()) / MS_DAY)
+      if (isDueSoon(days, soonDays)) {
+        w.soon++
+        soonTotal++
+      } else {
+        w.later++
+        laterTotal++
+      }
     } else {
       beyond++
     }
@@ -168,6 +255,9 @@ export function buildRunway(items: readonly RunwayItem[], today: Date, horizonWe
     beyond,
     unschedulable,
     scheduled,
+    soon: soonTotal,
+    later: laterTotal,
+    soonDays,
     // Floored at 3, and the floor is a readability decision rather than an
     // arithmetic one. Scaled to a maximum of 1, the single renewal a quiet
     // carrier has all quarter draws as a full-height column — the tallest thing

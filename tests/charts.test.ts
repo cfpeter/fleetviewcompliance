@@ -18,7 +18,12 @@
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { buildRunway, type RunwayItem, weekRangeLabel } from '../src/lib/charts/runway.ts'
+import {
+  buildRunway,
+  isDueSoon,
+  type RunwayItem,
+  weekRangeLabel,
+} from '../src/lib/charts/runway.ts'
 import {
   bucketValues,
   ceilingFor,
@@ -33,7 +38,7 @@ import {
   weekStart,
   widthPercent,
 } from '../src/lib/charts/scale.ts'
-import { evaluate } from '../src/lib/rules/index.ts'
+import { evaluate, SOON_DAYS } from '../src/lib/rules/index.ts'
 
 const utc = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d))
 
@@ -400,4 +405,205 @@ test('month labels mark boundaries only, once each', () => {
   const r = buildRunway([], today, 13)
   const labels = r.weeks.map((w) => w.monthLabel).filter(Boolean)
   assert.deepEqual(labels, ['Sep', 'Oct', 'Nov', 'Dec'])
+})
+
+// ------------------------------------------------------- runway: the urgency split
+//
+// Height says HOW MANY. It cannot say HOW SOON, and a week of four renewals due
+// inside the 45-day window drew exactly like a week of four due at the far end
+// of the quarter. So each week is counted twice over and the column is stacked:
+// amber for what is inside the window, green for what is dated past it.
+//
+// Two colours, never three. There is no red on a future week: red is overdue,
+// an overdue item has no future date, and it is already counted in the block at
+// the left edge of the axis.
+
+test('a week is split into what is due soon and what is dated further out', () => {
+  // Sep 15 + 45 days is Oct 30, and the week of Oct 26 straddles the line: Oct
+  // 30 is the last day inside the window, Oct 31 the first day outside it. One
+  // week, both colours — the case the stack exists for.
+  const r = buildRunway(
+    [
+      { standing: 'current', nextDue: utc(2026, 10, 30) },
+      { standing: 'current', nextDue: utc(2026, 10, 31) },
+    ],
+    today,
+  )
+  const w = r.weeks.find((x) => x.count > 0)
+  assert.ok(w, 'both dates are inside the horizon')
+  assert.equal(w.key, '2026-10-26')
+  assert.equal(w.soon, 1)
+  assert.equal(w.later, 1)
+  assert.equal(w.count, 2, 'the total the column is drawn at is unchanged')
+  assert.equal(r.soon, 1)
+  assert.equal(r.later, 1)
+  assert.equal(r.scheduled, 2)
+})
+
+test('the runway splits on the same window as the tiles and the health ring', () => {
+  // Not a second threshold invented for this chart. If these ever disagree, the
+  // owner has a column painted amber next to a tile that does not count it.
+  const at = (days: number) => new Date(today.getTime() + days * 86_400_000)
+  assert.equal(buildRunway([{ standing: 'current', nextDue: at(SOON_DAYS) }], today).soon, 1)
+  assert.equal(buildRunway([{ standing: 'current', nextDue: at(SOON_DAYS) }], today).later, 0)
+  assert.equal(buildRunway([{ standing: 'current', nextDue: at(SOON_DAYS + 1) }], today).later, 1)
+  assert.equal(buildRunway([{ standing: 'current', nextDue: at(SOON_DAYS + 1) }], today).soon, 0)
+  // Carried on the result so the legend can print the number without importing
+  // the rules engine into a chart component.
+  assert.equal(buildRunway([], today).soonDays, SOON_DAYS)
+})
+
+test('the soon window is closed at BOTH ends: -2040 days is not "due in 45 days"', () => {
+  /**
+   * The bug that has shipped three times in this codebase, in three files: the
+   * dashboard's due-soon tile, the qualification binder's "Expires soon" pill,
+   * and the health ring. All three tested `days <= SOON_DAYS` and nothing else,
+   * and EVERY NEGATIVE NUMBER PASSES THAT — a pre-employment query run the week
+   * the driver was hired comes back with a countdown near -2040 and was painted
+   * as due this month.
+   *
+   * Asserted against the predicate directly, because through `buildRunway` a
+   * past date is taken by the `overdue` arm before the split is ever asked, so
+   * the near edge of the window is not otherwise reachable from a test — and an
+   * unreachable guard is one a future edit deletes as dead code.
+   */
+  assert.equal(isDueSoon(-2040), false, 'finished years ago is not coming up')
+  assert.equal(isDueSoon(-1), false, 'yesterday is not coming up')
+  assert.equal(isDueSoon(0), true, 'due today is the most urgent thing there is')
+  assert.equal(isDueSoon(SOON_DAYS), true, 'the far edge is inclusive')
+  assert.equal(isDueSoon(SOON_DAYS + 1), false)
+  // Same both-ends rule at any window the caller picks.
+  assert.equal(isDueSoon(-1, 0), false)
+  assert.equal(isDueSoon(0, 0), true)
+})
+
+test('the window is guarded on BOTH sides of zero, so a past date is never amber', () => {
+  /**
+   * The bug that has shipped three times in this codebase, in three files: the
+   * dashboard's due-soon tile, the qualification binder's "Expires soon" pill,
+   * and the health ring. All three tested `days <= SOON_DAYS` and nothing else,
+   * and EVERY NEGATIVE NUMBER PASSES THAT — a pre-employment query run the week
+   * the driver was hired comes back with something like -2040 and was painted
+   * as due this month.
+   *
+   * Here the near edge is guarded twice: nothing with a past date reaches the
+   * weeks at all (it is counted overdue), and the split itself asks
+   * `days >= 0 && days <= soonDays` rather than the far edge alone.
+   */
+  const r = buildRunway([{ standing: 'current', nextDue: utc(2026, 1, 1) }], today)
+  assert.equal(r.overdue, 1)
+  assert.equal(r.soon, 0, 'a date eight months in the past is not "due in the next 45 days"')
+  assert.equal(r.later, 0)
+  assert.equal(r.scheduled, 0)
+  assert.equal(
+    r.weeks.reduce((n, w) => n + w.soon + w.later, 0),
+    0,
+    'nothing was drawn on any week',
+  )
+
+  // And zero itself IS inside the window: due today is the most urgent thing
+  // the chart can draw, so the near edge is inclusive, not exclusive.
+  assert.equal(buildRunway([{ standing: 'current', nextDue: today }], today).soon, 1)
+})
+
+test('an overdue item with a future date is not drawn on a future week', () => {
+  // The inverse trap, and the reason the buckets are decided STANDING FIRST,
+  // days second. An overdue rolling rule can carry a POSITIVE countdown: the
+  // last inspection was five months ago, so it is past due, while the next
+  // occurrence computes to sixteen days out. Split on days alone, that lands as
+  // a green segment in October — drawn as handled — while the block on the left
+  // is counting it as overdue. The same fleet, two answers.
+  const r = buildRunway([{ standing: 'overdue', nextDue: utc(2026, 10, 1) }], today)
+  assert.equal(r.overdue, 1)
+  assert.equal(r.soon, 0)
+  assert.equal(r.later, 0)
+  assert.equal(r.scheduled, 0)
+})
+
+test('nothing that is not drawn is counted in the split', () => {
+  // `undated`, `settled` and `unschedulable` have no week and no colour, and
+  // `not_applicable` stays the ONE thing that legitimately vanishes. If any of
+  // them leaked into `soon` or `later` the legend's totals would be larger than
+  // the columns they are a key to.
+  const r = buildRunway(
+    [
+      { standing: 'unknown' },
+      { standing: 'unknown', nextDue: utc(2026, 9, 17) },
+      { standing: 'current' },
+      { standing: 'unsupported' },
+      { standing: 'not_applicable' },
+      { standing: 'current', nextDue: utc(2027, 6, 1) },
+      { standing: 'current', nextDue: utc(2026, 9, 17) },
+    ],
+    today,
+  )
+  assert.equal(r.undated, 2)
+  assert.equal(r.settled, 1)
+  assert.equal(r.unschedulable, 1)
+  assert.equal(r.beyond, 1)
+  assert.equal(r.soon, 1)
+  assert.equal(r.later, 0)
+  assert.equal(r.soon + r.later, r.scheduled, 'the split accounts for every drawn item')
+})
+
+test('every column adds up: soon plus later is the height it is drawn at', () => {
+  // The invariant the component depends on. It stacks two segments scaled
+  // against `max` and prints `count` above them; if the parts ever stop summing
+  // to the total, the number and the shape disagree on the same column.
+  const items: RunwayItem[] = [
+    { standing: 'current', nextDue: utc(2026, 9, 17) },
+    { standing: 'current', nextDue: utc(2026, 9, 18) },
+    { standing: 'current', nextDue: utc(2026, 10, 14) },
+    { standing: 'current', nextDue: utc(2026, 10, 30) },
+    { standing: 'current', nextDue: utc(2026, 10, 31) },
+    { standing: 'current', nextDue: utc(2026, 12, 1) },
+    { standing: 'overdue' },
+    { standing: 'unknown' },
+  ]
+  const r = buildRunway(items, today)
+  for (const w of r.weeks) {
+    assert.equal(w.soon + w.later, w.count, `week ${w.key}`)
+  }
+  assert.equal(
+    r.weeks.reduce((n, w) => n + w.soon, 0),
+    r.soon,
+  )
+  assert.equal(
+    r.weeks.reduce((n, w) => n + w.later, 0),
+    r.later,
+  )
+  assert.equal(r.soon + r.later, r.scheduled)
+  // Everything dated past the window is green, everything inside it is amber:
+  // four this side of Oct 30, two past it.
+  assert.equal(r.soon, 4)
+  assert.equal(r.later, 2)
+})
+
+test('the current week has no green in it, so it needs no colour of its own', () => {
+  // Every date inside the week holding today is at most six days away, which is
+  // inside any sane window. The old chart painted week one amber as a "you are
+  // here" marker; now it is amber for the same reason every other amber is, and
+  // the vertical rule to its left is what says "today".
+  const r = buildRunway([{ standing: 'current', nextDue: utc(2026, 9, 17) }], today)
+  assert.equal(r.weeks[0].isCurrent, true)
+  assert.equal(r.weeks[0].soon, 1)
+  assert.equal(r.weeks[0].later, 0)
+})
+
+test('the split window is a parameter, so the boundary can be pinned', () => {
+  // Same shape as `buildHealth`: every caller passes the app's one value, and
+  // the argument exists so a test can stand on the edge of it. With a zero-day
+  // window only today itself is soon — and it IS soon, because zero is inside.
+  const r = buildRunway(
+    [
+      { standing: 'current', nextDue: today },
+      { standing: 'current', nextDue: utc(2026, 9, 16) },
+    ],
+    today,
+    13,
+    0,
+  )
+  assert.equal(r.soon, 1)
+  assert.equal(r.later, 1)
+  assert.equal(r.weeks[0].count, 2, 'both are still drawn in week one')
 })

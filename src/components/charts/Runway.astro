@@ -19,6 +19,20 @@
  * we-do-not-know slot the other charts use. Here zero is a real finding — every
  * dated obligation has been placed, so an empty week is an empty week. The
  * undated ones never entered the axis at all; they are counted on the left.
+ *
+ * EACH COLUMN IS TWO SEGMENTS: amber on top for what is due inside the 45-day
+ * window, green underneath for what is dated further out. Height says how many;
+ * the split says how soon. One flat colour per week meant the crunch week and a
+ * quiet week that happened to hold the same number of far-off renewals drew
+ * identically, and the difference was only recoverable by reading dates off the
+ * list underneath.
+ *
+ * The blue these columns used to be is gone with it. This product has four
+ * colours — red overdue, amber due soon, green on track, grey no date — and
+ * blue was never one of them, so a blue column was a fifth meaning the owner
+ * had nowhere to look up. There is no red segment here either: red is overdue,
+ * an overdue item has no future date, and it is counted in the block on the
+ * left.
  */
 import type { Runway } from '../../lib/charts/runway.ts'
 import { weekRangeLabel } from '../../lib/charts/runway.ts'
@@ -83,7 +97,11 @@ const behind = runway.overdue + runway.undated
       <div class="flex h-20 items-end gap-0.5 sm:h-32 sm:gap-1">
         {
           runway.weeks.map((w) => {
-            const h = (w.count / runway.max) * 100
+            /* Both segments are scaled against the SAME ceiling as the old
+               single bar, so a column's total height still means exactly what
+               it meant before and the two parts add up to it. */
+            const soonH = (w.soon / runway.max) * 100
+            const laterH = (w.later / runway.max) * 100
             return (
               <div class="flex h-full min-w-0 flex-1 flex-col justify-end">
                 {w.count > 0 && (
@@ -91,13 +109,31 @@ const behind = runway.overdue + runway.undated
                     {w.count}
                   </div>
                 )}
-                <div
-                  class:list={[
-                    'rounded-t-sm',
-                    w.count === 0 ? 'bg-ink-100' : w.isCurrent ? 'bg-amber-500' : 'bg-brand-500',
-                  ]}
-                  style={w.count === 0 ? 'height:2px' : `height:${h}%;min-height:4px`}
-                />
+                {w.count === 0 ? (
+                  <div class="rounded-t-sm bg-ink-100" style="height:2px" />
+                ) : (
+                  <>
+                    {/* min-height so one item in a week against a fourteen-item
+                        peak is still a mark the eye can find, rather than a
+                        sub-pixel the browser rounds away. */}
+                    {w.soon > 0 && (
+                      <div
+                        class="rounded-t-sm bg-amber-500"
+                        style={`height:${soonH}%;min-height:3px`}
+                      />
+                    )}
+                    {/* The rounded cap belongs to whichever segment is on top.
+                        The current week needs no colour of its own any more:
+                        everything in it is inside the window by definition, so
+                        it is amber for the reason every other amber is. */}
+                    {w.later > 0 && (
+                      <div
+                        class:list={['bg-emerald-500', w.soon === 0 && 'rounded-t-sm']}
+                        style={`height:${laterH}%;min-height:3px`}
+                      />
+                    )}
+                  </>
+                )}
               </div>
             )
           })
@@ -127,12 +163,42 @@ const behind = runway.overdue + runway.undated
   </div>
 
   {/*
+    The key to the two colours, and it is not optional.
+
+    Colour is never the only carrier of a meaning in this app — one man in
+    twelve cannot separate the amber segment from the green one, and this is
+    sold to men, in a yard, in the sun. So the two parts of every column are
+    named here in words, with their totals, and each column also prints its own
+    count above it. This block is REAL TEXT, outside the aria-hidden plot, so it
+    is also the split as a screen reader hears it.
+
+    The swatches keep their colour even at a count of zero. Elsewhere in the app
+    an empty legend row goes grey, but those legends list segments; this one is
+    a key to what amber and green mean on the axis, and grey already means
+    something else here — no date.
+  */}
+  <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-ink-700">
+    <li class:list={['flex items-center gap-1.5', runway.soon === 0 && 'text-ink-500']}>
+      <span class="h-2 w-2 shrink-0 rounded-full bg-amber-500" />
+      <span class="tabular-nums">
+        <span class="font-medium">{runway.soon}</span> due in the next {runway.soonDays} days
+      </span>
+    </li>
+    <li class:list={['flex items-center gap-1.5', runway.later === 0 && 'text-ink-500']}>
+      <span class="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+      <span class="tabular-nums">
+        <span class="font-medium">{runway.later}</span> due after {runway.soonDays} days
+      </span>
+    </li>
+  </ul>
+
+  {/*
     The sentence under the chart is the chart's whole point restated for
     somebody who cannot see it — a screen reader, or an owner glancing at a
     phone in sunlight. If this line and the bars ever disagree, the line is what
     he will act on, so it is derived from the same numbers rather than written.
   */}
-  <p class="mt-3 text-sm text-ink-500">
+  <p class="mt-2 text-sm text-ink-500">
     {
       runway.peak ? (
         <>

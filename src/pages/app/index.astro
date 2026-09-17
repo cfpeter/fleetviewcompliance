@@ -987,7 +987,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
       <Figure
         class="mt-6"
         title={runwayTitle}
-        subtitle={`One bar for each of the next ${runway.horizonWeeks} weeks. A taller bar is a heavier week.`}
+        subtitle={`One bar for each of the next ${runway.horizonWeeks} weeks. A taller bar is a heavier week. Amber is due inside ${runway.soonDays} days, green is later.`}
         coverage={runwayCoverage}
       >
         <Runway runway={runway} overdueHref="/app?show=overdue" undatedHref="/app?show=unknown" />

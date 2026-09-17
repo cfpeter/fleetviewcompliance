@@ -23,7 +23,8 @@ import {
 import { loadDeadlines } from '../../../lib/deadlines.ts'
 import { isActiveVehicle } from '../../../lib/fleet/active.ts'
 import { removedMessage } from '../../../lib/fleet/remove.ts'
-import { type DeadlineItem, SOON_DAYS } from '../../../lib/rules/index.ts'
+import { isDueSoon } from '../../../lib/charts/runway.ts'
+import type { DeadlineItem } from '../../../lib/rules/index.ts'
 import {
   byUnitNumber,
   gvwrReading,
@@ -253,7 +254,14 @@ function dueMarks(items: readonly DeadlineItem[]): {
     months[at].count++
     // Amber wins the cell: a month holding one thing due inside 45 days and one
     // due at the end of it is an amber month, not a green one.
-    if (days <= SOON_DAYS) months[at].tone = 'soon'
+    //
+    // `isDueSoon` rather than `days <= SOON_DAYS`, even though the `days < 0`
+    // guard eleven lines up already makes the bare comparison correct here. That
+    // guard being far away is the whole problem: this exact shape has shipped
+    // wrong three times in this codebase, and each time it was correct when
+    // written and broken by a later edit that moved or dropped the guard. The
+    // predicate carries both sides of zero with it and cannot be separated.
+    if (isDueSoon(days)) months[at].tone = 'soon'
     if (days < soonest) soonest = days
   }
 
