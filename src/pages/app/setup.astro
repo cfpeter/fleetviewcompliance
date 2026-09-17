@@ -76,15 +76,35 @@ const carrierId = Astro.locals.carrierId ?? null
 
 // Astro.locals.runtime.env was REMOVED in Astro v6. Worker bindings and secrets
 // now come from the `cloudflare:workers` module, which does not exist outside
-// the Worker runtime — hence the dynamic import and the fallback to
-// import.meta.env for `astro dev` and for tests. Same shape as the digest route.
+// the Worker runtime — hence the dynamic import. Same shape as the digest route.
+//
+// `import.meta.env` IS FORBIDDEN AS THE FALLBACK, and it was the fallback here
+// until it was measured. Indexing it with a VARIABLE does not hide the key from
+// Vite — Vite replaces the whole `import.meta.env` expression, so it inlines an
+// object literal holding every variable the build machine's .env carried and
+// indexes that at runtime. This page's own CLAIM_CODE_PEPPER shipped that way,
+// in plain text, in the bundle uploaded to Cloudflare. The pepper is the only
+// thing that makes a stolen `carrier_claims` row useless: a six-digit code
+// behind a bare SHA-256 is a million digests away from plaintext, so leaking it
+// turns the code hashes into codes, and a code is ownership of a carrier.
+// A LITERAL key would be safe (`import.meta.env.PUBLIC_SITE_URL` replaces just
+// that value); a computed one never is. `process.env` is untouched by Vite under
+// a variable key and is populated from the real bindings under `nodejs_compat`.
+// See src/lib/billing/config.ts and the note in the digest route.
+//
+// WHAT IT COSTS. Locally this page sees only what reaches the Worker env —
+// wrangler.jsonc `vars` plus `.dev.vars` — so a pepper kept only in .env now
+// reads as absent and the flow says so, honestly, on the "have a person check
+// it" path. Put dev values in `.dev.vars`, which is gitignored for that reason.
 let workerEnv: Record<string, string> = {}
 try {
   workerEnv = (await import('cloudflare:workers')).env as unknown as Record<string, string>
 } catch {
-  // Not running in the Worker runtime; import.meta.env carries the values.
+  // Not the Worker runtime — plain Node, where process.env is the whole story.
 }
-const env = (k: string) => workerEnv[k] ?? (import.meta.env as unknown as Record<string, string>)[k]
+const processEnv: Record<string, string | undefined> =
+  typeof process !== 'undefined' && process.env ? process.env : {}
+const env = (k: string) => workerEnv[k] ?? processEnv[k]
 
 const pepper = env('CLAIM_CODE_PEPPER')
 
@@ -542,11 +562,11 @@ const rosterLine = (p: RosterProgress, noun: string) => {
     case 'unknown':
       return `The federal file does not list a ${noun} count for you. You have added ${p.added}.`
     case 'partial':
-      return `FMCSA has you at ${p.target}. You have added ${p.added} — ${p.remaining} to go.`
+      return `FMCSA has you at ${p.target}. You have added ${p.added}. ${p.remaining} to go.`
     case 'met':
       return `FMCSA has you at ${p.target} and you have added ${p.added}. That matches.`
     case 'over':
-      return `FMCSA has you at ${p.target}; you have added ${p.added}. Your last MCS-150 is behind your yard.`
+      return `FMCSA has you at ${p.target}. You have added ${p.added}. Your last MCS-150 is out of date.`
   }
 }
 
@@ -604,19 +624,19 @@ const manualLead =
       // phone nor an email. The operating-authority dataset does not rescue
       // them — tested against 60 such carriers, it had a phone for 0 of them —
       // so there is genuinely no second source and no code we could send.
-      `The federal record for USDOT ${dotParam} carries no phone number and no email address. That is normal for a registration filed before FMCSA collected them, and it is not a mark against you. There is no second public source to fall back on — the operating-authority file holds no email at all, and for carriers in this position it holds no phone either. So there is nothing for us to send a code to, and a person checks this one by hand.`
+      `The federal record for USDOT ${dotParam} has no phone number and no email address. That is normal for a registration filed before FMCSA collected them, and it is not a mark against you. There is no second public source we can use: the operating-authority file holds no email at all, and for carriers like yours it holds no phone either. So there is nothing for us to send a code to, and a person checks this one by hand.`
     : chooseVariant === 'missing'
-      ? `Nothing came back for USDOT ${dotParam}. Check the digits first — a brand-new registration can take a few days to appear in the public file. If the number is right, there is no federal record for us to send a code to yet, so a person can check it by hand.`
+      ? `Nothing came back for USDOT ${dotParam}. Check the digits first. A new registration can take a few days to show up in the public file. If the number is right, there is no federal record for us to send a code to yet, so a person can check it by hand.`
       : chooseVariant === 'unreachable'
         ? 'We could not read the federal record just now, so we do not know what contact it carries. Try the number again in a moment. If it keeps failing, a person can check this by hand instead.'
-        : 'If neither of those reaches you any more — an old office line, a mailbox nobody reads — a person can check this by hand instead.'
+        : 'If none of those reach you any more, for example an old office line or a mailbox nobody reads, a person can check this by hand instead.'
 
 const READS = [
   'Your legal name, and the name you do business as',
   'Your physical address and the phone number on file',
   'Interstate or intrastate, and whether you are flagged for hazmat',
   'How many power units and drivers you last reported',
-  'Your safety rating, if a compliance review ever gave you one',
+  'Your safety rating, if a review ever gave you one',
   'The date of your last MCS-150, which sets when the next one is due',
 ]
 
@@ -642,17 +662,17 @@ const title =
 
 const subtitle =
   step === 'done'
-    ? 'The part the federal file cannot do for you.'
+    ? 'The part the federal file cannot fill in for you.'
     : step === 'queued'
       ? `Manual review of USDOT ${dotParam}.`
       : step === 'code'
-        ? `Six digits, good for ${CLAIM_POLICY.ttlMinutes} minutes from when we sent them.`
+        ? `Six digits. Good for ${CLAIM_POLICY.ttlMinutes} minutes after we send them.`
         : step === 'choose'
           ? chooseVariant === 'auto'
-            ? 'The code goes to the contact FMCSA holds for you, never to anything typed here.'
+            ? 'We send the code to the contact FMCSA has for you. We never send it to anything typed on this page.'
             : 'There is no contact on the federal record to send a code to.'
           : step === 'confirm'
-            ? 'Read from the public federal record, live, just now.'
+            ? 'We read this from the public federal record just now.'
             : 'Start with your USDOT number. We fill in what the federal record knows.'
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
@@ -698,7 +718,7 @@ const tone =
           </form>
 
           <div class={`${card} mt-6`}>
-            <p class="font-medium">What we read out of the federal file</p>
+            <p class="font-medium">What we read from the federal file</p>
             <ul class="mt-3 space-y-2 text-sm text-ink-700">
               {READS.map((line) => (
                 <li class="flex gap-2">
@@ -726,8 +746,8 @@ const tone =
             <p class="mt-4 border-t border-ink-100 pt-4 text-sm text-ink-500">
               What it does <strong class="font-medium text-ink-700">not</strong> hold: VINs, plates,
               driver names, CDL numbers, medical card dates. No public source holds any of those.
-              The federal file knows how many trucks and drivers you have, not which ones — so the
-              roster itself is typing, and it is the screen after this one.
+              The federal file knows how many trucks and drivers you have, not which ones. You type
+              that list yourself, on the screen after this one.
             </p>
           </div>
         </>
@@ -806,8 +826,8 @@ const tone =
                 </dd>
                 <dd class="mt-1.5 text-xs text-ink-500">
                   {lastFiled
-                    ? 'We record this for you, so the biennial deadline is right from day one.'
-                    : 'Without it we can say when the next one falls, but not whether you are current.'}
+                    ? 'We save this for you, so your two-year MCS-150 deadline is right from day one.'
+                    : 'Without it we can say when the next one is due, but not whether you are up to date.'}
                 </dd>
               </div>
             </dl>
@@ -855,16 +875,15 @@ const tone =
                 */}
                 <p class="mt-3 text-sm text-ink-700">
                   We send a {CLAIM_POLICY.codeDigits}-digit code to a contact on this carrier's own
-                  federal record. You cannot change where it goes, and we do not show the whole
-                  number or address — only enough for you to recognise your own.
+                  federal record. You cannot change where it goes. We hide most of the number or
+                  address, and show only enough for you to recognise your own.
                 </p>
               </div>
 
               {!canSendCodes && (
                 <p class="mt-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
-                  Verification is not configured on this deployment — CLAIM_CODE_PEPPER is unset —
-                  so no code can be sent. Nothing you did caused this, and a manual review below
-                  still works.
+                  This site cannot send codes right now, because CLAIM_CODE_PEPPER is not set. You
+                  did not cause this. The manual review below still works.
                 </p>
               )}
 
@@ -892,9 +911,9 @@ const tone =
                   after the page has said "on its way".
                 */
                 <p class="mt-3 text-sm text-ink-500">
-                  That is the only contact on your federal record. If it is a landline the text
-                  will not arrive — nothing is wrong with your account, and the manual review below
-                  is the way round it.
+                  That is the only contact on your federal record. If it is a landline, the text
+                  will not arrive. Nothing is wrong with your account. Use the manual review below
+                  instead.
                 </p>
               )}
             </>
@@ -927,9 +946,8 @@ const tone =
             <p class="font-medium">Have a person check it</p>
             {chooseVariant === 'auto' && <p class="mt-2 text-sm text-ink-700">{manualLead}</p>}
             <p class="mt-2 text-sm text-ink-700">
-              We do not hand over a carrier record on somebody's say-so, so this takes longer than a
-              code does. It is a real queue with a real person on the end of it, not a form that
-              goes nowhere.
+              We do not hand over a carrier record just because somebody asks for it, so this takes
+              longer than a code. A real person reads it. This is not a form that goes nowhere.
             </p>
 
             <form method="POST" class="mt-4">
@@ -953,7 +971,7 @@ const tone =
                 decides to phone instead already has both in front of them.
               */}
               <p class="mt-2 text-sm text-ink-500">
-                {`This goes to us with USDOT ${dotParam}, and we answer at `}
+                {`We get this with USDOT ${dotParam}. We answer at `}
                 <span class="font-medium text-ink-700">
                   {accountEmail ?? 'the email address on your account'}
                 </span>
@@ -1023,7 +1041,7 @@ const tone =
             <p class="mt-4 border-t border-ink-100 pt-4 text-sm text-ink-500">
               {minutesLeft > 0
                 ? `Good for another ${minutesLeft} ${minutesLeft === 1 ? 'minute' : 'minutes'}.`
-                : 'This one has just run out — send yourself another.'}
+                : 'This code has run out. Send yourself another one.'}
               {/*
                 Shown only once a guess has been spent. Printing "5 attempts
                 left" to somebody who has not typed anything yet reads as a
@@ -1049,8 +1067,7 @@ const tone =
                 who can reach this host can claim any carrier on it.
               */
               <p class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                This is not the production deployment. The code was redirected to the developer and
-                did not go to the carrier.
+                This is not the live site. The code went to the developer, not to the carrier.
               </p>
             )}
           </div>
@@ -1072,8 +1089,8 @@ const tone =
           </div>
 
           <p class="mt-3 text-center text-sm text-ink-500">
-            A resend replaces the old code, so the last message is the one to use. There is a
-            {' '}{CLAIM_POLICY.resendCooldownSeconds}-second wait between them.
+            A new code replaces the old one, so use the last message you got. You must wait
+            {' '}{CLAIM_POLICY.resendCooldownSeconds} seconds between codes.
           </p>
         </>
       )
@@ -1086,9 +1103,9 @@ const tone =
           <div class={card}>
             <p class="font-medium">A person has your request</p>
             <p class="mt-2 text-sm text-ink-700">
-              Nothing is set up yet, and nothing will be until somebody confirms the number is
-              yours. That is the same rule every carrier here is held to — it is what stops a
-              stranger taking yours.
+              Nothing is set up yet. Nothing will be until somebody confirms the number is yours.
+              Every carrier here follows the same rule. It is what stops a stranger taking your
+              number.
             </p>
 
             <dl class="mt-5 grid gap-4 border-t border-ink-100 pt-5 sm:grid-cols-2">
@@ -1110,7 +1127,7 @@ const tone =
               and the person waiting on it deserves to know which it is.
             */}
             <p class="mt-4 text-sm text-ink-500">
-              {`We hold this request for ${CLAIM_POLICY.manualDays} days. After that it needs asking again.`}
+              {`We hold this request for ${CLAIM_POLICY.manualDays} days. After that you have to ask again.`}
             </p>
 
             {manualClaim.note && (
@@ -1129,7 +1146,7 @@ const tone =
             {(manualMailto || contactPhone) && (
               <div class="mt-5 space-y-3 border-t border-ink-100 pt-5">
                 <p class="text-sm text-ink-700">
-                  If you want to add something, or you would rather get on with it:
+                  If you want to add something, or you would rather not wait:
                 </p>
                 {manualMailto && (
                   <a href={manualMailto} class={`${secondary} block text-center`}>
@@ -1187,8 +1204,8 @@ const tone =
             */}
             <p class="mt-2 text-sm text-ink-700">
               FMCSA knows how many power units and drivers you reported on your last MCS-150. It
-              does not hold a single VIN or driver name, and no public source does — so this next
-              part is typing. The counts below are what to aim at.
+              does not hold one VIN or one driver name, and no public source does. So you type this
+              next part yourself. The counts below are what to aim at.
             </p>
 
             <div class="mt-5 grid gap-4 sm:grid-cols-2">
@@ -1220,10 +1237,10 @@ const tone =
             </div>
 
             <p class="mt-5 border-t border-ink-100 pt-4 text-sm text-ink-500">
-              Every truck you add starts its own annual inspection and Clean Truck Check clocks;
-              every driver starts a medical card, a CDL expiry, an MVR review and a Clearinghouse
-              query. Those are the dates that park a truck, and none of them are in any federal
-              file we can read.
+              Every truck you add starts its own annual inspection and Clean Truck Check dates.
+              Every driver starts a medical card, a CDL expiry, an MVR review and a Clearinghouse
+              query. These are the dates that park a truck, and no federal file we can read has
+              them.
             </p>
           </div>
 
@@ -1234,7 +1251,7 @@ const tone =
           </p>
 
           <p class="mt-2 text-center text-xs text-ink-300">
-            This page stays at /app/setup. Come back to it any time to see how the count is going.
+            This page stays at /app/setup. Come back any time to see how the count is going.
           </p>
         </>
       )

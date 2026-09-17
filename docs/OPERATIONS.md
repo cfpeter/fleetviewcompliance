@@ -473,3 +473,104 @@ attaching the PDF**. That is not a fallback. A carrier who cannot type a load in
 by hand will not trust the automatic path, and the competitor complaints in this
 category are about extraction that misses fields with no fast way to correct it —
 the failure is the absent review step, not the parser.
+
+## Billing
+
+The screen is `/app/billing`. It works with no Stripe configured: it shows the
+fleet count, the price from `monthlyPrice()`, the free-trial dates, and says in
+plain words that card payment is not switched on and nothing is being charged.
+Turning Stripe on is four steps in the Stripe dashboard and three secrets.
+
+**1. Create the price — and create it as VOLUME tiers.** Product: one recurring
+product, monthly, USD. Price: *Usage is metered* off, *Package/tiered* →
+**Graduated is wrong**, choose **Volume**:
+
+| First unit | Last unit | Per unit | Flat fee |
+|---|---|---|---|
+| 1 | 4 | — | **$29.00** |
+| 5 | ∞ | **$6.00** | — |
+
+That reproduces `max(trucks × $6, $29)` exactly. Graduated tiers would charge a
+five-truck fleet $35 instead of $30, and every invoice above four trucks would
+disagree with `/pricing`. `tests/billing.test.ts` checks the tier arithmetic
+against `monthlyPrice()` for every fleet size from 1 to 200 — if the price
+numbers in `src/lib/site.ts` ever change, read that table off
+`STRIPE_VOLUME_TIERS` again and edit the Stripe price to match.
+
+**2. Add the webhook endpoint.** URL `https://<host>/api/stripe/webhook`, events:
+
+- `checkout.session.completed`
+- `customer.subscription.created`
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+
+Copy its signing secret (`whsec_…`).
+
+**3. Turn on the customer portal.** Stripe → Settings → Billing → Customer
+portal. Without it the "Card, invoices and cancel" button fails, and `/pricing`
+promises "you can cancel any month".
+
+**4. Set the secrets**, per environment, with `npm run secrets:dev` /
+`npm run secrets:prod`:
+
+```
+STRIPE_SECRET_KEY=sk_test_…   (sk_live_… only where DEPLOY_ENV=production)
+STRIPE_PRICE_ID=price_…
+STRIPE_WEBHOOK_SECRET=whsec_…
+```
+
+Use a **test-mode** key, price and webhook on dev and live ones on production —
+they are separate objects in Stripe and the ids do not carry over.
+`readStripeConfig()` refuses an `sk_live_` key anywhere `DEPLOY_ENV` is not
+`production`, the same rule `src/lib/notify/guard.ts` applies to email and SMS,
+so a button press on dev cannot create a real subscription against a real card.
+
+### What is deliberately not automatic
+
+Nothing pushes the truck count to Stripe on its own. When the fleet changes, the
+billing screen prints both numbers — what Stripe is billing and what the
+account holds — and the owner presses a button to send the new one. The error
+runs in the customer's favour: a fleet that grows is under-billed until somebody
+presses it, never over-billed.
+
+Nothing is gated on payment either. `isEntitled()` in `src/lib/billing/plan.ts`
+exists so that a future paywall has one definition to ask, but no page calls it
+and no feature is switched off when a trial ends.
+
+### Reading `import.meta.env` is not safe for secrets here
+
+Measured on this repo's own build output: Vite replaces the whole
+`import.meta.env` expression with an object literal containing every variable
+the build machine's `.env` held, non-`PUBLIC_` ones included, and indexing it
+with a variable does not prevent that. `dist/server/chunks/digest_*.mjs` did
+contain `CRON_SECRET`, `CLAIM_CODE_PEPPER`, `SUPABASE_SECRET_KEY` and
+`RESEND_API_KEY` in plain text for exactly that reason. `src/lib/billing/config.ts`
+therefore reads `cloudflare:workers` and falls back to `process.env` only, so a
+Stripe key is never compiled into anything.
+
+**Fixed everywhere as of this change.** `src/pages/api/cron/digest.ts` and
+`src/pages/app/setup.astro` were the two computed-key readers; both now use the
+same `cloudflare:workers` → `process.env` pair, and searching the built bundle
+for the real values returns nothing. A LITERAL key is still fine and still used
+— `import.meta.env.PUBLIC_SUPABASE_URL` replaces exactly that one public string
+— and `tests/env-inlining.test.ts` fails the build if a computed one comes back.
+
+Two consequences worth knowing before the next deploy:
+
+- **`.dev.vars` now holds the dev secrets and is gitignored.** `.env` no longer
+  reaches the Worker in local dev, because nothing reads `import.meta.env` by a
+  variable any more. Wrangler binds `.dev.vars` at runtime instead, the same way
+  `wrangler secret` binds a value in a deployment, and it must keep
+  `DEPLOY_ENV=development` as its first line — that is still the send guard.
+  `.dev.vars.example` is the tracked copy. Do NOT pipe `.dev.vars` into
+  `wrangler secret bulk`: it would upload `DEPLOY_ENV` as a secret, which is
+  exactly what the dev-deploy step below forbids.
+- **Anything the Worker reads must actually be in the Worker.** Values that used
+  to arrive inlined are now read at runtime, so `CRON_SECRET`,
+  `SUPABASE_SECRET_KEY`, `CLAIM_CODE_PEPPER`, `RESEND_API_KEY`,
+  `DIGEST_FROM_EMAIL`, the three `TWILIO_*` values and the `DEV_REDIRECT_*` pair
+  have to be present via `wrangler secret` (or `vars`) on each deployment. The
+  two `PUBLIC_*` values the digest reads keep a literal fallback, so they need
+  nothing. Check with `npx wrangler secret list` before deploying; a missing
+  `CRON_SECRET` makes the digest answer 503 and a missing `CLAIM_CODE_PEPPER`
+  takes the USDOT code path offline.

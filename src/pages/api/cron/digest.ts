@@ -30,6 +30,12 @@ import {
 } from '../../../lib/notify/select.ts'
 import { send, smsBody } from '../../../lib/notify/send.ts'
 import { fetchDeliveryEvent, fetchSuppressions } from '../../../lib/notify/suppression.ts'
+import {
+  loadReminders,
+  REMINDER_CATEGORY,
+  reminderEmailLine,
+  selectReminders,
+} from '../../../lib/reminders.ts'
 import type { Subject } from '../../../lib/rules/types.ts'
 
 interface Profile {
@@ -193,16 +199,42 @@ async function reconcileDeliveries(
 export const POST: APIRoute = async ({ request }) => {
   // Astro.locals.runtime.env was REMOVED in Astro v6. Worker bindings and
   // secrets now come from the `cloudflare:workers` module, which does not exist
-  // outside the Worker runtime — hence the dynamic import and the fallback to
-  // import.meta.env for `astro dev` and for tests.
+  // outside the Worker runtime — hence the dynamic import.
+  //
+  // THE FALLBACK IS `process.env`, AND `import.meta.env` IS FORBIDDEN HERE.
+  //
+  // It used to be the fallback, indexed with a variable in the belief that a key
+  // Vite cannot see is a value Vite cannot replace. The opposite is true: Vite
+  // substitutes the `import.meta.env` EXPRESSION, not the property access — so a
+  // computed key makes it inline an object literal holding EVERY variable the
+  // build machine's .env carried, and then index that at runtime. Measured on
+  // this repo's own output: the built bundle contained CRON_SECRET,
+  // CLAIM_CODE_PEPPER, SUPABASE_SECRET_KEY and RESEND_API_KEY as plaintext
+  // literals. That is this endpoint's entire secret inventory compiled into a
+  // file that is uploaded to Cloudflare and left sitting in dist/, where a CI
+  // cache or a shared machine is enough to leak it — and CRON_SECRET is the only
+  // thing between a stranger and a full run of this job against every carrier.
+  //
+  // A LITERAL key is safe (`import.meta.env.PUBLIC_SITE_URL` replaces exactly
+  // that one value, and PUBLIC_* is public by definition). A COMPUTED key never
+  // is. `process.env` is left alone by Vite under a variable key, and the
+  // Workers runtime populates it from the real bindings under `nodejs_compat`.
+  // Same rule and same reasoning as src/lib/billing/config.ts.
+  //
+  // WHAT IT COSTS. Nothing in a deployed Worker, where `wrangler secret` is the
+  // source and always was. Locally it means this route sees only what actually
+  // reaches the Worker env — wrangler.jsonc `vars` plus `.dev.vars` — so a dev
+  // value kept only in .env is now invisible and the run answers 503 instead of
+  // starting. Put dev values in `.dev.vars`, which is gitignored for that reason.
   let workerEnv: Record<string, string> = {}
   try {
     workerEnv = (await import('cloudflare:workers')).env as unknown as Record<string, string>
   } catch {
-    // Not running in the Worker runtime; import.meta.env carries the values.
+    // Not the Worker runtime — plain Node, where process.env is the whole story.
   }
-  const get = (k: string) =>
-    workerEnv[k] ?? (import.meta.env as unknown as Record<string, string>)[k]
+  const processEnv: Record<string, string | undefined> =
+    typeof process !== 'undefined' && process.env ? process.env : {}
+  const get = (k: string) => workerEnv[k] ?? processEnv[k]
 
   const expected = get('CRON_SECRET')
   if (!expected) {
@@ -219,7 +251,16 @@ export const POST: APIRoute = async ({ request }) => {
     return json({ error: 'unauthorized' }, 401)
   }
 
-  const url = get('PUBLIC_SUPABASE_URL')
+  // LITERAL keys, which is the one shape of `import.meta.env` that is safe: Vite
+  // replaces `import.meta.env.PUBLIC_SUPABASE_URL` with that single value and
+  // nothing else, and PUBLIC_* is public by definition — this exact URL is
+  // already inlined by src/lib/supabase/server.ts on every page. Kept as the
+  // fallback so that dropping the old computed-key read does not silently take
+  // the digest down: these two never were Worker secrets, they arrived in the
+  // inlined object, and a scheduled job that 503s because a PUBLIC url went
+  // missing is a fix that breaks the thing it was protecting. A Worker var still
+  // wins where one is set.
+  const url = get('PUBLIC_SUPABASE_URL') ?? import.meta.env.PUBLIC_SUPABASE_URL
   const key = get('SUPABASE_SECRET_KEY')
   if (!url || !key) {
     // This is the ONE place a privileged key is legitimate: a scheduled job has
@@ -302,29 +343,39 @@ export const POST: APIRoute = async ({ request }) => {
   for (const carrier of carriers ?? []) {
     summary.carriers++
 
-    const [items, { data: members }, { data: prefs }, { data: catPrefs }, { data: snoozeRows }] =
-      await Promise.all([
-        loadDeadlines(db, carrier.id, today),
-        db
-          .from('memberships')
-          .select(
-            'user_id, profiles(id, email, phone, timezone, quiet_from, quiet_to, quiet_allow_critical)',
-          )
-          .eq('carrier_id', carrier.id),
-        db.from('notification_preferences').select('*').eq('carrier_id', carrier.id),
-        // Lead times live on their own table since 0010. They are per-CATEGORY
-        // facts; hanging them off the channel row meant one category kept three
-        // copies of the same array, free to disagree, with no screen able to
-        // show the disagreement.
-        db
-          .from('notification_category_preferences')
-          .select('user_id, category, lead_days, digest')
-          .eq('carrier_id', carrier.id),
-        db
-          .from('notification_snoozes')
-          .select('rule_code, subject_type, subject_id, until')
-          .eq('carrier_id', carrier.id),
-      ])
+    const [
+      items,
+      reminderItems,
+      { data: members },
+      { data: prefs },
+      { data: catPrefs },
+      { data: snoozeRows },
+    ] = await Promise.all([
+      loadDeadlines(db, carrier.id, today),
+      // The owner's own reminders, loaded beside the regulations and kept in
+      // their own list. They share the morning email and nothing else: no
+      // citation, their own lead time, their own category on the way out.
+      loadReminders(db, carrier.id, today),
+      db
+        .from('memberships')
+        .select(
+          'user_id, profiles(id, email, phone, timezone, quiet_from, quiet_to, quiet_allow_critical)',
+        )
+        .eq('carrier_id', carrier.id),
+      db.from('notification_preferences').select('*').eq('carrier_id', carrier.id),
+      // Lead times live on their own table since 0010. They are per-CATEGORY
+      // facts; hanging them off the channel row meant one category kept three
+      // copies of the same array, free to disagree, with no screen able to
+      // show the disagreement.
+      db
+        .from('notification_category_preferences')
+        .select('user_id, category, lead_days, digest')
+        .eq('carrier_id', carrier.id),
+      db
+        .from('notification_snoozes')
+        .select('rule_code, subject_type, subject_id, until')
+        .eq('carrier_id', carrier.id),
+    ])
 
     const snoozes = (snoozeRows ?? []).map((s) => ({
       ruleCode: s.rule_code as string,
@@ -354,7 +405,13 @@ export const POST: APIRoute = async ({ request }) => {
             channel: p.channel,
             enabled: p.enabled,
           }))
-        : [{ category: 'compliance', channel: 'email', enabled: true }]
+        : [
+            { category: 'compliance', channel: 'email', enabled: true },
+            // His own reminders are in the default too. A person who has never
+            // opened settings and types a reminder means to be told about it;
+            // anything else makes the feature ship switched off and silent.
+            { category: REMINDER_CATEGORY, channel: 'email', enabled: true },
+          ]
 
       // A missing category row means the documented default, not an empty array.
       // `[]` is "warn me never", and reaching it by accident is a deadline that
@@ -418,8 +475,20 @@ export const POST: APIRoute = async ({ request }) => {
         alreadySent,
         today,
       })
-      summary.considered += candidates.length
-      if (candidates.length === 0) continue
+      // His own reminders, chosen the same way and with the same dedup
+      // discipline. Separate call rather than more items in `selectForRecipient`
+      // because the two carry different lead times — one array for the whole
+      // category, one number per reminder — and because a DeadlineItem has a
+      // citation that a reminder must never be given.
+      const reminderCandidates = selectReminders({
+        items: reminderItems,
+        recipient: { userId: profile.id, email: profile.email },
+        preferences,
+        alreadySent,
+      })
+
+      summary.considered += candidates.length + reminderCandidates.length
+      if (candidates.length === 0 && reminderCandidates.length === 0) continue
 
       // Quiet hours, finally obeyed.
       //
@@ -428,11 +497,25 @@ export const POST: APIRoute = async ({ request }) => {
       // it did not deliver. The critical breakthrough uses `isCritical`, which is
       // `deservesSms` under another name, so "already overdue or due tomorrow"
       // has exactly one definition and the settings copy stays true.
-      const { deliver, held } = splitForQuietHours(candidates, {
+      const quiet = {
         fromMinutes: parseClockTime(profile.quiet_from),
         toMinutes: parseClockTime(profile.quiet_to),
         allowCritical: profile.quiet_allow_critical ?? true,
         nowLocalMinutes: minutesOfDayInZone(today, zone),
+      }
+      const { deliver, held } = splitForQuietHours(candidates, quiet)
+
+      // REMINDERS NEVER BREAK THROUGH QUIET HOURS, whatever the breakthrough
+      // setting says — hence `allowCritical: false` here and nowhere else.
+      //
+      // The breakthrough exists for a truck that cannot roll in the morning. A
+      // line the owner typed for himself is not that, however late it is, and
+      // waking him at 2am about his own note is exactly how a person decides to
+      // turn everything off. Held, not dropped: no log row is written, so the
+      // next run outside the window sends it.
+      const reminderSplit = splitForQuietHours(reminderCandidates, {
+        ...quiet,
+        allowCritical: false,
       })
 
       // Counted, and written NOWHERE ELSE. A held message must not reach
@@ -440,14 +523,17 @@ export const POST: APIRoute = async ({ request }) => {
       // on the key alone, so a logged hold burns the key and the message never
       // arrives at all — not late, never. The hold is re-derived from scratch on
       // the next run, which is precisely what lets it eventually go out.
-      summary.held += held.length
-      if (deliver.length === 0) continue
+      summary.held += held.length + reminderSplit.held.length
+      if (deliver.length === 0 && reminderSplit.deliver.length === 0) continue
 
       // One email carrying everything, rather than one per item. Fourteen
       // separate emails about fourteen expiring items is how we get muted, and
       // then the one that mattered arrives into silence.
       const emailItems = deliver.filter((c) => c.channel === 'email')
-      if (emailItems.length && profile.email) {
+      // Reminders are email-only by construction (see `selectReminders`), so
+      // there is nothing to filter here — and nothing can be silently dropped.
+      const reminderEmails = reminderSplit.deliver
+      if ((emailItems.length || reminderEmails.length) && profile.email) {
         const lines = emailItems.map((c) => {
           const when =
             c.item.status.standing === 'overdue'
@@ -455,17 +541,36 @@ export const POST: APIRoute = async ({ request }) => {
               : `due ${c.item.status.nextDue?.toISOString().slice(0, 10)} (${c.item.daysUntil} days)`
           return `• ${c.item.rule.title} — ${c.item.subjectLabel} — ${when}\n  ${c.item.rule.citation}`
         })
-        const overdueCount = emailItems.filter((c) => c.item.status.standing === 'overdue').length
+
+        // His own reminders go UNDER the deadlines, behind a heading that says
+        // whose they are. Same email, because he has one morning; separate
+        // block, because the lines above each carry a CFR citation and these
+        // carry the words "Your reminder, not a rule" in the same slot. An
+        // owner skimming an email on a phone must never read his own note as
+        // something the government sent him.
+        if (reminderEmails.length > 0) {
+          lines.push(`YOUR OWN REMINDERS (not laws)\n${'—'.repeat(28)}`)
+          for (const c of reminderEmails) lines.push(reminderEmailLine(c.item))
+        }
+
+        const overdueCount =
+          emailItems.filter((c) => c.item.status.standing === 'overdue').length +
+          reminderEmails.filter((c) => c.item.status.standing === 'overdue').length
+        const total = emailItems.length + reminderEmails.length
         const subject = overdueCount
           ? `${overdueCount} overdue · ${carrier.legal_name}`
-          : `${emailItems.length} coming up · ${carrier.legal_name}`
+          : `${total} coming up · ${carrier.legal_name}`
 
         const result = await send(
           {
             channel: 'email',
             to: profile.email,
             subject,
-            body: `${lines.join('\n\n')}\n\nSee everything: ${get('PUBLIC_SITE_URL') ?? ''}/app\n`,
+            // Worker var first, build-time value second — a literal key, so only
+            // this one public string is replaced. There is no request origin to
+            // build from here (a cron POST's origin is the scheduler's), so an
+            // empty string would put a bare "/app" in somebody's email.
+            body: `${lines.join('\n\n')}\n\nSee everything: ${get('PUBLIC_SITE_URL') ?? import.meta.env.PUBLIC_SITE_URL ?? ''}/app\n`,
           },
           guardConfig,
           providers,
@@ -489,7 +594,7 @@ export const POST: APIRoute = async ({ request }) => {
         // below still runs, because a bounced mailbox is not a reason to stop
         // texting somebody about a truck that cannot roll tomorrow.
         if (result.status === 'suppressed') {
-          summary.suppressed += emailItems.length
+          summary.suppressed += emailItems.length + reminderEmails.length
         } else {
           summary[
             result.status === 'sent' ? 'sent' : result.status === 'failed' ? 'failed' : 'skipped'
@@ -503,12 +608,24 @@ export const POST: APIRoute = async ({ request }) => {
           // collides on the second attempt. As a plain insert that collision was
           // swallowed: supabase-js returns the error in the result rather than
           // throwing, nothing read it, and the log silently stopped recording.
+          //
+          // ONE ROW PER ITEM, each under its OWN category. The reminder lines
+          // rode in the same email, but they are not compliance news and the log
+          // is what answers "why did we tell him that" a year later. Logging
+          // them as 'compliance' would put an errand he typed into the record of
+          // what we told him about federal law.
           const logged = await db.from('notification_log').upsert(
-            emailItems.map((c) => ({
+            [
+              ...emailItems.map((c) => ({ dedupKey: c.dedupKey, category: 'compliance' })),
+              ...reminderEmails.map((c) => ({
+                dedupKey: c.dedupKey,
+                category: REMINDER_CATEGORY,
+              })),
+            ].map((c) => ({
               carrier_id: carrier.id,
               user_id: profile.id,
               channel: 'email',
-              category: 'compliance',
+              category: c.category,
               destination: result.destination,
               subject,
               body: null,
