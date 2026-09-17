@@ -574,7 +574,7 @@ const arrow =
         const removing = !isNew && confirmRemove === s.id
 
         return (
-          <div id={isNew ? 'add' : `stop-${s.id}`} class={`scroll-mt-24 ${card}`}>
+          <div id={isNew ? 'add' : `stop-${s.id}`} class={`${card}`}>
             {isNew ? (
               <h2 class="text-lg font-semibold tracking-tight">Add a stop</h2>
             ) : (

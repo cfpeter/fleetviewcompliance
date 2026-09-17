@@ -67,6 +67,47 @@
 }
 
 @layer base {
+  /* WHERE A JUMP LINK LANDS, decided once for each shell.
+
+     Both headers are sticky, so a fragment link — "#date_medical_card",
+     "#documents", "#needs" — scrolls its target to y=0 and the header then
+     covers it. What the reader sees is the middle of a field with its label and
+     its help text hidden behind the bar: the page moved, and the one word
+     telling him what to type is the word that got eaten.
+
+     This lived as `scroll-mt-24` (96px) repeated on fifteen elements, which was
+     exactly right for a 97px header and silently wrong the moment the header
+     changed size — which is what happened when the nav pills grew for touch. A
+     number copied onto individual elements cannot track the thing it measures.
+     `scroll-padding-top` on the scroll container is one rule, it covers every
+     fragment target including the ones nobody remembered to mark, and there is
+     a single place to correct when a header moves again.
+
+     Scoped by shell because the two are not the same height: the marketing
+     header is one deck, the signed-in header is two. Values clear the header at
+     its TALLEST for that width and leave a little above it, so the target
+     arrives with context rather than flush against the bar — a coarse pointer
+     keeps 44px nav, and between 640px and 900px the section row wraps. */
+  html {
+    scroll-padding-top: 5.5rem;
+  }
+
+  html[data-shell='app'] {
+    scroll-padding-top: 4.5rem;
+  }
+
+  @media (min-width: 640px) {
+    html[data-shell='app'] {
+      scroll-padding-top: 11rem;
+    }
+  }
+
+  @media (min-width: 900px) {
+    html[data-shell='app'] {
+      scroll-padding-top: 8rem;
+    }
+  }
+
   /*
     Checkboxes and radios.
 
@@ -292,8 +333,25 @@
 
      `.is-current` is the pill. Put it on the element that already carries
      aria-current, aria-selected or aria-pressed; it is never the only signal. */
+  /* 44px is a THUMB measurement, and the signed-in header is the one place in
+     the app where paying it on a mouse costs something real: two decks of nav
+     sit above every page, so each pixel here is taken from the page twice and
+     never given back. At 44px the desktop header went 97px to 121px, which is
+     what put jump links underneath it.
+
+     So the floor is spent where it was earned. A coarse pointer — a phone, a
+     tablet, a touchscreen laptop — gets the full 44px. A mouse gets 36px, which
+     is still half again the 24px WCAG 2.2 asks for and is a target no cursor
+     misses. Nothing else in the app does this: every other control stays 44px
+     for everybody, because nowhere else is the cost paid on every screen. */
   .nav-item {
-    @apply inline-flex min-h-11 items-center rounded-lg px-3 font-medium text-ink-700 hover:bg-ink-50 hover:text-ink-900;
+    @apply inline-flex min-h-9 items-center rounded-lg px-3 font-medium text-ink-700 hover:bg-ink-50 hover:text-ink-900;
+  }
+
+  @media (pointer: coarse) {
+    .nav-item {
+      min-height: calc(var(--spacing) * 11);
+    }
   }
 
   .filter-tab {

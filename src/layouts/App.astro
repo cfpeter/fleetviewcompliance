@@ -157,7 +157,7 @@ const account: Section[] = [billing, settings]
 const current = [...sections, ...account].find((s) => active(s.href))?.label ?? 'Menu'
 ---
 
-<html lang="en">
+<html lang="en" data-shell="app">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -299,7 +299,7 @@ const current = [...sections, ...account].find((s) => active(s.href))?.label ?? 
         and 133px on a tablet, unchanged by the phone work above.
       */}
       <div
-        class="mx-auto hidden max-w-7xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:flex sm:px-6"
+        class="mx-auto hidden max-w-7xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2 sm:flex sm:px-6"
       >
         <a href="/app" class="shrink-0 font-semibold tracking-tight whitespace-nowrap">
           FleetView<span class="hidden text-brand-600 sm:inline">Compliance</span>
@@ -329,9 +329,12 @@ const current = [...sections, ...account].find((s) => active(s.href))?.label ?? 
                 the dense-table size: 14px type to sit level with the pills
                 beside it, still 44px tall, because padding is what gives way
                 and never the target. */}
+            {/* Matches the pills beside it on both pointers: `.btn` is 44px,
+                and this drops it to 36px only where `.nav-item` also drops,
+                so the deck is one height and not two. */}
             <button
               type="submit"
-              class="btn btn-sm text-ink-700 hover:bg-ink-50 hover:text-ink-900"
+              class="btn btn-sm text-ink-700 hover:bg-ink-50 hover:text-ink-900 [@media(pointer:fine)]:min-h-9"
             >
               Sign out
             </button>
