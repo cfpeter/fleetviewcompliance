@@ -13,6 +13,33 @@
  * itself and carries the id in a hidden field. Back out with Cancel. The picture
  * preview is the same pattern with `?preview=<id>` — no lightbox, no script.
  *
+ * THE FILES WORTH ATTENTION ARE AT THE TOP, and that is the shape of this list.
+ *
+ * This section was the tallest block on the driver page — about a third of it on
+ * a 375px phone. Every paper printed every field it had, in the order it was
+ * uploaded, so an expired medical card sat in the middle of seven papers that
+ * were fine and looked exactly like them. The list is now ordered by what the END
+ * DATE says — expired first, longest expired at the very top, then whatever ends
+ * inside the next 45 days, then the calm papers in the order they arrived. The
+ * count of each is printed once under the heading, so an owner who opens this
+ * section knows in one line whether it needs him. Measured on a five-paper
+ * driver at 375px, the section went from 1,437px to 1,042px doing it.
+ *
+ * The 45 days is the same window as the dashboard and the rules engine, so a
+ * paper that reads "ends within 45 days" here is the same paper the deadline
+ * screens are already warning about. RED IS ACT NOW, AMBER IS INSIDE 45 DAYS,
+ * and every one of them carries a word and a number — the colour is never the
+ * only thing saying it.
+ *
+ * WHAT "MISSING" MEANS HERE, AND WHERE IT IS ANSWERED INSTEAD. This section can
+ * only read the files that exist. Which paper a driver is MISSING is a question
+ * about the rules, and the checklist at the top of the page already answers it
+ * and links to the box that fixes it. So nothing here claims a paper is missing,
+ * and a file with no end date is not coloured — an MVR and a drug test result
+ * have no end date and never will. A file with no date at all says so in its own
+ * row, in grey, because that is a thing we do not know rather than a thing that
+ * is fine.
+ *
  * WHY THERE IS NO THUMBNAIL ON EVERY ROW, and it was asked for.
  *
  * There is no image processing here. This is a Cloudflare Worker: no `sharp`, no
@@ -28,9 +55,13 @@
  * product is used in, so automatic thumbnails are not a nicety with a cost, they
  * are a page that never finishes loading. Instead:
  *
- *   ON THE ROW, free: the kind in words, the file name, the size, and a badge
- *   saying PDF / Photo / iPhone photo. An owner can see what the paper is
- *   without fetching a single byte, which is the actual goal.
+ *   ON THE ROW, free: a MARK drawn from the file type — a sheet for a PDF, a
+ *   picture frame for a photo — beside the kind in words, the file name and the
+ *   size. It is drawn from `typeFacts().label`, which comes from the sniffed type
+ *   in our own table after `servableType` has collapsed anything unknown, so the
+ *   glyph is chosen from a fixed list of four words and NOTHING from the file
+ *   itself is echoed into this page. An owner can tell a photo from a PDF down a
+ *   list without fetching a single byte, which is the actual goal.
  *
  *   ON DEMAND, one at a time: "Show" puts that one picture in its row, capped by
  *   CSS. One file, because he asked for it. `loading="lazy"` as well, so a
@@ -44,44 +75,39 @@
  * marked "Open" that quietly downloads, which is the bug this change was for.
  * See INLINE_TYPES in src/lib/documents.ts for the evidence and the real fix.
  *
- * WHY THIS SECTION IS SHAPED LIKE A FILE LIST AND NOT LIKE ANOTHER TABLE.
+ * THE SENTENCE ABOUT A PDF IS PRINTED ONCE, NOT ON EVERY ROW. `typeFacts().note`
+ * is the same sentence for every PDF, and a list of five PDFs printed it five
+ * times — 160px of a phone screen saying one thing. The distinct notes are
+ * collected and printed once, under the list they are about, in the library's own
+ * words. The action word on each row still never promises more than the server
+ * will do, which is the half of this that was a bug.
  *
- * It was asked to stand out. It does not do that with colour: red, amber and
- * green mean a deadline on every other screen in this app, and blue is a link.
- * A section that borrowed one of those would be pulling the eye away from an
- * overdue medical card, which is the one thing on the page that must win.
- *
- * So it stands out by being the only part of the app that is about FILES, and
- * by looking like it: the count is in the heading, each paper is a block that
- * starts with what it is and what kind of file it is, and the upload form is
- * folded away once there is anything to fold it behind. That makes the section
- * shorter and a different shape from its neighbours, which is the whole of it.
- *
- * ON A PHONE the rows are not rows. The table is 42rem wide and the window is
- * 299px, so better than half of it was behind a sideways scroll — including
- * both links, which meant the actions were invisible on the device this is used
- * on. Below `sm` every cell becomes a block; from `sm` the same markup is a
- * table again. ONE set of cells, not two: a second copy of a row is a second
- * place to forget a rule, which is the same reason there is one component here
- * and not one per page.
+ * ON A PHONE IT IS A LIST OF CARDS, NOT A TABLE. It used to be a table with
+ * `min-w-[42rem]` inside a 299px card, so better than half of every row was
+ * behind a sideways scroll — including both links, which meant the actions were
+ * invisible on the device this is used on. It is a `<ul>` now: one set of cells
+ * that stack on a phone and become three aligned columns from `sm` up, with no
+ * forced width anywhere, so nothing can be off the side of the screen again.
  *
  * Everything printed here is escaped by Astro. That matters more than usual on
  * this component: `file_name` is a string an uploader chose, and it is the one
  * piece of attacker-controlled text on the page.
  */
-import { formatDate } from '../lib/drivers.ts'
+import { formatDate, todayInCalifornia } from '../lib/drivers.ts'
 import {
   ACCEPTED_LABEL,
   ACCEPT_ATTRIBUTE,
   type DocumentRow,
   type DocumentSubject,
   MAX_UPLOAD_LABEL,
+  type TypeFacts,
   formatSize,
   kindLabel,
   kindsFor,
   splitByStanding,
   typeFacts,
 } from '../lib/documents.ts'
+import { daysBetween } from '../lib/rules/dates.ts'
 
 interface Props {
   subjectType: DocumentSubject
@@ -132,38 +158,206 @@ const previewId = params.get('preview')
 
 const here = Astro.url.pathname
 
-/**
- * Is the upload form open when the page loads?
- *
- * Folded away by default, because it is 600px of a 1,100px section and an owner
- * whose papers are already filed opens this page to LOOK at them, not to add
- * one. It opens on its own in the three cases where the next thing he does is
- * certainly the form: there is nothing on file yet, he pressed Replace, or an
- * upload was just refused and he has to try again.
- */
-const formOpen = current.length === 0 || replacing !== null || error !== null
+// ---------------------------------------------------------------------------
+// What the end date on a paper says
+// ---------------------------------------------------------------------------
 
-const card = 'rounded-xl border border-ink-100 bg-white p-5'
-/** PDF / Photo / iPhone photo. The cheapest way to know what a paper is. */
-const badge = 'ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs font-normal text-ink-500'
 /**
- * A link you can hit with a thumb. 44px is the floor, and this is tapped
- * standing in a yard, so the bare 16px text link it used to be was a miss.
+ * 45 days, the same window as the dashboard and the rules engine.
+ *
+ * A paper that turns amber here is a paper those screens are already counting
+ * down, so the two never disagree about what "soon" means.
  */
-const action = 'inline-flex min-h-11 items-center text-sm font-medium text-brand-600 hover:underline'
+const SOON_DAYS = 45
+
 /**
- * The two links on a row. Below `sm` they share the width as a pair of bordered
- * blocks, because that is where they used to be off the side of the screen
- * entirely; from `sm` they are plain links at the end of the row again.
+ * Today in the carrier's own day, and the arithmetic done in UTC midnights.
+ *
+ * `todayInCalifornia()` is what every other date on this page is measured
+ * against, and `daysBetween` is the app's one piece of date arithmetic. Using
+ * anything else here would let this section call a card expired on a day the
+ * deadline screens still call it valid.
  */
-const rowAction = `${action} flex-1 justify-center rounded-lg border border-ink-100 px-3 sm:flex-none sm:justify-start sm:rounded-none sm:border-0 sm:px-0`
-/** One paper's cell below `sm`, one table cell from `sm` up. */
-const cell = 'block px-4 sm:table-cell sm:py-3'
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+const day0 = new Date(`${todayInCalifornia()}T00:00:00Z`)
+
+type Standing = 'expired' | 'soon' | 'ok' | 'undated'
+
+interface Filed {
+  doc: DocumentRow
+  facts: TypeFacts
+  standing: Standing
+  /** Days from today to the end date. Negative when it has gone past. */
+  days: number
+}
+
+function standingOf(doc: DocumentRow): { standing: Standing; days: number } {
+  if (!doc.expires_on) return { standing: 'undated', days: 0 }
+  const days = daysBetween(day0, new Date(`${doc.expires_on}T00:00:00Z`))
+  if (days < 0) return { standing: 'expired', days }
+  if (days <= SOON_DAYS) return { standing: 'soon', days }
+  return { standing: 'ok', days }
+}
+
+/**
+ * Attention first, then the papers that are simply on file.
+ *
+ * `undated` and `ok` share a rank and keep the order `splitByStanding` gave
+ * them — newest upload first — because neither is a problem and reordering them
+ * against each other would only move rows around between visits. A paper with
+ * no end date is not a late paper; it is a drug test result.
+ */
+const RANK: Record<Standing, number> = { expired: 0, soon: 1, undated: 2, ok: 2 }
+
+const filed: Filed[] = current
+  .map((doc) => ({ doc, facts: typeFacts(doc.content_type), ...standingOf(doc) }))
+  .sort((a, b) => {
+    const byRank = RANK[a.standing] - RANK[b.standing]
+    if (byRank !== 0) return byRank
+    // Inside the two attention ranks: the longest expired first, then the
+    // soonest to end. The worst thing on the list is the top row of the list.
+    if (a.standing === 'expired' || a.standing === 'soon') return a.days - b.days
+    return 0
+  })
+
+const expiredCount = filed.filter((f) => f.standing === 'expired').length
+const soonCount = filed.filter((f) => f.standing === 'soon').length
+/** How many papers carry an end date at all — see the green badge below. */
+const datedCount = filed.filter((f) => f.standing !== 'undated').length
+
+/** Never '34d'. This is read by people reading a second language. */
+const plainDays = (n: number) => `${n} ${n === 1 ? 'day' : 'days'}`
 
 /** 'Mar 3, 2026' from a timestamptz. The clock time is noise in this list. */
 const day = (value: string | null) => (value ? formatDate(String(value).slice(0, 10)) : '')
+
+/**
+ * The dates on one paper, in one line.
+ *
+ * Two lines of 'Given …' and 'Ends …' were two lines on every row. The parts are
+ * joined with a middle dot instead, and each part still carries its own word, so
+ * a row reads on its own with no column heading above it.
+ */
+function dateWords(f: Filed): string {
+  const parts: string[] = []
+  if (f.doc.issued_on) parts.push(`Given ${formatDate(f.doc.issued_on)}`)
+  if (f.doc.expires_on) {
+    const word = f.standing === 'expired' ? 'Ended' : 'Ends'
+    parts.push(`${word} ${formatDate(f.doc.expires_on)}`)
+  }
+  if (parts.length === 0) return 'No date on this paper'
+  return parts.join(' · ')
+}
+
+/**
+ * The words and the colour on the badge, for the two states that need one.
+ *
+ * A paper that is fine gets NO badge. Nine green badges down a list is nine
+ * things to read past on the way to the one that is red, and the count under the
+ * heading already says everything is fine in one line.
+ *
+ * THE BADGE SITS ON THE DATE LINE, not beside the name. Beside the name it
+ * pushed itself onto a line of its own on every row whose paper has a long name
+ * — 'Driver licence (CDL)' is already the width of a phone — and it belongs with
+ * the dates anyway, because a date is the only thing it is about. The countdown
+ * is inside it for the same reason: 'Ends in 21 days' as one amber phrase is a
+ * line that two separate lines used to say.
+ */
+function badgeFor(f: Filed): { cls: string; text: string } | null {
+  if (f.standing === 'expired') return { cls: 'badge badge-danger', text: 'Expired' }
+  if (f.standing === 'soon') {
+    return {
+      cls: 'badge badge-warning',
+      text:
+        f.days === 0
+          ? 'Ends today'
+          : f.days === 1
+            ? 'Ends tomorrow'
+            : `Ends in ${plainDays(f.days)}`,
+    }
+  }
+  return null
+}
+
+/** The 4px edge down the left of a row that needs him. Paired with the badge. */
+function edgeFor(f: Filed): string {
+  if (f.standing === 'expired') return 'border-l-4 border-l-red-600'
+  if (f.standing === 'soon') return 'border-l-4 border-l-amber-500'
+  return ''
+}
+
+/**
+ * The mark on the row, chosen from `typeFacts().label` and nothing else.
+ *
+ * Four words come out of that function — PDF, Photo, iPhone photo, File — and
+ * they are decided from the type our own upload path sniffed, after
+ * `servableType` has collapsed anything it does not recognise. So this maps a
+ * fixed set of four strings to a fixed set of two drawings. No stored content
+ * type reaches the page, and no file content is rendered inline.
+ */
+const PICTURE_MARK = ['Photo', 'iPhone photo']
+
+/** A sheet of paper with the corner turned. */
+const SHEET_PATH =
+  'M11.5 2.8H6.2A1.7 1.7 0 0 0 4.5 4.5v11a1.7 1.7 0 0 0 1.7 1.7h7.6a1.7 1.7 0 0 0 1.7-1.7V7zM11.5 2.8V7h4'
+/** A picture in a frame. */
+const PICTURE_PATH =
+  'M3.6 6a1.7 1.7 0 0 1 1.7-1.7h9.4A1.7 1.7 0 0 1 16.4 6v8a1.7 1.7 0 0 1-1.7 1.7H5.3A1.7 1.7 0 0 1 3.6 14zM3.6 12.6 7.2 9.8l3.1 2.5 2.3-1.8 3.8 3'
+
+// ---------------------------------------------------------------------------
+// What is open when the page loads
+// ---------------------------------------------------------------------------
+
+/**
+ * Is the upload form open when the page loads?
+ *
+ * Folded away by default, because it is 600px of the section and an owner whose
+ * papers are already filed opens this page to LOOK at them, not to add one. It
+ * opens on its own in the three cases where the next thing he does is certainly
+ * the form: there is nothing on file yet, he pressed Replace, or an upload was
+ * just refused and he has to try again.
+ */
+const formOpen = current.length === 0 || replacing !== null || error !== null
+
+/**
+ * Are the old files open when the page loads?
+ *
+ * Folded, and the summary says how many are behind it, because an old file is
+ * opened once in a while to prove what was true last year — not on the way past.
+ *
+ * IT OPENS ON THE SERVER, because a fragment never leaves the browser: a link
+ * that lands on `#documents` cannot open a `<details>` on its own, so anything
+ * that could send the reader to a row in here has to be readable from the URL.
+ * `?old=1` is that link. `?replace=` and `?preview=` are matched against these
+ * rows as well — a superseded id in either parameter is refused by
+ * planReplacement and shows no picture, but the row it names is then on screen
+ * rather than behind a fold the reader has to guess at. Same technique as
+ * `?edit=dates` on the driver page.
+ */
+const oldOpen =
+  params.get('old') === '1' || replaced.some((d) => d.id === replaceId || d.id === previewId)
+
+/**
+ * Said once, under the list, instead of on every row.
+ *
+ * The library writes these sentences and the row behaviour from the same place,
+ * so whatever makes a file un-openable is what explains itself here. Unique,
+ * because five PDFs have one reason between them.
+ */
+const notes = [...new Set(filed.map((f) => f.facts.note).filter((n) => n !== ''))]
+
+const card = 'rounded-xl border border-ink-100 bg-white p-5'
+/** A fold's summary row. `list-none` because the default triangle is not ours. */
+const summaryRow =
+  'flex min-h-11 cursor-pointer list-none items-center gap-2 select-none [&::-webkit-details-marker]:hidden'
+/** The chevron on a fold's summary: it turns when the fold is open. */
+const chevron = 'size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180'
+/**
+ * A row action. The shared tertiary button, which is 44px tall at every width,
+ * so the bordered blocks this used to draw on a phone are gone — the target is
+ * the same size, there is just less ink around it. The negative margin puts the
+ * first label back on the row's own left edge.
+ */
+const actionRow = '-ml-4 mt-0.5 flex flex-wrap items-center gap-x-3 sm:mt-0 sm:ml-0 sm:justify-end'
 ---
 
 <section id="documents" class="mt-8 scroll-mt-24">
@@ -177,16 +371,42 @@ const day = (value: string | null) => (value ? formatDate(String(value).slice(0,
     */}
     <h2 class="text-lg font-semibold tracking-tight">
       Documents{
-        current.length > 0 && (
+        filed.length > 0 && (
           <span class="font-normal text-ink-500">
             {' · '}
-            <span class="tabular-nums">{current.length}</span>
-            {current.length === 1 ? ' file' : ' files'}
+            <span class="tabular-nums">{filed.length}</span>
+            {filed.length === 1 ? ' file' : ' files'}
           </span>
         )
       }
     </h2>
-    <p class="mt-1 max-w-3xl text-sm text-ink-500">{words.lead}</p>
+
+    {/*
+      WHAT THIS SECTION NEEDS FROM HIM, IN ONE LINE, BEFORE HE READS A ROW.
+      Counted off the end dates on the files themselves, never off the rules —
+      the checklist at the top of the page owns the question of which paper is
+      missing, and two places answering it would sooner or later disagree.
+    */}
+    {
+      filed.length > 0 && (
+        <p class="mt-2 flex flex-wrap items-center gap-2">
+          {expiredCount > 0 && (
+            <span class="badge badge-danger">
+              <span class="tabular-nums">{expiredCount}</span> expired
+            </span>
+          )}
+          {soonCount > 0 && (
+            <span class="badge badge-warning">
+              <span class="tabular-nums">{soonCount}</span>{' '}
+              {soonCount === 1 ? 'ends' : 'end'} within {SOON_DAYS} days
+            </span>
+          )}
+          {expiredCount === 0 && soonCount === 0 && datedCount > 0 && (
+            <span class="badge badge-success">No file expired</span>
+          )}
+        </p>
+      )
+    }
 
     {error && <p class="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
     {
@@ -205,144 +425,194 @@ const day = (value: string | null) => (value ? formatDate(String(value).slice(0,
     {/* ------------------------------------------------------------ the list */}
 
     {
-      current.length === 0 ? (
-        <p class="mt-4 rounded-lg border border-dashed border-ink-100 px-4 py-6 text-center text-sm text-ink-500">
+      filed.length === 0 ? (
+        /*
+          Nothing on file. The form below is already open in this case and it
+          carries the sentence about what goes in here, so this says the one
+          thing the form does not: there is nothing here yet.
+        */
+        <p class="mt-4 rounded-lg border border-dashed border-ink-100 px-4 py-4 text-center text-sm text-ink-500">
           No file on {noun} yet.
         </p>
       ) : (
-        <div class="mt-4 overflow-x-auto rounded-xl border border-ink-100">
-          <table class="w-full text-sm sm:min-w-[42rem]">
-            {/*
-              No header line on a phone. Three column names above blocks that
-              are not columns is three words that explain nothing — each block
-              says what it is in its own words instead.
-            */}
-            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
-              <tr>
-                <th class="px-4 py-3 font-medium">What</th>
-                <th class="px-4 py-3 font-medium">Dates on the paper</th>
-                <th class="px-4 py-3 font-medium">Added</th>
-                <th class="px-4 py-3" />
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-ink-100">
-              {current.map((doc) => {
-                /*
-                  What the row may promise. `opens` comes from the SAME function
-                  the file route uses to pick the disposition, so a row can never
-                  offer "Open" for a file the server is about to send to the
-                  Downloads folder. That mismatch was the whole bug.
-                */
-                const facts = typeFacts(doc.content_type)
-                const showing = previewId === doc.id && facts.showable
-                return (
-                  <tr class="block py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
-                    <td class={cell}>
-                      <span class="font-medium">{kindLabel(subjectType, doc.kind)}</span>
-                      <span class={badge}>{facts.label}</span>
-                      <span class="mt-0.5 block text-xs break-all text-ink-500">
-                        {doc.file_name ?? 'File'}
-                        {doc.byte_size !== null && ` · ${formatSize(doc.byte_size)}`}
-                      </span>
-                      {showing && (
-                        <span class="mt-2 block">
-                          {/*
-                            The file itself, held down by CSS. There is nothing
-                            to resize it with, so the cap is what it looks like,
-                            not what it weighs — which is why only the one row
-                            the owner asked for is ever shown.
-                          */}
-                          <img
-                            src={`/app/documents/${doc.id}`}
-                            alt={kindLabel(subjectType, doc.kind)}
-                            loading="lazy"
-                            decoding="async"
-                            class="max-h-72 w-auto max-w-full rounded-lg border border-ink-100"
-                          />
-                          <span class="mt-1 block">
-                            <a
-                              href={`/app/documents/${doc.id}`}
-                              target="_blank"
-                              rel="noopener"
-                              class={action}
-                            >
-                              Open big
-                            </a>
-                            <a
-                              href={`/app/documents/${doc.id}?download=1`}
-                              class={`ml-4 ${action}`}
-                            >
-                              Save
-                            </a>
-                          </span>
-                        </span>
-                      )}
-                      {facts.note !== '' && (
-                        <span class="mt-1 block text-xs text-ink-500">{facts.note}</span>
-                      )}
-                    </td>
+        <div class="mt-4 overflow-hidden rounded-xl border border-ink-100">
+          {/*
+            THREE COLUMNS FROM `sm` UP, ONE STACK BELOW IT, out of one set of
+            cells. The columns are declared on the list and inherited by every
+            row with `grid-cols-subgrid`, so the dates and the two links line up
+            down the whole list the way they did when this was a table — without
+            the `min-w-[42rem]` that put half of every row off the side of a
+            phone. Nothing here has a forced width at any size.
+          */}
+          <ul class="divide-y divide-ink-100 sm:grid sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+            {filed.map((f) => {
+              /*
+                What the row may promise. `opens` comes from the SAME function
+                the file route uses to pick the disposition, so a row can never
+                offer "Open" for a file the server is about to send to the
+                Downloads folder. That mismatch was the whole bug.
+              */
+              const { doc, facts } = f
+              const showing = previewId === doc.id && facts.showable
+              const mark = badgeFor(f)
+              return (
+                <li
+                  class={`px-4 py-2.5 hover:bg-ink-50/60 sm:col-span-3 sm:grid sm:grid-cols-subgrid sm:items-start sm:gap-x-4 ${edgeFor(f)}`}
+                >
+                  <div class="flex min-w-0 items-start gap-3">
                     {/*
-                      The dates on the paper, on their own line below `sm`. They
-                      carry their own words — Given, Ends — so they still read
-                      without the column name that is hidden on a phone.
+                      THE MARK. A drawing, not the file: chosen from the four
+                      words typeFacts() produces, so nothing about the stored
+                      file reaches this page. The word itself is the drawing's
+                      label rather than a fifth thing printed on the row — a
+                      reader who cannot see the glyph is told 'PDF' or 'Photo'
+                      here, and the file name on the next line ends in .pdf or
+                      .jpg for everybody else.
                     */}
-                    <td class={`${cell} mt-0.5 text-ink-500 tabular-nums sm:mt-0`}>
-                      {doc.issued_on && <span class="block">Given {formatDate(doc.issued_on)}</span>}
-                      {doc.expires_on && (
-                        <span class="block">Ends {formatDate(doc.expires_on)}</span>
-                      )}
-                      {!doc.issued_on && !doc.expires_on && <span class="text-ink-300">—</span>}
-                    </td>
-                    <td
-                      class={`${cell} text-xs whitespace-nowrap text-ink-500 tabular-nums sm:text-sm`}
-                    >
-                      <span class="sm:hidden">Added </span>
-                      {day(doc.uploaded_at)}
-                    </td>
-                    <td class={`${cell} mt-2 sm:mt-0 sm:text-right sm:whitespace-nowrap`}>
+                    <span class="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-ink-100 text-ink-700">
+                      <svg
+                        role="img"
+                        aria-label={facts.label}
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.6"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        class="size-5"
+                      >
+                        <path d={PICTURE_MARK.includes(facts.label) ? PICTURE_PATH : SHEET_PATH}
+                        ></path>
+                      </svg>
+                    </span>
+                    <div class="min-w-0">
+                      <span class="block font-medium">{kindLabel(subjectType, doc.kind)}</span>
                       {/*
-                        Two links, never more. A picture opens in the row;
-                        anything we cannot show says Save instead of pretending,
-                        and the cell above says why in one sentence.
+                        The name and the weight: what an owner reads to know
+                        this is the photo he took, and nothing else. The day it
+                        arrived is a bookkeeping fact rather than something on
+                        the paper, so it waits for a screen with room for it.
                       */}
-                      <span class="flex gap-2 sm:block">
-                        {facts.showable ? (
-                          showing ? (
-                            <a href={`${here}#documents`} class={rowAction}>
-                              Hide
-                            </a>
-                          ) : (
-                            <a href={`${here}?preview=${doc.id}#documents`} class={rowAction}>
-                              Show
-                            </a>
-                          )
-                        ) : facts.opens ? (
-                          <a
-                            href={`/app/documents/${doc.id}`}
-                            target="_blank"
-                            rel="noopener"
-                            class={rowAction}
-                          >
-                            Open
-                          </a>
-                        ) : (
-                          <a href={`/app/documents/${doc.id}?download=1`} class={rowAction}>
-                            Save
-                          </a>
+                      <span class="mt-0.5 block text-xs text-ink-700">
+                        {/*
+                          `break-all` on the NAME and nothing else. A name an
+                          uploader chose can be one 60-character word with no
+                          place to break, and the only way to keep that inside a
+                          299px card is to break it anywhere — but the same rule
+                          across the whole line split '60 KB' over two lines.
+                        */}
+                        <span class="break-all">{doc.file_name ?? 'File'}</span>
+                        {doc.byte_size !== null && (
+                          <span class="whitespace-nowrap"> · {formatSize(doc.byte_size)}</span>
                         )}
-                        <a
-                          href={`${here}?replace=${doc.id}#documents`}
-                          class={`${rowAction} sm:ml-4`}
-                        >
-                          Replace
-                        </a>
+                        {doc.uploaded_at && (
+                          <span class="hidden whitespace-nowrap sm:inline">
+                            {' '}
+                            · added {day(doc.uploaded_at)}
+                          </span>
+                        )}
                       </span>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+                    </div>
+                  </div>
+
+                  <p class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-700 tabular-nums sm:mt-0 sm:text-sm sm:text-ink-500">
+                    {mark && <span class={mark.cls}>{mark.text}</span>}
+                    <span>{dateWords(f)}</span>
+                  </p>
+
+                  <div class={actionRow}>
+                    {/*
+                      Two actions, never more. A picture opens in its own row;
+                      anything we cannot show says Save rather than pretending,
+                      and the reason is printed once under the list.
+                    */}
+                    {facts.showable ? (
+                      showing ? (
+                        <a href={`${here}#documents`} class="btn btn-tertiary btn-sm">
+                          Hide
+                        </a>
+                      ) : (
+                        <a
+                          href={`${here}?preview=${doc.id}#documents`}
+                          class="btn btn-tertiary btn-sm"
+                        >
+                          Show
+                        </a>
+                      )
+                    ) : facts.opens ? (
+                      <a
+                        href={`/app/documents/${doc.id}`}
+                        target="_blank"
+                        rel="noopener"
+                        class="btn btn-tertiary btn-sm"
+                      >
+                        Open
+                      </a>
+                    ) : (
+                      <a
+                        href={`/app/documents/${doc.id}?download=1`}
+                        class="btn btn-tertiary btn-sm"
+                      >
+                        Save
+                      </a>
+                    )}
+                    <a
+                      href={`${here}?replace=${doc.id}#documents`}
+                      class="btn btn-tertiary btn-sm"
+                    >
+                      Replace
+                    </a>
+                  </div>
+
+                  {showing && (
+                    <div class="mt-3 sm:col-span-3">
+                      {/*
+                        The file itself, held down by CSS. There is nothing to
+                        resize it with, so the cap is what it looks like, not
+                        what it weighs — which is why only the one row the owner
+                        asked for is ever shown.
+                      */}
+                      <img
+                        src={`/app/documents/${doc.id}`}
+                        alt={kindLabel(subjectType, doc.kind)}
+                        loading="lazy"
+                        decoding="async"
+                        class="max-h-72 w-auto max-w-full rounded-lg border border-ink-100"
+                      />
+                      <div class="-ml-4 mt-1 flex flex-wrap items-center gap-x-3">
+                        <a
+                          href={`/app/documents/${doc.id}`}
+                          target="_blank"
+                          rel="noopener"
+                          class="btn btn-tertiary btn-sm"
+                        >
+                          Open big
+                        </a>
+                        <a
+                          href={`/app/documents/${doc.id}?download=1`}
+                          class="btn btn-tertiary btn-sm"
+                        >
+                          Save
+                        </a>
+                      </div>
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+
+          {/*
+            The reason a file cannot be opened here, printed once per reason
+            rather than once per file. The words are the library's own.
+          */}
+          {notes.length > 0 && (
+            <div class="border-t border-ink-100 bg-ink-50/60 px-4 py-3">
+              {notes.map((note) => (
+                <p class="text-xs text-ink-700">{note}</p>
+              ))}
+            </div>
+          )}
         </div>
       )
     }
@@ -351,56 +621,85 @@ const day = (value: string | null) => (value ? formatDate(String(value).slice(0,
 
     {
       replaced.length > 0 && (
-        <div class="mt-5 rounded-xl border border-ink-100 bg-ink-50/40 p-4">
-          <h3 class="text-sm font-semibold tracking-tight text-ink-500">Old files</h3>
-          {/*
-            "We never delete a file" says itself here, standing next to the
-            files we did not delete. At the top of the section it was a policy
-            in front of a man who had come to look at a medical card.
-          */}
-          <p class="mt-1 text-xs text-ink-500">
-            We never delete a file. These were replaced by a newer one. {words.old}
-          </p>
-          <ul class="mt-3 divide-y divide-ink-100">
-            {replaced.map((doc) => {
-              /*
-                No "Show" down here. An old file is opened once in a while, to
-                prove what was true last year, so it gets a link and not a
-                picture — twenty old photos loading behind a heading nobody is
-                reading is exactly the cost the note at the top is about.
-              */
-              const facts = typeFacts(doc.content_type)
-              return (
-                <li class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2 opacity-70">
-                  <span class="text-sm">
-                    <span class="font-medium">{kindLabel(subjectType, doc.kind)}</span>
-                    <span class="ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs text-ink-500">
-                      replaced {day(doc.superseded_at)}
+        <details open={oldOpen} class="group mt-5 rounded-xl border border-ink-100 bg-ink-50/40">
+          <summary class={`${summaryRow} px-4 py-2`}>
+            <span class="text-sm font-semibold tracking-tight text-ink-700">Old files</span>
+            <span class="badge badge-neutral">
+              <span class="tabular-nums">{replaced.length}</span>
+            </span>
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class={chevron}
+            >
+              <path d="M5 8l5 5 5-5"></path>
+            </svg>
+          </summary>
+          <div class="px-4 pb-3">
+            {/*
+              "We never delete a file" says itself here, standing next to the
+              files we did not delete. At the top of the section it was a policy
+              in front of a man who had come to look at a medical card.
+            */}
+            <p class="text-xs text-ink-700">
+              We never delete a file. These were replaced by a newer one. {words.old}
+            </p>
+            <ul class="mt-2 divide-y divide-ink-100">
+              {replaced.map((doc) => {
+                /*
+                  No "Show" down here. An old file is opened once in a while, to
+                  prove what was true last year, so it gets a link and not a
+                  picture — twenty old photos loading behind a heading nobody is
+                  reading is exactly the cost the note at the top is about.
+                */
+                const facts = typeFacts(doc.content_type)
+                return (
+                  <li class="flex flex-wrap items-center justify-between gap-x-4 py-1">
+                    <span class="min-w-0 text-sm">
+                      <span class="font-medium text-ink-700">
+                        {kindLabel(subjectType, doc.kind)}
+                      </span>
+                      <span class="ml-2 text-xs text-ink-700 tabular-nums">
+                        replaced {day(doc.superseded_at)}
+                      </span>
+                      <span class="block text-xs text-ink-700">
+                        {facts.label} · <span class="break-all">{doc.file_name ?? 'File'}</span>
+                        {doc.expires_on && (
+                          <span class="whitespace-nowrap">
+                            {' '}
+                            · ended {formatDate(doc.expires_on)}
+                          </span>
+                        )}
+                      </span>
                     </span>
-                    <span class="mt-0.5 block text-xs break-all text-ink-500">
-                      {facts.label} · {doc.file_name ?? 'File'}
-                      {doc.expires_on && ` · ended ${formatDate(doc.expires_on)}`}
-                    </span>
-                  </span>
-                  {facts.opens ? (
-                    <a
-                      href={`/app/documents/${doc.id}`}
-                      target="_blank"
-                      rel="noopener"
-                      class={action}
-                    >
-                      Open
-                    </a>
-                  ) : (
-                    <a href={`/app/documents/${doc.id}?download=1`} class={action}>
-                      Save
-                    </a>
-                  )}
-                </li>
-              )
-            })}
-          </ul>
-        </div>
+                    {facts.opens ? (
+                      <a
+                        href={`/app/documents/${doc.id}`}
+                        target="_blank"
+                        rel="noopener"
+                        class="btn btn-tertiary btn-sm -ml-4 sm:ml-0 sm:-mr-4"
+                      >
+                        Open
+                      </a>
+                    ) : (
+                      <a
+                        href={`/app/documents/${doc.id}?download=1`}
+                        class="btn btn-tertiary btn-sm -ml-4 sm:ml-0 sm:-mr-4"
+                      >
+                        Save
+                      </a>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        </details>
       )
     }
 
@@ -416,9 +715,7 @@ const day = (value: string | null) => (value ? formatDate(String(value).slice(0,
       himself to finish what he started.
     */}
     <details open={formOpen} class="group mt-6 border-t border-ink-100 pt-5">
-      <summary
-        class="flex min-h-11 cursor-pointer list-none items-center gap-2 font-medium tracking-tight select-none [&::-webkit-details-marker]:hidden"
-      >
+      <summary class={`${summaryRow} font-medium tracking-tight`}>
         {replacing ? 'Replace this file' : 'Add a file'}
         <svg
           aria-hidden="true"
@@ -428,7 +725,7 @@ const day = (value: string | null) => (value ? formatDate(String(value).slice(0,
           stroke-width="2"
           stroke-linecap="round"
           stroke-linejoin="round"
-          class="size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180"
+          class={chevron}
         >
           <path d="M5 8l5 5 5-5"></path>
         </svg>
@@ -445,19 +742,27 @@ const day = (value: string | null) => (value ? formatDate(String(value).slice(0,
         <input type="hidden" name="subject_id" value={subjectId} />
         {replacing && <input type="hidden" name="replaces" value={replacing.id} />}
 
+        {/*
+          WHAT GOES IN HERE IS SAID HERE, where he is about to file one. It used
+          to stand under the heading, above a list he had come to read, on every
+          visit — the one reader who needs telling is the one who has opened the
+          form.
+        */}
+        {!replacing && <p class="mt-2 max-w-3xl text-sm text-ink-500">{words.lead}</p>}
+
         {
           replacing && (
             <p class="mt-3 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
               You are replacing <strong>{kindLabel(subjectType, replacing.kind)}</strong> (
-              {replacing.file_name ?? 'file'}). We keep the old file. It moves to Old files below.
+              {replacing.file_name ?? 'file'}). We keep the old file. It moves to Old files above.
             </p>
           )
         }
 
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
           <label class="block">
-            <span class="text-sm font-medium">What is it? <span class="text-red-600">*</span></span>
-            <select name="kind" required class={field}>
+            <span class="field-label">What is it? <span class="text-red-600">*</span></span>
+            <select name="kind" required class="field-input mt-1">
               {!replacing && <option value="">Pick one</option>}
               {
                 kinds.map((k) => (
@@ -470,7 +775,7 @@ const day = (value: string | null) => (value ? formatDate(String(value).slice(0,
           </label>
 
           <label class="block">
-            <span class="text-sm font-medium">File <span class="text-red-600">*</span></span>
+            <span class="field-label">File <span class="text-red-600">*</span></span>
             {/*
               `accept` only filters the phone's picker. It is a convenience and
               nothing more: the real check is on the bytes, server side, in
@@ -481,56 +786,44 @@ const day = (value: string | null) => (value ? formatDate(String(value).slice(0,
               name="file"
               required
               accept={ACCEPT_ATTRIBUTE}
-              class={`${field} file:mr-3 file:rounded-md file:border-0 file:bg-ink-100 file:px-3 file:py-1.5 file:text-sm`}
+              class="field-input mt-1 file:mr-3 file:rounded-md file:border-0 file:bg-ink-100 file:px-3 file:py-1.5 file:text-sm"
             />
             {/*
               Said here and not only on the row. An owner who is told at upload
               time gets a file he can see; an owner who is told afterwards has
               already uploaded the one he cannot.
             */}
-            <span class="mt-1 block text-xs text-ink-500">
-              {ACCEPTED_LABEL}. Up to {MAX_UPLOAD_LABEL}. A photo shows here: JPG, PNG, WEBP. A PDF and
-              an iPhone HEIC file save fine, but they do not show — to see the paper on this page, take
-              a photo of it.
+            <span class="field-hint block">
+              {ACCEPTED_LABEL}. Up to {MAX_UPLOAD_LABEL}. A photo shows on this page. A PDF or an
+              iPhone photo saves instead — photograph the paper to see it here.
             </span>
           </label>
         </div>
 
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
           <label class="block">
-            <span class="text-sm font-medium">
-              Date on the paper <span class="font-normal text-ink-300">(if it has one)</span>
+            <span class="field-label">
+              Date on the paper <span class="font-normal text-ink-500">(if it has one)</span>
             </span>
-            <input type="date" name="issued_on" class={`${field} tabular-nums`} />
+            <input type="date" name="issued_on" class="field-input mt-1 tabular-nums" />
           </label>
           <label class="block">
-            <span class="text-sm font-medium">
-              End date <span class="font-normal text-ink-300">(if it has one)</span>
+            <span class="field-label">
+              End date <span class="font-normal text-ink-500">(if it has one)</span>
             </span>
-            <input type="date" name="expires_on" class={`${field} tabular-nums`} />
-            <span class="mt-1 block text-xs text-ink-500">
-              We save this date with the file. It does not make a reminder yet. Put your dates in the
+            <input type="date" name="expires_on" class="field-input mt-1 tabular-nums" />
+            <span class="field-hint block">
+              We show this date on the row. It does not make a reminder yet — put your dates in the
               date boxes on this page.
             </span>
           </label>
         </div>
 
         <div class="mt-5 flex flex-wrap items-center gap-3">
-          <button
-            type="submit"
-            name="intent"
-            value="upload_document"
-            class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-          >
+          <button type="submit" name="intent" value="upload_document" class="btn btn-primary">
             {replacing ? 'Upload the new file' : 'Add the file'}
           </button>
-          {
-            replacing && (
-              <a href={`${here}#documents`} class="text-sm font-medium text-brand-600 hover:underline">
-                Cancel
-              </a>
-            )
-          }
+          {replacing && <a href={`${here}#documents`} class="btn btn-tertiary">Cancel</a>}
           <span class="text-sm text-ink-500">Only you and your office can open these files.</span>
         </div>
       </form>

@@ -103,8 +103,13 @@
     @apply block text-sm font-medium text-ink-700;
   }
 
+  /* `min-h-11` is doing real work, not belt-and-braces. Padding plus a 16px
+     line box gets an <input> to 46px, but a <select> resolves its own line
+     height and lands at 43px — one pixel under the floor, on every screen in
+     the app, which is exactly the kind of miss that never gets noticed. The
+     explicit minimum makes the floor hold for whatever the control is. */
   .field-input {
-    @apply w-full rounded-lg border border-ink-500 bg-white px-3 py-2.5 text-base text-ink-900;
+    @apply min-h-11 w-full rounded-lg border border-ink-500 bg-white px-3 py-2.5 text-base text-ink-900;
   }
 
   .field-input::placeholder {
