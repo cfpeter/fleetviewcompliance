@@ -22,6 +22,8 @@
  * Every exit is a 303. A replayed POST on this page would not just duplicate a
  * row, it would re-apply a status the dispatcher has since moved on from.
  */
+import Bars from '../../../components/charts/Bars.astro'
+import Figure from '../../../components/charts/Figure.astro'
 import App from '../../../layouts/App.astro'
 import {
   BILLING_STATUSES,
@@ -47,6 +49,11 @@ import {
   textOrNull,
   totalRateCents,
 } from '../../../lib/loads.ts'
+import {
+  type SettlementCategory,
+  settlementStatusLabel,
+  settlementTotals,
+} from '../../../lib/settlements/compute.ts'
 
 const supabase = Astro.locals.supabase!
 const carrierId = Astro.locals.carrierId!
@@ -334,13 +341,21 @@ if (loadError) return toBoard(loadError.message)
 // somewhere else on the platform.
 if (!load) return toBoard(NOT_YOURS)
 
-const [{ data: stopRows }, { data: customerRows }] = await Promise.all([
+const [{ data: stopRows }, { data: customerRows }, { data: payRows }] = await Promise.all([
   supabase
     .from('load_stops')
     .select('id, sequence, stop_type, company_name, city, state')
     .eq('load_id', id)
     .order('sequence', { ascending: true }),
   supabase.from('customers').select('id, name').order('name', { ascending: true }),
+  // Every settlement line anybody has written against THIS load. 0016 makes
+  // `load_id` nullable because escrow and the ELD fee belong to a period rather
+  // than to a trip, so the lines that come back here are the ones somebody
+  // deliberately attached to this load and nothing else.
+  supabase
+    .from('settlement_lines')
+    .select('id, category, kind, description, amount_cents, settlements ( id, status )')
+    .eq('load_id', id),
 ])
 
 const stops = (stopRows ?? []) as {
@@ -355,6 +370,130 @@ const customers = (customerRows ?? []) as { id: string; name: string | null }[]
 
 const lane = laneFromStops(stops)
 const total = totalRateCents(load)
+
+/**
+ * WHAT THIS LOAD KEPT, AND WHY THAT WORD IS NOT "PROFIT".
+ *
+ * One question, asked about every load ever run: did it make money. The two
+ * numbers needed to start answering it are already on this page in two different
+ * places — the rate is in the card below, the driver pay is on a settlement
+ * screen somewhere else — and holding one of them in your head while you go and
+ * find the other is why nobody checks.
+ *
+ * So: the rate, the pay written against this load, and the difference. The
+ * difference is called KEPT and never profit, and the caveat under the chart
+ * says the rest out loud. Fuel is not in this app. Nor is the truck payment, the
+ * insurance, the tyres, the tolls the driver did not expense, or an hour of the
+ * owner's Saturday. A number labelled "profit" that leaves all of that out is a
+ * number an owner will quote to a broker, and to his accountant, and be wrong
+ * both times.
+ *
+ * VOID SETTLEMENTS ARE LEFT OUT and counted separately. A cancelled statement is
+ * kept by 0016 on purpose — "a settlement that vanishes is a settlement the
+ * driver swears he was promised" — but its lines were never paid, and adding
+ * them here would charge this load for money that never left.
+ *
+ * The sum is a plain integer addition with no sign flipping, because 0016 stores
+ * advances and deductions negative and enforces it with a CHECK. That is the
+ * whole reason `settlementTotals` exists and it is used here rather than
+ * re-added by hand.
+ */
+interface PayLineRow {
+  id: string
+  category: string
+  kind: string
+  description: string | null
+  amount_cents: number
+  /** PostgREST hands a to-one embed back as an object or a one-element array. */
+  settlements: { id: string; status: string } | { id: string; status: string }[] | null
+}
+
+const payLines = (payRows ?? []) as unknown as PayLineRow[]
+
+function settlementOf(line: PayLineRow): { id: string; status: string } | null {
+  const value = line.settlements
+  if (!value) return null
+  return (Array.isArray(value) ? value[0] : value) ?? null
+}
+
+const livePayLines = payLines.filter((l) => settlementOf(l)?.status !== 'void')
+const voidPayLines = payLines.length - livePayLines.length
+const unpaidPayLines = livePayLines.filter((l) => settlementOf(l)?.status !== 'paid').length
+
+const payTotals = settlementTotals(
+  livePayLines.map((l) => ({
+    category: l.category as SettlementCategory,
+    amountCents: l.amount_cents,
+  })),
+)
+
+/**
+ * NULL, not zero, when nothing is attached.
+ *
+ * A load nobody has settled yet and a load settled for nothing are different
+ * facts, and only one of them means "the driver was paid nothing". Drawn as the
+ * absence it is, the same rule the rate itself follows two cards down.
+ */
+const driverPayCents = livePayLines.length > 0 ? payTotals.netCents : null
+const keptCents = total !== null && driverPayCents !== null ? total - driverPayCents : null
+
+// One row per settlement the lines came off, so the owner can go and read the
+// statement the number came from rather than take it on trust.
+const paySettlements = [
+  ...new Map(
+    livePayLines
+      .map((l) => settlementOf(l))
+      .filter((s): s is { id: string; status: string } => s !== null)
+      .map((s) => [s.id, s]),
+  ).values(),
+]
+
+const lineWord = (n: number) => (n === 1 ? 'line' : 'lines')
+
+const profitBars = [
+  { label: 'Rate you billed', value: total, display: formatCents(total) },
+  {
+    label: 'Paid to the driver',
+    value: driverPayCents,
+    display: driverPayCents === null ? 'nothing written down' : formatCents(driverPayCents),
+    note:
+      livePayLines.length > 0
+        ? `${livePayLines.length} pay ${lineWord(livePayLines.length)} on this load.`
+        : undefined,
+  },
+  {
+    label: 'Kept after driver pay',
+    value: keptCents,
+    display: keptCents === null ? 'we cannot say yet' : formatCents(keptCents),
+    // The one place a colour is spent here, and it is spent on the only fact
+    // that needs acting on: this load paid out more than it billed.
+    tone: keptCents !== null && keptCents < 0 ? ('overdue' as const) : undefined,
+  },
+]
+
+// Passed in rather than left to the component. The rate is the whole of this
+// chart, so it has to draw as the whole width — a rounded-up nice ceiling would
+// leave the top bar short of the edge and invite the reading that something else
+// is missing. When the pay is larger than the rate, the pay sets the width.
+const profitMax = Math.max(total ?? 0, driverPayCents ?? 0)
+
+const profitTitle =
+  keptCents === null
+    ? 'Not enough written down yet to say what this load kept'
+    : keptCents < 0
+      ? `This load paid out ${formatCents(Math.abs(keptCents))} more than it billed`
+      : `Kept after driver pay: ${formatCents(keptCents)}`
+
+const profitCoverage = [
+  'This is the rate minus the driver pay. It is NOT profit. Fuel, tolls, insurance, the truck payment, repairs and your own time all still come out of this.',
+  total === null && 'This load has no rate typed yet, so there is nothing to take the pay off.',
+  driverPayCents === null &&
+    'No pay line points at this load, so no driver pay is counted. That does not mean nobody was paid.',
+  unpaidPayLines > 0 &&
+    `${unpaidPayLines} pay ${lineWord(unpaidPayLines)} here sit on a settlement that is not paid yet, so this can still change.`,
+  voidPayLines > 0 &&
+    `${voidPayLines} pay ${lineWord(voidPayLines)} on a cancelled settlement are left out.`,
+].filter((c): c is string => typeof c === 'string')
 
 const params = Astro.url.searchParams
 const error = params.get('error')
@@ -844,6 +983,42 @@ const subtitle = lane.origin
           A dash means nobody has typed that rate yet. A dash is not $0.00.
         </p>
       </div>
+
+      {
+        /* Directly under the rate, because it is the same money one step on.
+           Three bars on one scale: the rate is the full width, the driver pay
+           is the part that went out, and what is left is the third bar. The
+           empty part of the pay bar IS the third bar, which is why the two sit
+           together rather than on separate charts. */
+      }
+      <Figure
+        title={profitTitle}
+        subtitle="The rate on this load, minus the driver pay written against it."
+        coverage={profitCoverage}
+      >
+        <Bars
+          items={profitBars}
+          max={profitMax > 0 ? profitMax : undefined}
+          emptyMessage="Nothing is typed in for this load yet."
+        />
+        {
+          paySettlements.length > 0 && (
+            <ul class="mt-4 space-y-1 border-t border-ink-100 pt-3 text-xs">
+              {paySettlements.map((s) => (
+                <li>
+                  <a
+                    href={`/app/settlements/${s.id}`}
+                    class="font-medium text-brand-600 hover:underline"
+                  >
+                    Read the settlement this pay came off
+                  </a>
+                  <span class="text-ink-500"> — {settlementStatusLabel(s.status)}</span>
+                </li>
+              ))}
+            </ul>
+          )
+        }
+      </Figure>
 
       <div class={card}>
         <div class="flex items-baseline justify-between gap-3">

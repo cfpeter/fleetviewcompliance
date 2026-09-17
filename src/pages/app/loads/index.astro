@@ -18,18 +18,21 @@ import Funnel from '../../../components/charts/Funnel.astro'
 import App from '../../../layouts/App.astro'
 import { funnelHeadline, moneyFunnel } from '../../../lib/charts/funnel.ts'
 import { revenueByMonth } from '../../../lib/charts/revenue.ts'
-import { ceilingFor, compactMoney } from '../../../lib/charts/scale.ts'
+import { ceilingFor, compactMoney, widthPercent } from '../../../lib/charts/scale.ts'
 import {
   LOAD_STATUSES,
   billingPillClass,
   billingStatusLabel,
+  centsToInput,
   exceptionLabel,
   exceptionPillClass,
   formatCents,
+  isLoadException,
   isLoadStatus,
   laneFromStops,
   loadLabel,
   loadStatusLabel,
+  parseMoneyToCents,
   referenceSearchFilter,
   statusPillClass,
   totalRateCents,
@@ -51,6 +54,22 @@ const requested = params.get('status') ?? 'all'
  * error, which is a 500 on the page she reaches by clearing the search box.
  */
 const status = isLoadStatus(requested) ? requested : 'all'
+
+/**
+ * The problem filter, and why it is a third parameter rather than a tab.
+ *
+ * `exception` is orthogonal to `status` — a detained load is still at_shipper —
+ * so folding it into the tab strip would force a choice between "where is the
+ * truck" and "what is going wrong" when the dispatcher wants both at once. It
+ * is its own parameter, it stacks with the tab and the search box, and like
+ * them it survives a bookmark.
+ *
+ * An unrecognised value is dropped to `null` rather than handed to Postgres.
+ * `.eq('exception', 'wat')` is an enum cast error, which is a 500 on the page
+ * she reaches by editing the address bar.
+ */
+const requestedException = (params.get('exception') ?? '').trim()
+const exception = isLoadException(requestedException) ? requestedException : null
 
 interface StopRow {
   sequence: number
@@ -99,16 +118,26 @@ let query = supabase
 // the policy might not hold — which is how someone eventually "fixes" a bug by
 // loosening the policy instead of the query.
 if (status !== 'all') query = query.eq('status', status)
+if (exception) query = query.eq('exception', exception)
 const filter = referenceSearchFilter(q)
 if (filter) query = query.or(filter)
 
 // The unfiltered count exists so the empty state can tell the truth. "No loads
 // yet" on a board of thirty, all of them delivered, sends her to the create form
 // to type a load that is already in here.
-const [{ data, error }, { count: totalCount }] = await Promise.all([
-  query,
-  supabase.from('loads').select('*', { count: 'exact', head: true }),
-])
+//
+// The third query is the problem counts. It reads the WHOLE board rather than
+// the rows above, because a count that changed every time she pressed a pill
+// would be a count of what she is already looking at — useless for deciding
+// which pill to press. One request rather than one per exception: the rows with
+// a problem on them are a short list, and the exact count that comes back with
+// them is what tells us whether PostgREST truncated it.
+const [{ data, error }, { count: totalCount }, { data: problemRows, count: problemTotal }] =
+  await Promise.all([
+    query,
+    supabase.from('loads').select('*', { count: 'exact', head: true }),
+    supabase.from('loads').select('exception', { count: 'exact' }).not('exception', 'is', null),
+  ])
 
 const rows = (data ?? []) as unknown as LoadRow[]
 const notice = params.get('error') ?? (error ? error.message : null)
@@ -132,6 +161,48 @@ function withParam(key: string, value: string): string {
 const tabs = [{ value: 'all', label: 'All' }, ...LOAD_STATUSES]
 const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
 const pill = 'rounded-md px-2 py-0.5 text-xs font-medium'
+
+/**
+ * HOW MANY LOADS HAVE A PROBLEM, and one press to see them.
+ *
+ * Four of these are the ones a dispatcher is asked about by name — Late,
+ * Breakdown, Detained, TONU — so they are drawn in that order and drawn even
+ * when they hold nothing, because "no breakdowns" is a fact worth reading and a
+ * pill that appears and disappears is a control nobody learns.
+ *
+ * Cancelled is the fifth value in the enum and it is drawn only when it holds
+ * something. It is not one of the four, but leaving a real count off the screen
+ * entirely is worse than one extra pill on the days it is not zero. Anything the
+ * enum gains in a later migration is appended the same way, so a value this file
+ * has never heard of still gets counted and still gets a filter.
+ *
+ * Colours come from `exceptionPillClass`, the same function that paints the pill
+ * on the row itself two inches below. A filter that recoloured them would teach
+ * the owner that neither can be trusted. Every pill carries its count and its
+ * name, so the colour is never the only thing saying what it is.
+ */
+const problemCounts = new Map<string, number>()
+for (const row of (problemRows ?? []) as { exception: string | null }[]) {
+  if (!row.exception) continue
+  problemCounts.set(row.exception, (problemCounts.get(row.exception) ?? 0) + 1)
+}
+
+const NAMED_PROBLEMS = ['late', 'breakdown', 'detained', 'tonu']
+const problemValues = [
+  ...NAMED_PROBLEMS,
+  'cancelled',
+  ...[...problemCounts.keys()].filter((v) => v !== 'cancelled' && !NAMED_PROBLEMS.includes(v)),
+]
+const problemPills = problemValues
+  .map((value) => ({ value, label: exceptionLabel(value), count: problemCounts.get(value) ?? 0 }))
+  .filter((p) => NAMED_PROBLEMS.includes(p.value) || p.count > 0)
+
+const problemsSeen = (problemRows ?? []).length
+const problemLoads = problemTotal ?? problemsSeen
+// A truncated response would quietly under-count every pill. The exact count
+// came back with the rows, so the gap is knowable rather than something to hope
+// about — the same bargain the charts below make with `totalCount`.
+const problemsMissing = Math.max(0, problemLoads - problemsSeen)
 
 /**
  * ON A PHONE THE ROWS ARE NOT ROWS.
@@ -178,10 +249,12 @@ const cell = 'block px-4 py-1 sm:table-cell sm:py-3'
  * Both charts are built from `rows`, the same array the table below renders, so
  * the charts and the rows under them cannot drift apart.
  */
-const unfiltered = status === 'all' && q === ''
+const unfiltered = status === 'all' && q === '' && exception === null
 // Never over a filtered view. Pushing the rows somebody just searched for most
 // of a screen further down undoes the reason the search box exists — the same
-// bargain the dashboard's runway makes with its tiles.
+// bargain the dashboard's runway makes with its tiles. The problem pills count
+// as a filter here for the same reason: a chart of the whole book under four
+// detained loads is a chart of something else.
 const charted = unfiltered && rows.length > 0
 
 const now = new Date()
@@ -238,6 +311,8 @@ const revenueCoverage = months
       .join(' ')
   : undefined
 
+const monthWord = (n: number) => (n === 1 ? 'month' : 'months')
+
 /**
  * What the money funnel does not cover.
  *
@@ -264,10 +339,127 @@ const funnelCoverage = funnel
       .join(' ')
   : undefined
 
+/**
+ * THE COUNT BESIDE THE DOLLARS, on every stage.
+ *
+ * The bar and the figure beside it are money. Money alone cannot be acted on:
+ * $8,400 ready to invoice is one phone call if it is one load and an afternoon
+ * if it is nine, and the owner decides what to do this morning on that
+ * difference. So every stage says how many loads make its amount, and it says it
+ * in the same line that reports the ones with no rate — because a stage holding
+ * two priced loads and four unpriced ones is a stage whose amount is a quarter
+ * of the story.
+ *
+ * Written here rather than in `moneyFunnel` because it is a sentence, not
+ * arithmetic: the numbers all come off the row untouched. The stage's own `note`
+ * is replaced rather than appended to, because what it said — how many loads
+ * have no rate — is said again here, in one line instead of two.
+ */
+const funnelRows = funnel
+  ? funnel.rows.map((row) => {
+      const priced = `${row.loads} ${loadWord(row.loads)}`
+      const unpriced = `${row.unpricedLoads} ${loadWord(row.unpricedLoads)} with no rate`
+      const note =
+        row.loads > 0 && row.unpricedLoads > 0
+          ? `${priced} with a rate, and ${unpriced}.`
+          : row.loads > 0
+            ? `${priced}.`
+            : row.unpricedLoads > 0
+              ? `${unpriced}. Nobody has typed what they pay.`
+              : 'No loads here.'
+      return { ...row, note }
+    })
+  : null
+
+/**
+ * THE MONTHLY GOAL, AND WHERE IT LIVES.
+ *
+ * A column chart answers "which month was bigger". It cannot answer the question
+ * the owner actually asks — "am I making enough" — because enough is a number
+ * only he knows. Typing it draws a dashed line across the columns, paints each
+ * finished month green or red against it, and turns twelve bars into one
+ * sentence at the top of the figure.
+ *
+ * IT IS NOT SAVED, and the page says so out loud under the box. There is no
+ * column anywhere in the schema for a carrier's revenue goal, and this file does
+ * not get to invent one — a migration is somebody's decision, not a side effect
+ * of a chart. So the goal lives in the address bar, which means it survives a
+ * bookmark and a text message to the other person in the office, and nothing
+ * else. When the column exists this parameter becomes the override and the
+ * stored figure becomes the default; nothing else here has to change.
+ *
+ * Parsed with the same integer-cents parser the rate boxes use, so a pasted
+ * "$25,000.00" works and no float ever exists. A goal of zero or less is read as
+ * no goal at all rather than as a line every month clears.
+ */
+const goalRaw = (params.get('goal') ?? '').trim()
+const goalParsed = parseMoneyToCents(goalRaw, { label: 'Your monthly goal' })
+const goalError = goalParsed.ok ? null : goalParsed.message
+const goalCents = goalParsed.ok && goalParsed.value !== null && goalParsed.value > 0 ? goalParsed.value : null
+
 // Computed here and passed to Columns as `max` rather than left to the
 // component, so the number printed on the axis and the number the bars are
-// scaled against are provably the same one.
-const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) : 0
+// scaled against are provably the same one. The goal is in the domain too: a
+// goal above every month would otherwise be a line drawn off the top of the
+// plot, which is a line nobody sees.
+const revenueCeiling = months ? ceilingFor([...months.columns.map((c) => c.value), goalCents]) : 0
+const goalPercent = goalCents !== null ? widthPercent(goalCents, revenueCeiling) : null
+
+/**
+ * Only FINISHED months are judged.
+ *
+ * The month we are standing in is a third done, not a third as good, and
+ * painting it red for being short of a full month's goal on the 3rd would be the
+ * chart lying every month for twenty-eight days. It keeps the ordinary colour
+ * and the faded in-progress treatment `Columns` already gives it.
+ *
+ * A month with no priced load is not judged either. It has no figure, it draws
+ * as the dashed absence, and calling it a miss would score the owner on the
+ * rates he has not typed yet.
+ */
+const judgedMonths = months ? months.columns.filter((c) => !c.isCurrent && c.value !== null) : []
+const goalHits =
+  goalCents === null ? 0 : judgedMonths.filter((c) => (c.value as number) >= goalCents).length
+const unjudgedMonths = months
+  ? months.columns.filter((c) => !c.isCurrent && c.value === null).length
+  : 0
+
+/**
+ * Label the answer, not the chart.
+ *
+ * "Revenue by month" is a name for a widget. "You hit $25,000.00 in 7 of the
+ * last 11 finished months" is what he came to find out, and it reads without
+ * looking at the columns at all.
+ */
+const revenueTitle =
+  goalCents !== null && judgedMonths.length > 0
+    ? `You hit ${formatCents(goalCents)} in ${goalHits} of the last ${judgedMonths.length} finished ${judgedMonths.length === 1 ? 'month' : 'months'}.`
+    : 'Revenue by month'
+
+// `Columns` draws a sentence instead of a plot when fewer than two months carry
+// a figure, and a dashed line floating over a sentence is a bug on the screen.
+const drawnMonths = months ? months.columns.filter((c) => c.value !== null).length : 0
+const showGoalLine = goalPercent !== null && drawnMonths >= 2
+
+/**
+ * What the goal line does not cover.
+ *
+ * Printed under the goal box rather than in the figure's caveat block, because
+ * it is about the line the owner just drew and it has to sit where he drew it.
+ * The first clause is unconditional: a goal that vanishes on the next visit,
+ * silently, is worse than no goal box at all.
+ */
+const goalNotes =
+  goalCents !== null
+    ? [
+        'We do not save this goal yet. It stays in the address of this page. Bookmark the page to keep it.',
+        `The month you are in now is not finished, so it is not marked green or red.${
+          unjudgedMonths > 0
+            ? ` ${unjudgedMonths} earlier ${monthWord(unjudgedMonths)} had no rate on any load, so ${unjudgedMonths === 1 ? 'it is' : 'they are'} not marked either.`
+            : ''
+        }`,
+      ]
+    : []
 ---
 
 <App title="Loads" subtitle="Where each load is, and where its money is. Those are two different questions.">
@@ -300,10 +492,13 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
         class="w-full rounded-xl border border-ink-100 bg-white py-3 pr-4 pl-10 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
       />
       {
-        /* Carries the current tab through the search, so searching from the
-           In transit tab does not quietly drop her back to the whole board. */
+        /* Carries the current tab, the problem filter and the goal through the
+           search, so searching from the In transit tab does not quietly drop her
+           back to the whole board — or throw away the goal she just typed. */
       }
       {status !== 'all' && <input type="hidden" name="status" value={status} />}
+      {exception && <input type="hidden" name="exception" value={exception} />}
+      {goalRaw !== '' && <input type="hidden" name="goal" value={goalRaw} />}
     </form>
     <a
       href="/app/loads/new"
@@ -331,6 +526,68 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
     }
   </div>
 
+  {
+    /*
+      THE PROBLEM ROW. One press, one filter, no JavaScript — each pill is a
+      link that adds `exception=` to the address, and the pill that is already
+      on links back without it, so the same press turns it off.
+
+      It sits under the tabs and above the board because "how many loads have a
+      problem" is the question asked before the board is read, not after it.
+      Every pill carries a number and a word; the colour is the third thing it
+      says, never the only one.
+    */
+  }
+  {
+    (totalCount ?? 0) === 0 ? null : problemLoads > 0 ? (
+      <div class="-mx-4 mb-4 px-4 sm:mx-0 sm:px-0">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-xs tracking-wide text-ink-500 uppercase">Problems</span>
+          {problemPills.map((p) =>
+            p.count === 0 ? (
+              /* Nothing to filter to, so it is not a link. It stays on the row
+                 because "no breakdowns this week" is worth reading, and a
+                 control that comes and goes is one nobody learns. */
+              <span class="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-ink-50 px-3 text-sm font-medium text-ink-300">
+                <span class="tabular-nums">0</span>
+                {p.label}
+              </span>
+            ) : (
+              <a
+                href={withParam('exception', exception === p.value ? '' : p.value)}
+                aria-current={exception === p.value ? 'true' : undefined}
+                class:list={[
+                  'inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition hover:opacity-80',
+                  exceptionPillClass(p.value),
+                  exception === p.value && 'ring-2 ring-brand-500 ring-offset-1',
+                ]}
+              >
+                <span class="tabular-nums">{p.count}</span>
+                {p.label}
+                {exception === p.value && <span class="text-xs font-normal">· showing</span>}
+              </a>
+            ),
+          )}
+          {exception && (
+            <a
+              href={withParam('exception', '')}
+              class="inline-flex min-h-11 items-center px-2 text-sm font-medium text-brand-600 hover:underline"
+            >
+              Show every load
+            </a>
+          )}
+        </div>
+        {problemsMissing > 0 && (
+          <p class="mt-2 text-xs text-amber-800">
+            {problemsMissing} more {loadWord(problemsMissing)} with a problem did not fit in one
+            request, so these counts are short.
+          </p>
+        )}
+      </div>
+    ) : (
+      <p class="mb-4 text-sm text-ink-500">No load has a problem written on it right now.</p>
+    )
+  }
 
   {
     rows.length === 0 ? (
@@ -352,8 +609,9 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
         <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
           <p class="font-medium">No load matches</p>
           <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
-            You have <span class="tabular-nums">{totalCount}</span> loads. None of them match this
-            search and this tab together.
+            You have <span class="tabular-nums">{totalCount}</span> loads. None of them match
+            everything you have turned on — the search box, the tab and the problem pill all narrow
+            the list together.
           </p>
           <a
             href="/app/loads"
@@ -539,33 +797,99 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
           coverage={funnelCoverage}
         >
           <Funnel
-            rows={funnel.rows}
+            rows={funnelRows ?? funnel.rows}
             totalDisplay={formatCents(funnel.totalCents)}
             totalLoads={funnel.countedLoads}
           />
         </Figure>
 
         <Figure
-          title="Revenue by month"
+          title={revenueTitle}
           subtitle={`Booked rates over the last ${months.months} months`}
           coverage={revenueCoverage}
         >
-          <Columns
-            columns={months.columns.map((c) => ({
-              label: c.label,
-              value: c.value,
-              display: c.display,
-              // The month still running is a short column for a reason that has
-              // nothing to do with the business: eleven full months followed by
-              // a half one reads as revenue falling off a cliff. Toning it down
-              // was the first attempt; `inProgress` is the real treatment —
-              // faded, with an open top edge, and announced as "so far".
-              inProgress: c.isCurrent,
-            }))}
-            max={revenueCeiling}
-            axisLabel={revenueCeiling > 0 ? `Full height ${compactMoney(revenueCeiling)}` : undefined}
-            emptyMessage="No load has a rate on it yet, so there is nothing to draw here."
-          />
+          {/*
+            The axis label is drawn here instead of being handed to `Columns`,
+            and that is the one thing on this page that has to be kept in step
+            with another file. The dashed goal line below is positioned over the
+            plot, so it needs the plot to start at a known offset — and the plot
+            in Columns.astro is the FIRST child of its root only when no axis
+            label is passed. The overlay's `top-1` and `h-28 sm:h-36` are that
+            component's `mt-1` and `h-28 sm:h-36`, spelled again.
+          */}
+          {revenueCeiling > 0 && drawnMonths >= 2 && (
+            /* Only when there is a plot. `Columns` prints a sentence instead of
+               bars when fewer than two months carry a figure, and an axis
+               ceiling above a sentence labels nothing. */
+            <div class="flex items-center gap-2 text-[10px] text-ink-300">
+              <span class="tabular-nums">Full height {compactMoney(revenueCeiling)}</span>
+              <span class="h-px flex-1 bg-ink-100" />
+            </div>
+          )}
+
+          <div class="relative">
+            <Columns
+              columns={months.columns.map((c) => ({
+                label: c.label,
+                value: c.value,
+                display: c.display,
+                // Green above the goal, red below it, and NEITHER on a month we
+                // cannot judge: the month still running, and any month with no
+                // priced load. Those keep the ordinary colour, which is what
+                // stops the chart from scoring the owner on a month that is
+                // three days old or on rates nobody has typed.
+                tone:
+                  goalCents === null || c.isCurrent || c.value === null
+                    ? undefined
+                    : c.value >= goalCents
+                      ? ('good' as const)
+                      : ('overdue' as const),
+                // The month still running is a short column for a reason that has
+                // nothing to do with the business: eleven full months followed by
+                // a half one reads as revenue falling off a cliff. Toning it down
+                // was the first attempt; `inProgress` is the real treatment —
+                // faded, with an open top edge, and announced as "so far".
+                inProgress: c.isCurrent,
+              }))}
+              max={revenueCeiling}
+              emptyMessage="No load has a rate on it yet, so there is nothing to draw here."
+            />
+            {showGoalLine && (
+              /* The line itself announces nothing to a screen reader — the
+                 figure's title already says how many months cleared it, in
+                 words, which is the same fact without the geometry. */
+              <div
+                class="pointer-events-none absolute inset-x-0 top-1 h-28 sm:h-36"
+                aria-hidden="true"
+              >
+                <div
+                  class="absolute inset-x-0 border-t-2 border-dashed border-ink-900/45"
+                  style={`bottom:${goalPercent}%`}
+                />
+              </div>
+            )}
+          </div>
+
+          {showGoalLine && goalCents !== null && (
+            /* Colour is never the only carrier. The legend says in words what
+               the green and the red mean, and the dash beside the goal ties the
+               figure to the line drawn across the columns. */
+            <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-ink-500">
+              <li class="flex items-center gap-1.5">
+                <span class="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+                <span>hit the goal</span>
+              </li>
+              <li class="flex items-center gap-1.5">
+                <span class="h-2 w-2 shrink-0 rounded-full bg-red-500" />
+                <span>under the goal</span>
+              </li>
+              <li class="flex items-center gap-1.5">
+                <span class="h-0 w-4 shrink-0 border-t-2 border-dashed border-ink-900/45" />
+                <span class="tabular-nums">goal {formatCents(goalCents)} a month</span>
+              </li>
+            </ul>
+          )}
+
           {months.window.countedLoads > 0 && (
             <p class="mt-3 text-sm text-ink-500">
               <span class="font-medium text-ink-900 tabular-nums">
@@ -576,6 +900,46 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
               we are in now, so it is not a full month.
             </p>
           )}
+
+          {/*
+            A GET form, like the search box above it. No intent, no POST and no
+            redirect, because nothing is written: pressing the button reloads
+            this same page with the goal in the address, which is a page she can
+            bookmark or send to whoever else works the board.
+          */}
+          <form method="GET" class="mt-4 flex flex-wrap items-end gap-3 border-t border-ink-100 pt-4">
+            <label class="block">
+              <span class="text-sm font-medium">What do you want to make in one month?</span>
+              <div class="mt-1 flex items-center rounded-lg border border-ink-100 bg-white focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
+                <span class="pl-3 text-ink-300">$</span>
+                <input
+                  type="text"
+                  name="goal"
+                  value={goalCents !== null ? centsToInput(goalCents) : goalRaw}
+                  inputmode="decimal"
+                  placeholder="25000"
+                  aria-label="Your goal for one month, in dollars"
+                  class="w-32 bg-transparent px-2 py-2 text-base tabular-nums outline-none"
+                />
+              </div>
+            </label>
+            <button
+              type="submit"
+              class="rounded-lg bg-ink-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-ink-700"
+            >
+              Draw the line
+            </button>
+            {goalCents !== null && (
+              <a
+                href={withParam('goal', '')}
+                class="py-2.5 text-sm font-medium text-brand-600 hover:underline"
+              >
+                Take the line off
+              </a>
+            )}
+          </form>
+          {goalError && <p class="mt-2 text-sm text-red-700">{goalError}</p>}
+          {goalNotes.map((note) => <p class="mt-2 text-xs text-ink-500">{note}</p>)}
         </Figure>
       </div>
     )
