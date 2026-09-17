@@ -197,38 +197,100 @@ volume is one developer's inbox so there is no sender-reputation cost. Use a
 SEPARATE Resend API key for dev against the same domain, so dev's key can be
 revoked without touching production.
 
-**Supabase Auth (confirmations, password resets): never share it.** See below —
-it does not pass through our code at all. Configuring the working SMTP on the
-DEV Supabase project is the single change that would turn a contained
-environment into one that emails strangers from your domain.
+**Supabase Auth (confirmations, password resets): do not configure SMTP on it at
+all.** With the Send Email Hook on, Supabase does not send these — we do, over
+the same Resend key, through the guard. Configuring a working SMTP on the DEV
+Supabase project is the single change that would put an unguarded sender back
+behind the signup form.
 
 | | dev | production |
 |---|---|---|
 | Resend, our alerts | same domain, own API key | same domain |
-| Supabase Auth SMTP | leave on Supabase's built-in sender | configure yours |
+| Supabase Auth email | Send Email Hook → `/api/auth/email` → Resend, redirected by the guard | Send Email Hook → `/api/auth/email` → Resend, real recipient |
+| Supabase Auth SMTP | leave unconfigured | leave unconfigured |
 
 On dev, Supabase's built-in sender reaching only project team members IS the
 safety net. On production that same limit is what blocks real customers from
 confirming their address, and configuring SMTP there is what unblocks signup.
 
-### What the guard does NOT cover — Supabase Auth
+### Supabase Auth — brought under the guard by the Send Email Hook
 
-`src/pages/login.astro` calls `supabase.auth.signUp()`. **Supabase sends that
-confirmation email itself, directly to whatever address was typed into the
-form.** It never passes through this codebase, so no guard, no redirect, no
-`DEPLOY_ENV`. Anyone who reaches the dev signup form with a real address gets a
-real email. The same is true of password resets and magic links.
+**The problem.** `src/pages/login.astro` calls `supabase.auth.signUp()`,
+`src/pages/auth/forgot-password.astro` calls `resetPasswordForEmail()`, and
+`src/pages/app/settings.astro` calls `auth.updateUser({ email })`. Supabase used
+to compose and send all three emails from its own servers, straight to whatever
+address was typed into the form. There was nothing for `guard.ts` to intercept,
+because our code never touched them: no guard, no redirect, no `DEPLOY_ENV`.
+Anyone who reached the dev signup form with a real address got a real email.
 
-Two things close it, and both should be on:
+**The fix.** Supabase's **Send Email Hook**. With it configured, Supabase stops
+sending and POSTs the user and the generated token to an endpoint we host:
+
+```
+POST https://dev.fleetviewcompliance.com/api/auth/email
+POST https://fleetviewcompliance.com/api/auth/email
+```
+
+`src/pages/api/auth/email.ts` composes the message and hands it to `send()` —
+which is to say, to the guard. Auth email is now redirected on dev exactly as the
+digest is, by the same rule in the same file.
+
+**None of the three pages changed.** That is the whole point of doing it this
+way: the interception happens on Supabase's side of the wire, so `login.astro`,
+`forgot-password.astro` and `settings.astro` are untouched and the client SDK
+calls behave as before. The link the endpoint builds is the same
+`/auth/v1/verify?token=…&type=…&redirect_to=…` URL Supabase's own templates
+build, `pkce_` prefix and all, so `/auth/callback` and `/auth/new-password` still
+work unchanged.
+
+**Switching it on — the dashboard steps, in this order.**
+
+1. `wrangler secret put SEND_EMAIL_HOOK_SECRET -c wrangler.dev.jsonc` — but you
+   do not have the value yet, so do step 2 first and come back.
+2. Supabase dashboard → the project → **Authentication → Hooks** (under
+   *Configuration*) → **Send Email hook** → **Add a new hook** → type **HTTPS**.
+   URL: `https://dev.fleetviewcompliance.com/api/auth/email` (the apex on
+   production). Press **Generate secret**; it produces `v1,whsec_<base64>`. Copy
+   it — it is shown once.
+3. Put that value in the Worker: `npx wrangler secret put SEND_EMAIL_HOOK_SECRET
+   -c wrangler.dev.jsonc` for dev, `npx wrangler secret put
+   SEND_EMAIL_HOOK_SECRET` for production. Locally it goes in `.dev.vars`.
+   Paste it whole, including the `v1,whsec_` prefix.
+4. **Enable** the hook in the dashboard only after the secret is deployed. The
+   endpoint refuses every request while the secret is missing, and a hook enabled
+   ahead of its secret means every signup fails with "error sending confirmation
+   email" until you catch up.
+5. **Cloudflare Access must bypass `/api/auth`**, the same exception `/api/cron`
+   and `/api/stripe` already have. Zero Trust → Access → Applications →
+   `dev.fleetviewcompliance.com` → add a **Bypass** policy for the path
+   `/api/auth` (everyone). Without it Access answers Supabase with its login page
+   and no auth email is ever sent on dev.
+6. Each project gets its **own** secret. They are separate hooks on separate
+   projects; there is nothing to share and a shared one is one more thing that
+   cannot be rotated independently.
+
+**Rotating it** is two steps in one sitting: press *Generate secret* again, then
+`wrangler secret put`. Between the two, auth email fails closed — signups error
+rather than going out unverified. Do it outside business hours.
+
+**What the endpoint refuses, and why it says so out loud.** A bad signature, a
+replayed request (five-minute window) and a body edited after signing all get a
+401. A guard refusal, a missing Resend key or a Resend failure get a 500 carrying
+the reason, which Supabase shows in the hook's log and surfaces to the person as
+an error on the form. A silent non-delivery is the one outcome that is not
+possible: this endpoint never answers 200 for mail it did not send.
+
+**The old containment still matters** while the hook is off, and is worth keeping
+either way:
 
 1. **Cloudflare Access in front of `dev.fleetviewcompliance.com`** (Zero Trust →
-   Access → Applications), restricted to your own addresses. This is the real
-   fix: nobody reaches the form, so nothing can be typed into it.
-2. **In the dev Supabase project, leave the built-in SMTP in place.** Supabase's
-   default sender only delivers to project team members, at a couple of messages
-   an hour — containment by accident, but real. **Do not configure a custom SMTP
-   (Resend, SendGrid) on the dev project.** The moment you do, its auth emails
-   reach anybody, and nothing in this repository can stop them.
+   Access → Applications), restricted to your own addresses — with the `/api/auth`
+   bypass above.
+2. **In the dev Supabase project, leave the built-in SMTP in place.** With the
+   hook enabled Supabase's sender is not used at all; if the hook is ever
+   disabled, the built-in sender's limit to project team members is the net that
+   catches it. **Do not configure a custom SMTP (Resend, SendGrid) on the dev
+   project** — that would remove the net.
 
 ### Password reset links — two settings, or the feature does not work
 
@@ -294,9 +356,12 @@ removes the cookie from the equation and the link works on any device.
 `/auth/new-password` already accepts both shapes, so this is a dashboard change
 with no deploy behind it.
 
-Reset emails are sent by Supabase, not by us, so everything in the section above
-applies to them: they do not pass through `guard.ts`, and on dev they are
-contained only by Supabase's built-in sender and by Cloudflare Access.
+With the Send Email Hook enabled, reset emails are composed and sent by
+`src/pages/api/auth/email.ts` and therefore DO pass through `guard.ts` — on dev
+they go to `DEV_REDIRECT_EMAIL` like everything else. The dashboard template
+above stops being used at that point: the hook builds the link itself. The
+allow-list in part 1 still matters, because `redirect_to` is still checked
+against it by Supabase before the payload reaches us.
 
 ### The FMCSA / USDOT lookups
 
@@ -455,6 +520,22 @@ read by request-handling code:
   carrier. It is read from the environment inside the job only; no page imports
   it, so a mistake in a page cannot reach it.
 
+One more is read only by an endpoint, never by a page:
+
+- `SEND_EMAIL_HOOK_SECRET` — the Supabase Send Email Hook's signing secret,
+  `v1,whsec_<base64>` exactly as the dashboard gives it. `/api/auth/email` is a
+  public URL with no session behind it, so this signature is its entire access
+  control: unverified, it would send mail from our verified domain, carrying a
+  real-looking confirmation link, to any address a stranger named. Missing or
+  malformed, the endpoint refuses every request — which stops auth email rather
+  than sending it unverified. Different in every environment. See "Supabase Auth
+  — brought under the guard by the Send Email Hook" above.
+
+All three of these, and `SEND_EMAIL_HOOK_SECRET` with them, are read through
+`runtimeEnv()` in `src/lib/billing/config.ts`: `cloudflare:workers` first,
+`process.env` second, and never `import.meta.env` under a computed key. See
+"Reading `import.meta.env` is not safe for secrets here" below.
+
 ## Migrations
 
 ```bash
@@ -475,6 +556,80 @@ a round trip locally.
 ```bash
 ALLOW_SEED=1 node scripts/seed-dev-user.mjs owner@fleetview.test testpass123
 ```
+
+`seed-dev-user.mjs` **deletes the matching `auth.users` row before inserting**,
+and that delete cascades to `profiles` → `memberships` → the carrier's whole
+tree. Re-running it against an address that already owns a carrier on dev
+destroys that carrier's drivers, vehicles and compliance records. It is safe for
+a brand-new address and dangerous for one that is already in use.
+
+## Demo data: the carrier the screenshots come from
+
+```bash
+node scripts/demo-data.mjs --dry              # do it all, roll it back, print the outcome
+node scripts/demo-data.mjs                    # apply (safe to repeat)
+node scripts/demo-data.mjs --report           # just print the dashboard's four buckets
+node scripts/demo-data.mjs --report --items   # and the rows behind them
+```
+
+Seeds **one synthetic carrier**, `RIO VISTA CARTAGE LLC` (DOT 3912847) — six
+tractors, two trailers, four drivers — and signs in as `demo@fleetview.test` /
+`fleetview-demo`. Everything in it is invented: 555-01xx phone numbers, VINs
+carrying `DEM` where a real WMI would be, `.test` email addresses.
+
+**It exists because the dashboard's top fold is what this product is sold with.**
+Against the carriers already on dev that fold draws about four fifths grey —
+"missing a date" — because those carriers are manual testing and nobody typed the
+dates in. A prospect reads that as a product nobody uses. The demo carrier draws
+roughly two thirds green with three genuinely overdue items.
+
+What it will and will not do:
+
+- **It never touches an existing carrier.** The three carriers already on dev
+  belong to people mid-test on them.
+- **It deletes nothing, ever**, and rewrites no compliance record. Dates go
+  through `planAnchorWrites` — the same function `/app`, `/app/drivers/[id]` and
+  `/app/vehicles/[id]` call — so the rows are supersede-then-insert rows the app
+  itself could have produced.
+- **Running it twice writes nothing the second time.** `planAnchorWrites` reports
+  a date already on file as `unchanged`; drivers key on the CDL number and
+  vehicles on the unit number, so both are found rather than duplicated.
+- **It refuses to run against production**, on four independent checks, all
+  failing closed: `DEPLOY_ENV` must be `development`; `PUBLIC_SUPABASE_URL` must
+  name the dev project ref; `PUBLIC_SITE_URL` must not be a production host
+  (matched on the host, so `dev.fleetviewcompliance.com` passes); and the
+  database connection itself must carry the dev project ref. There is no flag
+  that skips any of them.
+- **The fixture is checked against the rule engine before a single row is
+  written.** Impossible calendar dates, a `last_done` anchor dated in the future,
+  an annual review signed before the MVR it reviews, a CDL not expiring on the
+  driver's birthday, a key `UNWRITABLE_ANCHOR_KEYS` forbids, and — the one worth
+  naming — **an anchor no rule will read for that subject, such as a Clean Truck
+  Check date on a trailer.** The permitted key set per unit is derived from
+  `evaluate()` itself, not from a second list in the script.
+
+`TODAY` is pinned at the top of the script and every date is chosen relative to
+it. Move it and re-read `--report`: the fixture is a snapshot of a working yard,
+not a rolling window, so left alone long enough it will drift towards "everything
+is overdue".
+
+### The amber bucket over-counts, and it is not the data
+
+Twenty of the twenty-five items in **Due in 45 days** are one-time driver
+obligations that were completed *years* ago — the DQF, the road test, the
+pre-employment Clearinghouse query, the hire MVR, the previous-employer
+investigation. `status()` returns them as `current` with a `nextDue` in the past
+(hire date, or hire + 30 days), `evaluate` turns that into a negative
+`daysUntil`, and `buildHealth` sorts anything at or under `SOON_DAYS` into
+`soon`. The list prints them as `Feb 15, 2021 · 2040 days ago` under a heading
+that says the next 45 days.
+
+No arrangement of dates avoids it: a one-time obligation anchored to employment
+can never have a due date in the future for a driver who already works here. The
+only alternative is to leave those anchors blank, which moves the same twenty
+rows into the grey bucket instead. **It is a bucketing bug in
+`src/lib/charts/health.ts`, not a seeding one**, and it is the largest remaining
+blemish on the screenshot.
 
 ## When the dev server serves `Error` on every route
 

@@ -78,19 +78,34 @@ test('a code is six digits and keeps its leading zeros', () => {
 })
 
 test('codes are drawn from the whole space, not a corner of it', () => {
-  // Not a randomness test — a smoke alarm. A generator that had lost its leading
-  // zeros, or was folding a 32-bit draw into too small a range, shows up here as
-  // a suspiciously narrow spread. 400 draws from a million values should
-  // essentially never repeat.
+  // Not a randomness test — a smoke alarm for a generator that folded a 32-bit
+  // draw into too small a range, which shows up here as a suspiciously narrow
+  // spread. (A generator that lost its leading zeros is caught by the six-digit
+  // test above, not by this one — a short code still spreads fine.)
+  //
+  // A repeat is not the alarm; a pile of them is. Any 4000 draws from 10^6 collide
+  // about 8 times by the birthday paradox alone, which is why the older form of
+  // this test — 400 draws, no repeat allowed — went red on 8% of clean runs. The
+  // threshold below sits far above that noise (a clean generator trips it about
+  // once in two billion runs) and far below a real fault: a space even ten times
+  // too small averages 80 repeats at this draw count, and fails here every time.
+  const DRAWS = 4000
   const seen = new Set<string>()
   let low = 0
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < DRAWS; i++) {
     const code = newClaimCode()
     seen.add(code)
     if (Number(code) < 500_000) low++
   }
-  assert.equal(seen.size, 400, 'a repeat in 400 draws means the space is far smaller than 10^6')
-  assert.ok(low > 120 && low < 280, `half the space should get roughly half the draws, got ${low}`)
+  const repeats = DRAWS - seen.size
+  assert.ok(
+    repeats <= 30,
+    `${repeats} repeats in ${DRAWS} draws means the space is far smaller than 10^6`,
+  )
+  assert.ok(
+    low > 1750 && low < 2250,
+    `half the space should get roughly half the draws, got ${low}`,
+  )
 })
 
 test('anything that is not six digits is not a code', () => {

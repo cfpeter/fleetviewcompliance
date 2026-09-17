@@ -20,3 +20,37 @@
 
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
+
+/* ---------------------------------------------------------------- navigation
+
+   Why every click still loads a whole page, and what this softens.
+
+   There is no client-side router in this application and that is deliberate:
+   the site ships no JavaScript beyond three print buttons, so a link is a real
+   document request and a form is a POST and a 303. It is what makes the app
+   work on a phone with one bar at a truck stop, and what makes a refresh after
+   a form submission harmless. The cost is the white flash between pages, which
+   reads as the app reloading itself every time you touch it.
+
+   This is the fix that does not give any of that up. The browser crossfades
+   between the old page and the new one ITSELF — no router, no JavaScript, not
+   one byte shipped. The navigation is exactly as before; only the flash goes.
+
+   A browser without cross-document view transitions ignores these rules and
+   behaves precisely as it does today, so there is nothing to fall back to and
+   nothing to test twice.
+*/
+@view-transition {
+  navigation: auto;
+}
+
+/* Somebody who has asked their operating system for less motion has asked for
+   this too. The transition still happens — it just happens instantly, which is
+   the same page swap they get today. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
