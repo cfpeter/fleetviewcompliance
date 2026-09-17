@@ -7,5 +7,17 @@ dist/
 .env
 .env.*
 !.env.example
+# .dev.vars USED TO BE TRACKED, ON PURPOSE, BECAUSE IT HELD NO SECRET — only
+# DEPLOY_ENV=development, the guard that stops a local run mailing real
+# carriers. It holds the real dev secrets now: the two routes that read the
+# environment by a computed key no longer fall back to `import.meta.env`, which
+# Vite inlined into the bundle wholesale, so .env stopped reaching the Worker in
+# local dev and this is the file that reaches it instead. A tracked file of
+# secrets is the bug that change exists to fix, so it is ignored from the moment
+# it carries one. .dev.vars.example stays in git with the guard line and the
+# notes for recreating it.
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
 *.credentials.local
 .DS_Store

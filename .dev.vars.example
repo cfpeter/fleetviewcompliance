@@ -1,0 +1,55 @@
+# Copy to .dev.vars (gitignored) and fill in. LOCAL DEVELOPMENT ONLY.
+#
+# WHAT THIS FILE IS FOR. wrangler/miniflare reads .dev.vars under `astro dev`
+# and `wrangler dev` and binds every line into the Worker environment, the same
+# way `wrangler secret` binds a value in a real deployment. Nothing here is
+# compiled into a bundle.
+#
+# WHY IT IS NOT .env. Vite replaces the whole `import.meta.env` expression with
+# an object literal holding every variable .env carried, so anything read that
+# way is a plaintext literal inside dist/server. The routes that read the
+# environment — src/pages/api/cron/digest.ts, src/pages/app/setup.astro,
+# src/lib/billing/config.ts — read `cloudflare:workers` and fall back to
+# `process.env`, neither of which Vite touches. The cost is that .env does not
+# reach the Worker in local dev. This file does.
+#
+# .env keeps the PUBLIC_* values and everything Node-side reads directly:
+# tests (tests/helpers.ts parses it), migrations, the deploy scripts.
+
+# THE SEND GUARD. KEEP IT, AND KEEP IT FIRST.
+#
+# `astro dev` loads wrangler.jsonc — the PRODUCTION config — which sets
+# DEPLOY_ENV to "production". src/lib/notify/guard.ts treats that as the one
+# value that permits sending to a real recipient, so without this line a local
+# run mails real carriers about deadlines that are not theirs. Everything else
+# in this file is what makes sending possible, so a missing .dev.vars leaves a
+# clone unable to send at all rather than able to send to the wrong people.
+DEPLOY_ENV=development
+
+# Scheduled jobs. Without it /api/cron/digest refuses to run rather than
+# defaulting to unauthenticated.
+CRON_SECRET=
+# The one legitimate privileged key: a cron run has no signed-in user and must
+# read across every carrier.
+SUPABASE_SECRET_KEY=
+
+# USDOT claim verification, at least 32 characters, DIFFERENT in every
+# environment. Without it /app/setup cannot mint a code and says so.
+CLAIM_CODE_PEPPER=
+
+# Outbound email and SMS. While DEPLOY_ENV is not "production" every message is
+# redirected to the two addresses below, and if those are blank nothing is sent.
+RESEND_API_KEY=
+DIGEST_FROM_EMAIL=
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_FROM_NUMBER=
+DEV_REDIRECT_EMAIL=
+DEV_REDIRECT_PHONE=
+
+# Stripe, read by src/lib/billing/config.ts. Test-mode values only here:
+# readStripeConfig refuses an sk_live_ key wherever DEPLOY_ENV is not
+# "production". Leave blank to run with card payment switched off.
+STRIPE_SECRET_KEY=
+STRIPE_PRICE_ID=
+STRIPE_WEBHOOK_SECRET=

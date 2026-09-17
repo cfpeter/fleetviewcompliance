@@ -35,15 +35,13 @@
 	"r2_buckets": [
 		{
 			"binding": "DOCUMENTS",
-			"bucket_name": "fleetview-documents",
-			"remote": true
+			"bucket_name": "fleetview-documents"
 		}
 	],
 	"kv_namespaces": [
 		{
 			"binding": "SESSION",
-			"id": "14d4638ba71e4a6990fe6da7d25cabf4",
-			"remote": true
+			"id": "14d4638ba71e4a6990fe6da7d25cabf4"
 		}
 	],
 	// NOTE ON ENVIRONMENTS — do not add an "env" block here.
