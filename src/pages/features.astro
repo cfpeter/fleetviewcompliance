@@ -15,61 +15,52 @@ const sections = [
   {
     eyebrow: 'Deadlines',
     title: 'One list, soonest first',
-    body: `Every recurring obligation your fleet carries in a single ordered list — ${coverage.federal} federal rules that apply wherever you run, and ${coverage.california} California ones layered on top. Not a calendar you have to read — a queue you work down.`,
+    body: `Every date your fleet has to meet, in one list, with the soonest date first. ${coverage.federal} federal rules that apply wherever you run, and ${coverage.california} California rules on top.`,
     points: [
-      ['Drivers — federal', 'Medical certificates and their shorter 3-month and 1-year variants, CDL expiry, the annual MVR inquiry and the review note that has to accompany it, Clearinghouse queries, and the 30-day clock on a new hire’s previous-employer checks. Every one of these is a federal rule, so it reads the same in any state.'],
-      ['Trucks', 'Annual DOT inspection and the report you have to keep, federally. In California, on top of that: CVRA weight decals, Clean Truck Check testing windows and the fee that goes with them, and your CHP terminal inspection cycle.'],
-      ['The carrier', 'MCS-150 biennial update, UCR, Form 2290, operating authority and insurance on file — all federal. Then the Motor Carrier Permit, the quarterly fuel-tax return and the apportioned-plate renewal, as California administers them — those dates are keyed to a California base jurisdiction, not to yours.'],
+      ['Drivers, federal', 'Medical certificates, including the shorter 3-month and 1-year cards. CDL expiry. The annual MVR check and the signed review note that goes with it. Clearinghouse queries. And the 30-day limit to get the previous-employer checks on a new driver. These are all federal rules, so they are the same in every state.'],
+      ['Trucks', 'The annual DOT inspection and the report you have to keep. Those are federal. In California you also get CVRA weight decals, Clean Truck Check testing windows and the fee that goes with them, and your CHP terminal inspection dates.'],
+      ['The carrier', 'MCS-150 update every two years, UCR, Form 2290, operating authority and insurance on file. Those are federal. Then the Motor Carrier Permit, the quarterly fuel-tax return and the apportioned-plate renewal, the way California runs them. Those dates are for carriers based in California, not for other states.'],
     ],
   },
   {
     eyebrow: 'Alerts',
-    title: 'Told early, not told constantly',
-    body: 'The failure mode for software like this is not missing an alert. It is sending so many that you mute it, and then missing the one that mattered.',
+    title: 'Told early, not told all day',
+    body: 'Too many alerts are as bad as none. If we write to you all day, you stop reading us. Today we send email. Text messages are not on yet, and we will not sell you something we cannot send.',
     points: [
-      ['One digest, not fourteen emails', 'Compliance items arrive in a single morning summary. Only genuinely overdue items interrupt you by text.'],
-      ['Your schedule, your people', 'Choose the lead times and the channel per deadline type, and who gets it. The medical cards can go to the office; the authority problems can go to you.'],
-      ['Quiet hours', 'We do not text you at 2am about a renewal due in a month. Critical items can still break through, and you can see exactly which ones are allowed to.'],
-      ['Snooze that sticks', 'An overdue item you have already handled stops nagging, and we record that you snoozed it and when.'],
-    ],
-  },
-  {
-    eyebrow: 'Custom reminders',
-    title: 'The dates that are yours alone',
-    body: 'Your insurance broker wants a call every March. Your best customer audits you every June. Your yard lease renews. None of that is in any regulation, and all of it costs you if it slips.',
-    points: [
-      ['Add anything', 'A name, a date, how often it repeats, who to tell and how far ahead. It lives in the same list as everything else.'],
-      ['Attach it to anything', 'To a driver, a truck, a customer, or to nothing at all.'],
+      ['One email a day, not fourteen', 'Your deadlines come in one email each morning. You do not get a separate email for every item.'],
+      ['Your days, your people', 'For each kind of deadline, pick how many days ahead you want to know and who gets the email. Medical cards can go to the office. Authority problems can go to you.'],
+      ['Quiet hours', 'Nothing arrives at 2am about a renewal due next month. Urgent items can still come through, and you can see exactly which ones are allowed to.'],
+      ['Snooze', 'If you already handled an overdue item, snooze it and it stops asking. We record that you snoozed it and when.'],
     ],
   },
   {
     eyebrow: 'Loads',
     title: 'Booked, dispatched, delivered, paid',
-    body: 'Real loads have several stops, a broker reference number that differs from yours, and detention terms buried in the rate confirmation. We store all three as fields, not as a PDF you have to reread.',
+    body: 'Real loads have several stops. The broker load number is not the same as yours. The detention terms are buried in the rate confirmation. We keep all three as fields you can read and search, not as a PDF you have to open again.',
     points: [
-      ['Multi-stop by default', 'Pickups, deliveries, drops and hooks in order, each with its own appointment window and reference numbers — and whether it is a hard appointment or first-come-first-served, because those fail differently.'],
-      ['Detention terms as data', 'Free hours, hourly rate, and whether the broker requires pre-approval. That last one is where small carriers lose money.'],
-      ['Delivered and unbilled are different things', 'Operational status and billing status move independently, so a load can be delivered, sitting on an unsent invoice, and show up correctly in both places.'],
-      ['Search by their number', 'Because the number on the paperwork in front of you is the broker’s, not yours.'],
+      ['Many stops, as standard', 'Pickups, deliveries, drops and hooks in order. Each stop has its own appointment window and its own reference numbers. You also mark if it is a set appointment or first come, first served, because those two go wrong in different ways.'],
+      ['Detention terms as fields', 'Free hours, hourly rate, and whether the broker needs to approve it first. That last one is where small carriers lose money.'],
+      ['Delivered is not the same as paid', 'The delivery status and the billing status are separate. A load can be delivered and still sitting on an invoice you have not sent, and both screens show it correctly.'],
+      ['Search by the broker number', 'The number on the paper in front of you is usually the broker number, not yours. You can search by it.'],
     ],
   },
   {
     eyebrow: 'Dispatch',
-    title: 'The screen that knows the rules',
-    body: 'This is the part no one else in this price range does.',
+    title: 'Dispatch checks the rules for you',
+    body: 'Other software at this price does not do this.',
     points: [
-      ['A blocked assignment, not a report', 'If a driver’s medical card expired last week, you cannot assign him a load. You find out at the moment you are making the decision, not in a summary you read next month.'],
-      ['Driver, tractor and trailer separately', 'Because trailers get dropped and swapped, and power-only loads have no trailer of yours at all.'],
-      ['Deadhead counted honestly', 'Revenue per loaded mile flatters you. We show it next to revenue per total mile, and default to the total.'],
+      ['It blocks the assignment, it does not write a report', 'If a driver medical card expired last week, you cannot give him a load. You find out while you are making the decision, not in a summary you read next month.'],
+      ['Driver, tractor and trailer are separate', 'Trailers get dropped and swapped, and power-only loads use no trailer of yours at all.'],
+      ['Deadhead counted honestly', 'Revenue per loaded mile makes your numbers look better than they are. We show it next to revenue per total mile, and we show the total by default.'],
     ],
   },
   {
     eyebrow: 'Proof',
     title: 'Something you can hand over',
-    body: 'A broker, an underwriter, or an officer at a scale asks what you have. A printable packet, dated, listing what we observed and when.',
+    body: 'A broker, an insurance company or an officer at a scale asks what you have. You print one dated packet that says what we saw and when.',
     points: [
-      ['Assembled in the order they read it', 'Driver qualification files laid out the way 49 CFR 391.51 lists them, with present, missing and expired marked, and the gaps summarised on the first page.'],
-      ['It links out', 'To the federal record, so the person reading it can check us rather than take our word.'],
+      ['In the order they read it', 'Driver qualification files in the order 49 CFR 391.51 lists them. Each item is marked present, missing or expired, and the missing ones are listed on the first page.'],
+      ['It links to the federal record', 'So the person reading it can check us instead of taking our word.'],
     ],
   },
 ]
@@ -80,27 +71,27 @@ const notYet = [
   // miss — the rest of this section is about things nobody expects us to do.
   [
     'State rules outside California',
-    `The ${coverage.federal} federal rules follow you into every state, and they are most of the catalogue. But California is the only state layer built so far. If your state adds an inspection, a permit or a filing of its own, it is not in here yet and we will not imply that it is. Other states are next, and because a rule is data — a citation, a schedule, and what proves it was done — adding one is rule rows rather than a new product.`,
+    `The ${coverage.federal} federal rules apply in every state, and they are most of the list. But California is the only state we have added so far. If your state has its own inspection, permit or filing, it is not in here yet, and we will not suggest that it is. Other states are next. For us a rule is data: the rule number, the schedule, and what proves you did it. So adding a state means adding rules, not building a new product.`,
   ],
-  ['Automatic date reading from photos', 'An extracted date that is quietly wrong is worse than no feature. Not until the review step is genuinely fast.'],
-  ['Clearinghouse queries on your behalf', 'The rules forbid a service using your login, and prohibit blanket consent outright. We track when yours are due and hold the proof you ran them.'],
-  ['Filing anything', 'We track and remind. We are not a law firm and will not pretend to be one.'],
-  ['An ELD', 'You already have one. We read hours from Motive, Samsara and others instead.'],
+  ['We do not read dates from photos', 'A date read wrong and shown as correct is worse than no feature at all. We will add this when checking it is fast.'],
+  ['We cannot run your Clearinghouse queries', 'The rules do not allow a service to use your login, and blanket consent is not allowed either. We track when your queries are due and we keep the proof that you ran them.'],
+  ['We do not file anything for you', 'We track your dates and we remind you. We are not a law firm and we will not act like one.'],
+  ['We are not an ELD', 'You already have one. We read hours from Motive, Samsara and others instead.'],
 ]
 ---
 
 <Public
   title="Features"
-  description="Deadline tracking, loads, trips and alerts for small US trucking fleets. Federal rules in every state, plus the California layer."
+  description="Deadline tracking, loads, trips and email alerts for small US trucking fleets. Federal rules in every state, plus the California rules."
 >
   <section class="border-b border-ink-100 bg-ink-50">
     <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-20">
       <h1 class="max-w-3xl text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
-        Everything that expires, and everything that moves.
+        Your deadlines and your loads, in one place.
       </h1>
       <p class="mt-4 max-w-2xl text-lg text-ink-500">
-        Two halves of the same job. The compliance calendar is only useful if someone opens it,
-        and people open the thing that has the loads in it.
+        A deadline list only helps you if you open it. So we put it in the same app you use to
+        run your loads, and you see both every day.
       </p>
     </div>
   </section>
@@ -128,8 +119,8 @@ const notYet = [
   <section class="mx-auto max-w-6xl px-4 py-14 sm:px-6">
     <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">What we do not do</h2>
     <p class="mt-3 max-w-2xl text-ink-500">
-      Worth saying plainly — the first because it is the edge of what we cover, the rest
-      because other people will happily sell them to you.
+      The first one is the edge of what we cover. The rest are things other companies will try
+      to sell you.
     </p>
     <div class="mt-8 grid gap-4 sm:grid-cols-2">
       {

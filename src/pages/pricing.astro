@@ -48,63 +48,61 @@ const pill = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
 const included = [
   'Every federal and California deadline we track',
   'Unlimited drivers, trucks and trailers',
-  'Unlimited users — the whole office, at no extra cost',
-  'Email and text alerts, on your schedule',
-  'Your own custom reminders',
-  'Document storage with expiry tracking',
+  'Unlimited users, so the whole office can log in at no extra cost',
+  'Email alerts, on your schedule. Text messages are coming later',
   'Loads, trips and dispatch',
   'The printable proof packet',
-  'Your carrier record pulled from FMCSA, and re-checked weekly',
+  'Your carrier record from FMCSA, checked again every week',
 ]
 
 const faqs = [
   {
     q: 'Why per truck and not per user?',
-    a: 'Because the two people who must both be in this system are the owner and whoever runs the office — and charging per user taxes exactly that. Every plan includes unlimited users. If you hire a second dispatcher, your bill does not change.',
+    a: 'Two people need to be in this system: the owner and the person who runs the office. Charging per user would punish you for that. Every plan has unlimited users. If you hire a second dispatcher, your bill stays the same.',
   },
   {
     q: 'What happens when I add or sell a truck?',
     // Said out loud because the estimator now shows it: a three-truck fleet
     // adding a fourth sees no change at all, and copy promising "six dollars"
     // would read as the page contradicting its own calculator.
-    a: `The bill moves by six dollars — unless you are on the $${site.pricing.floor} minimum, where it does not move at all until your fifth truck. There are no tiers to cross and no jump at a boundary, and that is deliberate. A pricing cliff would give you a reason to not tell your compliance software about a truck, which is the last thing either of us wants.`,
+    a: `Your bill goes up or down by $${site.pricing.perTruck}. If you are on the $${site.pricing.floor} minimum, it does not change at all until your fifth truck. There are no tiers and no jump at any size. We did that on purpose. A price jump would give you a reason to hide a truck from your compliance software, and neither of us wants that.`,
   },
   {
     q: `What if I run more than ${maxQuoted} trucks?`,
-    a: `The rate is the same — $${site.pricing.perTruck} a truck, and there is no tier above you. The estimator stops at ${maxQuoted} because that is the top of the size we have actually built and tested for, and a number we have never sold at is not a quote. Start the trial and talk to us; nothing is billed for ${site.pricing.trialDays} days either way.`,
+    a: `The price is the same: $${site.pricing.perTruck} a truck, and there is no higher tier. The calculator stops at ${maxQuoted} because that is the biggest fleet we have built and tested for. We do not want to give you a number we have never sold at. Start the trial and talk to us. Either way, nothing is billed for ${site.pricing.trialDays} days.`,
   },
   {
     q: 'What counts as a truck?',
-    a: 'A power unit — a tractor or a straight truck. Trailers are free, and so are drivers. Count the things with engines.',
+    a: 'A power unit: a tractor or a straight truck. Trailers are free and drivers are free. Count the ones with an engine.',
   },
   {
     q: 'Is there a contract?',
-    a: 'No. Monthly, cancel whenever. If you leave, you can export your records first — they are yours.',
+    a: 'No. You pay monthly and you can cancel any month. If you leave, you can export your records first. They are yours.',
   },
   {
     q: 'What is not included?',
-    a: 'We do not file anything for you, we cannot run your Drug and Alcohol Clearinghouse queries (the rules forbid us using your login, and you should be wary of anyone who offers), and we are not an ELD. We track, remind, and keep your proof.',
+    a: 'We do not file anything for you. We cannot run your Drug and Alcohol Clearinghouse queries, because the rules do not allow us to use your login. Be careful with anyone who offers. And we are not an ELD. We track your dates, remind you, and keep your proof.',
   },
   {
     q: 'Do you charge to get set up?',
-    a: 'No setup fee. We pull what the federal record already knows from your DOT number, and the rest is the dates that live in your office — which is an evening of work, once.',
+    a: 'There is no setup fee. We read what the federal record already knows from your DOT number. You add the dates that are only in your office. That is about one evening of work, one time.',
   },
 ]
 ---
 
 <Public
   title="Pricing"
-  description="$6 per truck per month, $29 minimum, unlimited users. No contract, 30-day free trial, no card required."
+  description={`$${site.pricing.perTruck} per truck per month, $${site.pricing.floor} minimum, unlimited users. No contract, ${site.pricing.trialDays} days free, no card needed.`}
 >
   <section class="border-b border-ink-100 bg-ink-50">
     <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-20">
       <h1 class="text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
-        Six dollars a truck. That is the whole price.
+        ${site.pricing.perTruck} a truck, a month. That is the whole price.
       </h1>
       <p class="mt-4 max-w-2xl text-lg text-ink-500">
-        Minimum ${site.pricing.floor} a month, so the smallest fleets are not priced out.
-        Unlimited users. No contract. {site.pricing.trialDays} days free, and we do not ask for a
-        card to start.
+        The minimum is ${site.pricing.floor} a month, so small fleets can afford it. Unlimited
+        users. No contract. {site.pricing.trialDays} days free, and you do not need a card to
+        start.
       </p>
     </div>
   </section>
@@ -117,8 +115,8 @@ const faqs = [
         <div class="max-w-md">
           <h2 class="text-2xl font-semibold tracking-tight">What would it cost you?</h2>
           <p class="mt-2 text-sm text-ink-500">
-            Count power units — tractors and straight trucks. Trailers, drivers and office staff
-            are free, so leave them out of the number.
+            Count power units: tractors and straight trucks. Trailers, drivers and office staff
+            are free, so do not count them.
           </p>
         </div>
 
@@ -211,22 +209,22 @@ const faqs = [
             <p class="mt-4 text-sm text-ink-500">
               <span class="tabular-nums">${estimate.effectivePerTruck.toFixed(2)}</span> per truck.
               {estimate.onFloor
-                ? ` The $${site.pricing.floor} minimum is what you pay until the fifth truck — which
-                  is the one that costs you a dollar.`
-                : ` Every truck after this adds $${site.pricing.perTruck}, with no boundary to cross
-                  on the way up.`}
+                ? ` You pay the $${site.pricing.floor} minimum until your fifth truck. The fifth
+                  truck is the first one that adds a dollar.`
+                : ` Each truck after this adds $${site.pricing.perTruck}. There are no tiers on the
+                  way up.`}
             </p>
             <p class="mt-2 text-xs text-ink-500">
-              That is the whole bill at that size: unlimited users, unlimited drivers and trailers,
+              That is the whole bill at that size. Unlimited users, unlimited drivers and trailers,
               no setup fee, no contract.
             </p>
             {/* The one thing this page does NOT know, said next to the number
             rather than under the fold: we priced a number he typed, and the
             bill follows the units actually on the account. */}
             <p class="mt-1 text-xs text-ink-500">
-              We are pricing the number you typed. The real bill counts the power units on your
-              account — ${site.pricing.perTruck} each, either direction, the month it changes — and
-              nothing is charged for the first {site.pricing.trialDays} days.
+              This price is for the number you typed. Your real bill counts the power units on your
+              account. Add or remove one and the bill changes by ${site.pricing.perTruck} that
+              month. Nothing is charged for the first {site.pricing.trialDays} days.
             </p>
             <a
               href="/check"
@@ -243,15 +241,15 @@ const faqs = [
           <div class="mt-5 rounded-xl border border-blue-100 bg-blue-50 p-5 sm:p-6">
             {/* Blue, not amber: this is a standing fact about us, not a clock. */}
             <p class="font-medium text-blue-900">
-              <span class="tabular-nums">{estimate.trucks}</span> trucks is past what we quote on a
-              web page.
+              We do not quote <span class="tabular-nums">{estimate.trucks}</span> trucks on this
+              page.
             </p>
             <p class="mt-2 text-sm text-blue-900/80">
-              The rate does not change and there is no tier above you — it is still $
-              {site.pricing.perTruck} a truck. What changes is that {maxQuoted} is the top of the
-              size we have built and tested for, and multiplying past it would hand you a number
-              nobody here has ever sold at. We would rather say that than walk a quote back on the
-              first call.
+              The price does not change and there is no tier above you. It is still $
+              {site.pricing.perTruck} a truck. But {maxQuoted} trucks is the biggest fleet we have
+              built and tested for. If we multiplied past that, we would be giving you a number we
+              have never sold at. We would rather tell you now than take back a quote on the first
+              call.
             </p>
             <p class="mt-3 text-sm text-blue-900/80">
               Start with your DOT number and we will talk before anything is billed, or{' '}
@@ -270,8 +268,8 @@ const faqs = [
       {
         estimate.state === 'unreadable' && (
           <p class="mt-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            We could not read that as a number of trucks. Give us a whole number — 12, not “a
-            dozen” — and we will price it.
+            We could not read that as a number of trucks. Type a whole number, like 12, and we
+            will show you the price.
           </p>
         )
       }
@@ -280,8 +278,8 @@ const faqs = [
         estimate.state === 'none' && (
           <div class="mt-5 rounded-xl border border-dashed border-ink-100 p-8 text-center">
             <p class="mx-auto max-w-md text-sm text-ink-500">
-              Pick a size, or type yours in. Whatever you land on stays in the address bar, so the
-              link is safe to send to whoever signs the checks.
+              Pick a size, or type your own. The price you land on stays in the web address, so
+              you can send the link to whoever signs the checks.
             </p>
           </div>
         )
@@ -304,7 +302,7 @@ const faqs = [
         >
           Start with your DOT number →
         </a>
-        <p class="mt-3 text-xs text-ink-500">No card. Nothing to cancel if you walk away.</p>
+        <p class="mt-3 text-xs text-ink-500">No card needed. Nothing to cancel if you walk away.</p>
       </div>
 
       <div class={card}>
@@ -345,8 +343,8 @@ const faqs = [
           </table>
         </div>
         <p class="mt-4 text-xs text-ink-500">
-          Small fleets sit on the ${site.pricing.floor} floor, so the per-truck figure starts high
-          and settles at ${site.pricing.perTruck}.
+          Small fleets pay the ${site.pricing.floor} minimum, so the price per truck starts higher
+          and comes down to ${site.pricing.perTruck}.
         </p>
       </div>
     </div>
@@ -374,25 +372,26 @@ const faqs = [
           }
         </ul>
         <p class="mt-4 text-xs text-ink-500">
-          Same product at every size. Nothing is locked behind a bigger plan.
+          Every size gets the same product. Nothing is locked behind a bigger plan.
         </p>
       </div>
 
       <div class={card}>
         <p class="font-medium">How that compares</p>
         <p class="mt-3 text-sm text-ink-500">
-          A ten-truck fleet pays <strong class="tabular-nums text-ink-900">$60</strong> a month
-          here. The dispatch software built for fleets your size generally starts around
-          <strong>$290 a month and is charged per user</strong>, on an annual contract, and most
-          of it will not quote you a price without a sales call.
+          A fleet with 10 trucks pays{' '}
+          <strong class="tabular-nums text-ink-900">${monthlyPrice(10)}</strong> a month here.
+          Dispatch software built for fleets your size usually starts around{' '}
+          <strong>$290 a month, charged per user</strong>, on a one-year contract. Most of them
+          will not tell you the price without a sales call.
         </p>
         <p class="mt-3 text-sm text-ink-500">
-          You are probably already paying $25–$40 per truck each month for ELDs. This is under a
-          fifth of that.
+          You probably already pay $25 to $40 per truck each month for ELDs. This costs less than
+          a quarter of that.
         </p>
         <p class="mt-4 text-xs text-ink-300">
-          Competitor pricing is from published rate cards and public reviews as of September 2026.
-          We will correct anything a vendor shows us is out of date.
+          Competitor prices come from published rate cards and public reviews, as of September
+          2026. If a vendor shows us a price is out of date, we will fix it.
         </p>
       </div>
     </div>

@@ -71,8 +71,8 @@ const fail = (message: string) => back(`error=${encodeURIComponent(message)}`)
 const toList = (message: string) =>
   Astro.redirect(`/app/settlements?error=${encodeURIComponent(message)}`, 303)
 
-const NOT_YOURS = 'That settlement is not one of yours.'
-const LOCKED = 'That settlement has been paid and cannot be changed. Revise it instead.'
+const NOT_YOURS = 'That settlement is not in your account.'
+const LOCKED = 'This settlement is paid and locked. You cannot change it. Make a revision instead.'
 
 // A hand-edited URL is not a missing row, it is a failed uuid cast: Postgres
 // raises and the office manager gets "invalid input syntax for type uuid" across
@@ -266,7 +266,7 @@ if (Astro.request.method === 'POST') {
     // second-most expensive thing this module can get wrong.
     if (agreementsInForce([agreement], settlement.period_end).length === 0) {
       return fail(
-        `"${agreement.label}" was not in force on ${formatDate(settlement.period_end)}, so it cannot be settled for this period.`,
+        `"${agreement.label}" was not in force on ${formatDate(settlement.period_end)}, the last day of this period. You cannot pay from it here.`,
       )
     }
 
@@ -280,7 +280,7 @@ if (Astro.request.method === 'POST') {
 
     if (agreement.method === 'percentage') {
       loadId = String(form.get('load_id') ?? '') || null
-      if (!loadId) return fail('Pick the load this percentage is of.')
+      if (!loadId) return fail('Pick the load this percentage is taken from.')
       const { data: loadData, error: loadError } = await supabase
         .from('loads')
         .select('id, linehaul_cents, fuel_surcharge_cents, accessorials_cents')
@@ -320,7 +320,7 @@ if (Astro.request.method === 'POST') {
     // as "this run paid nothing" on a statement, and the driver is the one who
     // finds it.
     if (outcome.kind === 'incomplete') return fail(outcome.reason)
-    if (outcome.kind === 'no_input') return fail('Nothing to pay on.')
+    if (outcome.kind === 'no_input') return fail('There is nothing to pay on.')
 
     const { error } = await supabase.from('settlement_lines').insert({
       ...lineInsert(outcome.line, loadId),
@@ -417,7 +417,7 @@ if (Astro.request.method === 'POST') {
 
   if (intent === 'mark_paid') {
     const paidOn = String(form.get('paid_on') ?? '')
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(paidOn)) return fail('When was it paid?')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(paidOn)) return fail('Enter the date it was paid.')
 
     // An empty statement locks just as hard as a full one, and unlocking it
     // means a revision — so a settlement nobody has put a line on is almost
@@ -484,7 +484,7 @@ if (Astro.request.method === 'POST') {
     // for — two statements for one week is exactly the thing a driver notices
     // and nobody in the office does.
     if (!locked) {
-      return fail('This settlement is still open — edit it instead of revising it.')
+      return fail('This settlement is still open. Edit it instead of making a revision.')
     }
     if (settlement.superseded_at) {
       return fail('This settlement has already been revised. Open the revision from the list.')
@@ -736,13 +736,13 @@ const notice = params.has('created')
     : params.has('removed')
       ? 'Line removed.'
       : params.has('approved')
-        ? 'Approved. It is still editable until you mark it paid.'
+        ? 'Approved. You can still change it until you mark it paid.'
         : params.has('reopened')
           ? 'Back to draft.'
           : params.has('paid')
-            ? 'Marked paid and locked. A correction now needs a revision.'
+            ? 'Marked paid and locked. To correct it now, make a revision.'
             : params.has('voided')
-              ? 'Voided. It stays on the list so it can be pointed at.'
+              ? 'Voided. It stays on the list so you can still point at it.'
               : params.has('revised')
                 ? 'This is the revision. The paid statement it replaces is unchanged.'
                 : params.has('saved')
@@ -775,11 +775,11 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
     {
       drift && (
         <p class="mb-5 rounded-lg bg-red-100 px-4 py-3 text-sm text-red-800">
-          The frozen total on this paid settlement
+          The paid total on this settlement
           (<span class="tabular-nums">{formatCents(settlement.net_cents)}</span>) does not match
           what its lines add up to
-          (<span class="tabular-nums">{formatCents(totals.netCents)}</span>). That cannot happen
-          through this app — somebody has changed the database by hand.
+          (<span class="tabular-nums">{formatCents(totals.netCents)}</span>). This cannot happen
+          through the app. Somebody changed the database by hand.
         </p>
       )
     }
@@ -834,7 +834,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
             href={`/app/drivers/${driver.id}/pay`}
             class="text-sm font-medium text-brand-600 hover:underline"
           >
-            His pay agreements →
+            Pay agreements for this driver →
           </a>
         )
       }
@@ -848,7 +848,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
         <div>
           <h2 class="text-2xl font-semibold tracking-tight">Settlement statement</h2>
           <p class="mt-1 text-sm text-ink-500">
-            Not a payroll document. No tax has been withheld and nothing has been filed.
+            This is not a payroll document. No tax was taken out. Nothing was filed.
           </p>
         </div>
         <div class="text-right text-sm">
@@ -937,19 +937,19 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
     <div class="mt-6 border-t-2 border-ink-900 pt-4" data-block>
       <dl class="ml-auto max-w-sm space-y-1.5 text-sm">
         <div class="flex justify-between gap-6">
-          <dt class="text-ink-500">Earnings</dt>
+          <dt class="text-ink-500">Earnings (added)</dt>
           <dd class="tabular-nums">{formatCents(totals.earningsCents)}</dd>
         </div>
         <div class="flex justify-between gap-6">
-          <dt class="text-ink-500">Reimbursements</dt>
+          <dt class="text-ink-500">Reimbursements (added)</dt>
           <dd class="tabular-nums">{formatCents(totals.reimbursementsCents)}</dd>
         </div>
         <div class="flex justify-between gap-6">
-          <dt class="text-ink-500">Advances</dt>
+          <dt class="text-ink-500">Advances (taken off)</dt>
           <dd class="tabular-nums">{formatCents(totals.advancesCents)}</dd>
         </div>
         <div class="flex justify-between gap-6">
-          <dt class="text-ink-500">Deductions</dt>
+          <dt class="text-ink-500">Deductions (taken off)</dt>
           <dd class="tabular-nums">{formatCents(totals.deductionsCents)}</dd>
         </div>
         <div class="flex justify-between gap-6 border-t border-ink-100 pt-2 text-lg font-semibold">
@@ -958,7 +958,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
         </div>
       </dl>
       <p class="mt-3 text-right text-xs text-ink-500">
-        {locked ? 'The figure as paid.' : 'Adds up the lines above. Nothing is stored until it is paid.'}
+        {locked ? 'This is the amount that was paid.' : 'This adds up the lines above. Nothing is saved until you mark it paid.'}
       </p>
     </div>
 
@@ -966,9 +966,9 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
 
     <footer class="mt-8 border-t border-ink-100 pt-4 text-xs text-ink-500">
       <p>
-        This is a settlement statement, not a payroll record. No federal or state tax has been
-        withheld, no FICA has been calculated and nothing has been filed with any authority. Gross
-        pay, withholding and reporting are handled by whoever runs this carrier’s payroll.
+        This is a settlement statement. It is not a payroll record. No federal or state tax was
+        taken out. No FICA was worked out. Nothing was filed with any agency. Gross pay, tax and
+        reporting are handled by whoever runs this carrier’s payroll.
       </p>
       <p class="mt-2 tabular-nums">
         Produced {formatDate(today)} · {carrier?.legal_name ?? ''} · settlement {settlement.id.slice(0, 8)}
@@ -985,16 +985,15 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
             This statement is {settlement.status === 'paid' ? 'paid' : 'void'} and locked
           </h2>
           <p class="mt-2 max-w-3xl text-sm text-ink-500">
-            Its lines cannot be added to, changed or removed — by this page or by anything else,
-            because the database refuses it. That is deliberate: the driver is holding a copy of
-            this sheet, and a statement that quietly changes afterwards is one nobody can argue
-            from. A correction goes on a new revision, which copies these lines onto a fresh draft
-            and marks this one as replaced.
+            Nobody can add, change or remove a line here. Not this page, and not anything else: the
+            database refuses it. That is on purpose. The driver is holding a copy of this sheet, so
+            it has to stay the same. To correct it, make a revision. A revision copies these lines
+            onto a new draft and marks this one as replaced.
           </p>
           {!settlement.superseded_at && (
             <form method="POST" class="mt-4">
               <button type="submit" name="intent" value="revise" class={primary}>
-                Revise — create revision {settlement.revision + 1}
+                Make revision {settlement.revision + 1}
               </button>
             </form>
           )}
@@ -1005,23 +1004,23 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
             <h2 class="text-lg font-semibold tracking-tight">Pay from an agreement</h2>
             <p class="mt-1 max-w-3xl text-sm text-ink-500">
               These are the agreements in force on{' '}
-              <span class="tabular-nums">{formatDate(settlement.period_end)}</span> — the last day
-              of this period, not today, so a settlement typed up late still applies the rates
-              that were agreed for the week it covers.
+              <span class="tabular-nums">{formatDate(settlement.period_end)}</span>, the last day of
+              this period. Not today. A settlement typed up late still uses the rates that were
+              agreed for the week it covers.
             </p>
 
             {inForce.length === 0 ? (
               <div class="mt-4 rounded-xl border border-dashed border-ink-100 bg-white p-8 text-center">
                 <p class="font-medium">No pay agreement covers this period</p>
                 <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
-                  Add one and every settlement from its start date applies it automatically.
+                  Add one. Every settlement from its start date will use it.
                 </p>
                 {driver && (
                   <a
                     href={`/app/drivers/${driver.id}/pay`}
                     class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
                   >
-                    Set up his pay →
+                    Set up this driver's pay →
                   </a>
                 )}
               </div>
@@ -1046,7 +1045,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                           )}
                           {gap && (
                             <p class="mt-2 rounded-lg bg-amber-100 px-3 py-2 text-sm text-amber-900">
-                              {gap} Nothing can be settled from it until that is answered.
+                              {gap} You cannot pay from it until that is answered.
                             </p>
                           )}
                         </div>
@@ -1103,9 +1102,10 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
           <section class="mt-6">
             <h2 class="text-lg font-semibold tracking-tight">Add a line by hand</h2>
             <p class="mt-1 max-w-3xl text-sm text-ink-500">
-              Detention, a toll receipt, an advance he took on Wednesday, the weekly escrow. Type
-              the amount as a plain positive figure — advances and deductions are taken off the net
-              automatically, and there is exactly one place in the code that decides that.
+              Detention, a toll receipt, an advance the driver took on Wednesday, the weekly escrow.
+              Always type the amount as a positive number. Never type a minus sign here. What you
+              pick under "What kind" decides the direction: earnings and reimbursements are ADDED to
+              the net, and advances and deductions are TAKEN OFF it.
             </p>
 
             <form method="POST" class={`mt-4 ${card}`}>
@@ -1141,7 +1141,10 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                 </label>
 
                 <label class="block">
-                  <span class="text-sm font-medium">Amount <span class="text-red-600">*</span></span>
+                  <span class="text-sm font-medium">
+                    Amount <span class="font-normal text-ink-300">(no minus sign)</span>{' '}
+                    <span class="text-red-600">*</span>
+                  </span>
                   <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
                     <span class="pl-3 text-ink-300">$</span>
                     <input
@@ -1165,14 +1168,14 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                     Against a load <span class="font-normal text-ink-300">(optional)</span>
                   </span>
                   <select name="load_id" class={field}>
-                    <option value="">Not load-specific</option>
+                    <option value="">Not tied to one load</option>
                     {driverLoads.map((l) => (
                       <option value={l.id}>{loadLabel(l)}</option>
                     ))}
                   </select>
                   <span class="mt-1 block text-xs text-ink-500">
-                    Escrow, insurance and the ELD fee belong to the period, not to a load. Tolls
-                    and lumpers usually belong to one.
+                    Escrow, insurance and the ELD fee belong to the whole period, not to one load.
+                    Tolls and lumpers usually belong to one load.
                   </span>
                 </label>
               )}
@@ -1186,7 +1189,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                 name="note"
                 rows="3"
                 class={field}
-                placeholder="Anything he should read alongside the numbers.">{settlement.note ?? ''}</textarea>
+                placeholder="Anything the driver should read next to the numbers.">{settlement.note ?? ''}</textarea>
               <button type="submit" name="intent" value="save_note" class={`mt-3 ${secondary}`}>
                 Save note
               </button>
@@ -1195,8 +1198,8 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
             <div class={card}>
               <h2 class="font-semibold tracking-tight">Finish it</h2>
               <p class="mt-1 text-sm text-ink-500">
-                Approving is a signature, not a lock — you can still correct it. Marking it paid
-                freezes the figure and the lines for good.
+                Approving is a signature, not a lock. You can still correct it. Marking it paid
+                freezes the amount and the lines for good.
               </p>
 
               <div class="mt-4 flex flex-wrap gap-3">
@@ -1254,8 +1257,8 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                   Mark paid — {formatCents(totals.netCents)}
                 </button>
                 <p class="mt-2 text-xs text-ink-500">
-                  This freezes <span class="tabular-nums">{formatCents(totals.netCents)}</span> onto
-                  the row and locks every line. After that, a correction is a revision.
+                  This saves <span class="tabular-nums">{formatCents(totals.netCents)}</span> on the
+                  row and locks every line. After that, a correction needs a revision.
                 </p>
               </form>
             </div>

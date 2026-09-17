@@ -75,9 +75,9 @@ if (Astro.request.method === 'POST') {
     // `invalid input syntax for type date: ""` — a 500 on a form somebody
     // tabbed through, rather than a sentence about the box they missed.
     if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
-      return fail('A settlement covers a period — give it a first and a last day.')
+      return fail('A settlement covers a period. Enter a first day and a last day.')
     }
-    if (end < start) return fail('The period ends before it starts.')
+    if (end < start) return fail('The last day is before the first day. Check the two dates.')
 
     const { data, error } = await supabase
       .from('settlements')
@@ -328,13 +328,13 @@ const monthCoverage = payCoverage
 const showPayCharts = (pay?.rows.length ?? 0) > 0
 ---
 
-<App title="Settlements" subtitle="What each driver is owed for a period, and the paper that says why.">
+<App title="Settlements" subtitle="What each driver is owed for a period, and the paper that shows why.">
   {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
 
   <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
-    This is not payroll. FleetView works out what each driver is owed and prints the statement —
-    it does not withhold tax, calculate FICA, or file anything. Hand the net figure to whoever
-    runs your payroll.
+    This is not payroll. FleetView works out what each driver is owed and prints the statement. It
+    does not take out tax, work out FICA, or file anything. Give the net figure to whoever runs
+    your payroll.
   </p>
 
   <div class="grid gap-4 sm:grid-cols-3">
@@ -343,19 +343,19 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
       <div class="mt-1 text-3xl font-semibold tabular-nums">
         {rows.filter((r) => !isLocked(r.status)).length}
       </div>
-      <div class="mt-1 text-xs text-ink-500">Draft and approved. Still editable.</div>
+      <div class="mt-1 text-xs text-ink-500">Draft and approved. You can still change these.</div>
     </div>
     <div class={card}>
       <div class="text-xs tracking-wide text-ink-500 uppercase">Net on open settlements</div>
       <div class="mt-1 text-3xl font-semibold tabular-nums">{formatCents(owing)}</div>
-      <div class="mt-1 text-xs text-ink-500">Adds up the lines, right now. Nothing is stored.</div>
+      <div class="mt-1 text-xs text-ink-500">Added up from the lines every time this page loads.</div>
     </div>
     <div class={card}>
       <div class="text-xs tracking-wide text-ink-500 uppercase">Paid</div>
       <div class="mt-1 text-3xl font-semibold tabular-nums">
         {rows.filter((r) => r.status === 'paid').length}
       </div>
-      <div class="mt-1 text-xs text-ink-500">Locked. Corrections go on a revision.</div>
+      <div class="mt-1 text-xs text-ink-500">Locked. To correct one, make a revision.</div>
     </div>
   </div>
 
@@ -588,7 +588,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
 
         <Figure
           title={`Paid to each driver in ${payYear}`}
-          subtitle="Year to date, counted once per period however many revisions it took"
+          subtitle="This year so far. Each period is counted once, however many revisions it took"
           coverage={payCoverage}
         >
           <Bars items={ytdItems} limit={10} emptyMessage="Nobody has been marked paid yet." />

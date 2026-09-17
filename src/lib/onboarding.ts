@@ -53,6 +53,13 @@ const NOTICES: Record<string, Notice> = {
   // ---- /login
   credentials: { tone: 'error', text: 'That email and password do not match.' },
   missing: { tone: 'error', text: 'Enter an email address and a password.' },
+  terms_required: {
+    tone: 'error',
+    // Says what to do, in the fewest common words that still name both
+    // documents. No "you must", no "in order to proceed": a refusal a customer
+    // cannot read is a customer who leaves rather than one who ticks the box.
+    text: 'Tick the box to agree to the Terms and the Privacy Policy.',
+  },
   weak_password: { tone: 'error', text: 'Use a password of at least 8 characters.' },
   bad_email: { tone: 'error', text: 'That does not look like an email address.' },
   rate_limited: { tone: 'error', text: 'Too many attempts. Wait a minute and try again.' },

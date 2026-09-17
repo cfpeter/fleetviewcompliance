@@ -16,44 +16,40 @@ const steps = [
   {
     n: '1',
     title: 'Type your DOT number',
-    body: 'We pull your carrier record, your trucks, your drivers and your authority status straight from the federal register. Nothing to upload.',
+    body: 'We get your carrier record, your trucks, your drivers and your authority status from the federal database. You do not upload anything.',
   },
   {
     n: '2',
     title: 'We show you what expires next',
-    body: 'One list, soonest first. The federal deadlines, the California ones, and the dates that only exist on paper in your office. You fill in only what the government does not already know.',
+    body: 'One list, with the soonest date first. Federal deadlines, California deadlines, and the dates that are only on paper in your office. You type in only what the government does not already know.',
   },
   {
     n: '3',
-    title: 'We tell you before it bites',
-    body: 'Email and text, on your schedule, to whoever should get it. Set your own reminders for anything we do not track.',
+    title: 'We email you before the date',
+    body: 'You pick how many days ahead, and who gets the email. Text messages are not on yet. They are coming later.',
   },
 ]
 
 const features = [
   {
-    title: 'Deadlines, in one list',
-    body: 'Medical cards, CDLs, annual MVR reviews, Clearinghouse queries, the annual DOT inspection, MCS-150, UCR, Form 2290 — federal, so they follow you across every state line. Then the California layer on top. Sorted by what hurts first.',
+    title: 'All your deadlines in one list',
+    body: 'Medical cards, CDLs, annual MVR reviews, Clearinghouse queries, the annual DOT inspection, MCS-150, UCR and Form 2290. These are federal rules, so they are the same in every state. California rules go on top. The soonest date is first.',
   },
   {
     title: 'Loads and trips',
-    body: 'Book a load, assign a driver and equipment, track the stops. Multi-stop is normal here, not an upgrade. Deadhead is tracked separately, because revenue per loaded mile flatters you.',
+    body: 'Book a load, give it a driver and a truck, and track the stops. Loads with many stops are normal here. You do not pay extra for them. We count deadhead miles on their own, so your revenue per mile is the real number.',
   },
   {
-    title: 'Dispatch that knows the rules',
-    body: 'If a driver’s medical card expired last week, you cannot assign him a load. The block happens on the dispatch screen, not in a report you read next month.',
+    title: 'Dispatch checks the rules',
+    body: 'If a driver medical card expired last week, you cannot give him a load. The app stops you right there on the dispatch screen, not in a report you read next month.',
   },
   {
-    title: 'Alerts you control',
-    body: 'Pick the channel, the lead time, and the person, per deadline type. One daily digest instead of fourteen emails. Quiet hours, so we do not text you at 2am about a renewal due in a month.',
-  },
-  {
-    title: 'Custom reminders',
-    body: 'Your insurance broker wants a call every March. Your best customer audits you every June. Add it, and it lives in the same list as everything else.',
+    title: 'Email alerts you control',
+    body: 'For each kind of deadline, pick how many days ahead you want to know and who gets the email. One email a day, not fourteen. Quiet hours, so nothing arrives at 2am about a renewal due next month.',
   },
   {
     title: 'Proof you can hand over',
-    body: 'A dated packet for a broker, an insurance underwriter, or an officer at the scale. It states what we observed and when, and links out to the federal record so the reader can check us.',
+    body: 'A dated packet for a broker, an insurance company, or an officer at the scale. It says what we saw and when. It links to the federal record, so the person reading it can check us.',
   },
 ]
 
@@ -64,34 +60,34 @@ const faqs = [
   // the sentence admitting what is missing is what earns the rest of the page.
   {
     q: 'I do not run in California. Is this for me?',
-    a: `Most of it is. ${coverage.federal} of the ${coverage.total} rules we track are federal — medical cards, CDLs, the annual MVR review and its signed note, Clearinghouse queries, the annual DOT inspection, MCS-150, UCR, Form 2290 — and none of those change at a state line. The other ${coverage.california} are California’s, and California is the only state layer built so far. If your state adds something on top of the federal rules, we do not track it yet and we are not going to imply otherwise. More states are next, and they arrive as rules rather than as a different product.`,
+    a: `Yes, for most of it. ${coverage.federal} of the ${coverage.total} rules we track are federal: medical cards, CDLs, the annual MVR review and its signed note, Clearinghouse queries, the annual DOT inspection, MCS-150, UCR and Form 2290. Those are the same in every state. The other ${coverage.california} rules are California rules, and California is the only state we have added so far. If your state has its own extra rules, we do not track them yet. We will not pretend that we do. Other states are next.`,
   },
   {
     q: 'I run in California. What does that add?',
-    a: 'Clean Truck Check testing and its annual fee, the CHP terminal inspection programme, your Motor Carrier Permit on its own staggered clock, and CVRA weight decals. Those are the four that put a hold on your registration, and most national software ignores all four. It is why California was the state we did first.',
+    a: 'Clean Truck Check testing and its yearly fee, the CHP terminal inspection program, your Motor Carrier Permit on its own schedule, and CVRA weight decals. These four can put a hold on your registration. Most national software leaves all four out. That is why we did California first.',
   },
   {
     q: 'Do I have to enter all my drivers and trucks?',
-    a: 'No. We read your fleet and driver counts, your address, your authority and your last MCS-150 filing from public federal data using only your DOT number. You confirm and fill the gaps — mostly the dates that only exist on paper in your office, like medical card expiries.',
+    a: 'No. With your DOT number we read your truck and driver counts, your address, your authority and your last MCS-150 filing from public federal data. You check it and fill in what is missing. That is mostly the dates that are only on paper in your office, like medical card expiry dates.',
   },
   {
     q: 'Do you file my paperwork for me?',
-    a: 'No. We track deadlines and hold your records. We will tell you what is due, what form it is, and where it goes. Anything that gets filed, you file — or your existing service does. We are not a law firm and we do not pretend to be one.',
+    a: 'No. We track your deadlines and keep your records. We tell you what is due, which form it is, and where it goes. You file it, or the service you already use files it. We are not a law firm.',
   },
   {
     q: 'Can you check the Drug and Alcohol Clearinghouse for me?',
-    a: 'No, and be careful of anyone who says they can do it by logging in as you. The Clearinghouse rules forbid sharing credentials and specifically prohibit blanket consent. We track when each query is due and keep your proof that you ran it.',
+    a: 'No. Be careful with anyone who says they can do it by logging in as you. Clearinghouse rules do not allow sharing your login, and they do not allow blanket consent. We track when each query is due and we keep your proof that you ran it.',
   },
   {
     q: 'What if I already use an ELD?',
-    a: 'Keep it. We are not an ELD and will never be one. We read hours and trip data from Motive, Samsara and others so dispatch knows whether a driver can legally finish a run.',
+    a: 'Keep it. We are not an ELD and we will not become one. We read hours and trip data from Motive, Samsara and others, so dispatch knows if a driver has enough hours to finish a run.',
   },
 ]
 ---
 
 <Public
   title="FleetView Compliance"
-  description="Deadline tracking, loads and trips for small US trucking fleets. Federal rules in every state, plus the California layer. See what expires next from your DOT number."
+  description="Deadline tracking, loads and trips for small US trucking fleets. Federal rules in every state, plus the California rules. Type your DOT number and see what expires next."
 >
   <!-- Hero -->
   <section class="border-b border-ink-100 bg-ink-50">
@@ -100,12 +96,12 @@ const faqs = [
         For small US fleets
       </p>
       <h1 class="mt-4 max-w-3xl text-4xl font-semibold tracking-tight text-balance sm:text-6xl">
-        Know what expires next, before it costs you a truck.
+        See what expires next, before it costs you money.
       </h1>
       <p class="mt-5 max-w-2xl text-lg text-ink-500">
-        A twelve-truck fleet carries more than a hundred recurring deadlines a year. Miss one
-        and you are looking at a five-figure fine, a registration hold, or a truck parked at
-        the scale. Type your DOT number and see yours in about ten seconds.
+        A fleet with 12 trucks has more than 100 deadlines every year. Miss one and you can get
+        a fine over $10,000, a hold on your registration, or a truck stopped at the scale. Type
+        your DOT number and see your dates in about 10 seconds.
       </p>
 
       <form method="GET" action="/check" class="mt-8 max-w-md">
@@ -144,11 +140,9 @@ const faqs = [
     <div
       class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-8 gap-y-3 px-4 py-6 text-sm text-ink-500 sm:px-6"
     >
-      <span>Federal deadlines in every state, plus California’s</span>
+      <span>Federal deadlines in every state, plus the California ones</span>
       <span aria-hidden="true" class="hidden text-ink-300 sm:inline">·</span>
-      <span>Built in Glendale, California</span>
-      <span aria-hidden="true" class="hidden text-ink-300 sm:inline">·</span>
-      <span>Your data stays yours — we never sell it</span>
+      <span>Your data is yours. We never sell it</span>
       <span aria-hidden="true" class="hidden text-ink-300 sm:inline">·</span>
       <span>No contract, cancel any month</span>
     </div>
@@ -157,28 +151,28 @@ const faqs = [
   <!-- Problem -->
   <section class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
     <h2 class="max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">
-      The deadline you forget is never the one you were worried about.
+      One date is easy to miss.
     </h2>
     <div class="mt-8 grid gap-4 sm:grid-cols-3">
       <div class={card}>
         <p class="font-medium">The owner</p>
         <p class="mt-2 text-sm text-ink-500">
-          You find out a driver's medical card lapsed when he is already loaded and eighty
-          miles out. Now you are choosing between a late load and an unqualified driver.
+          You find out a driver medical card expired after he is loaded and 80 miles out. Now
+          you choose between a late load and a driver who is not legal.
         </p>
       </div>
       <div class={card}>
         <p class="font-medium">The office</p>
         <p class="mt-2 text-sm text-ink-500">
-          Everything lives in a spreadsheet, a wall calendar and somebody's memory. It works
-          until the person who built it takes a week off.
+          Your dates live in a spreadsheet, a wall calendar and one person's memory. That works
+          until that person takes a week off.
         </p>
       </div>
       <div class={card}>
         <p class="font-medium">The audit</p>
         <p class="mt-2 text-sm text-ink-500">
-          An officer asks for a driver qualification file. If it is not documented, it did not
-          happen — and that is the whole argument.
+          An officer asks for a driver qualification file. If you cannot show the paper, it does
+          not count as done.
         </p>
       </div>
     </div>
@@ -186,17 +180,18 @@ const faqs = [
     <div
       class="mt-8 rounded-xl border border-amber-300 bg-amber-50 p-5 text-sm text-amber-900"
     >
-      <p class="font-medium">What it actually costs</p>
+      <p class="font-medium">What a fine costs</p>
       <p class="mt-2">
-        A Part 382 violation runs to <strong class="tabular-nums">$19,246</strong> for the
-        employer and <strong class="tabular-nums">$4,812</strong> for the driver. A
-        Clearinghouse violation is <strong class="tabular-nums">$7,155</strong>. Recordkeeping
-        is <strong class="tabular-nums">$1,584</strong> a day up to
+        A Part 382 violation costs the employer up to{' '}
+        <strong class="tabular-nums">$19,246</strong> and the driver{' '}
+        <strong class="tabular-nums">$4,812</strong>. A Clearinghouse violation is{' '}
+        <strong class="tabular-nums">$7,155</strong>. A recordkeeping violation is{' '}
+        <strong class="tabular-nums">$1,584</strong> a day, up to{' '}
         <strong class="tabular-nums">$15,846</strong>.
       </p>
       <p class="mt-2 text-xs text-amber-800">
-        49 CFR 386 Appendix B, amounts effective 30 December 2024. We show the citation because
-        you should be able to check us.
+        These amounts come from 49 CFR 386 Appendix B and took effect on 30 December 2024. We
+        name the rule so you can check it yourself.
       </p>
     </div>
   </section>
@@ -204,7 +199,7 @@ const faqs = [
   <!-- How it works -->
   <section class="border-y border-ink-100 bg-ink-50">
     <div class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
-      <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">Three steps, one evening.</h2>
+      <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">Three steps. One evening.</h2>
       <div class="mt-8 grid gap-4 sm:grid-cols-3">
         {
           steps.map((s) => (
@@ -233,10 +228,10 @@ const faqs = [
   <section class="border-b border-ink-100">
     <div class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
       <h2 class="max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">
-        Where it works, stated exactly.
+        Where it works.
       </h2>
       <p class="mt-3 max-w-2xl text-ink-500">
-        A compliance tool is worth nothing if it is vague about its own edges. Ours are these.
+        Here is exactly what we cover and what we do not cover.
       </p>
       <div class="mt-8 grid gap-4 sm:grid-cols-3">
         <div class={card}>
@@ -247,10 +242,10 @@ const faqs = [
             <span class="tabular-nums">{coverage.federal}</span> federal rules
           </p>
           <p class="mt-2 text-sm text-ink-500">
-            The FMCSA, IRS and PHMSA obligations that make up most of what any carrier owes —
-            driver qualification, Clearinghouse queries, hours records, the annual inspection,
-            MCS-150, UCR, Form 2290. They do not change at a state line, so wherever you run,
-            you get all of them.
+            The FMCSA, IRS and PHMSA rules. This is most of what any carrier owes: driver
+            qualification, Clearinghouse queries, hours records, the annual inspection,
+            MCS-150, UCR and Form 2290. They are the same in every state, so you get all of
+            them wherever you run.
           </p>
         </div>
         <div class={card}>
@@ -259,20 +254,19 @@ const faqs = [
             <span class="tabular-nums">{coverage.california}</span> state rules on top
           </p>
           <p class="mt-2 text-sm text-ink-500">
-            Clean Truck Check, the CHP terminal inspection programme, the Motor Carrier Permit,
-            CVRA weight decals, the fuel-tax and apportioned-plate filings that run through
-            Sacramento. The layer most national software leaves out, and the reason we started
-            here.
+            Clean Truck Check, the CHP terminal inspection program, the Motor Carrier Permit,
+            CVRA weight decals, and the fuel-tax and apportioned-plate filings that go through
+            Sacramento. Most national software leaves these out. That is why we started here.
           </p>
         </div>
         <div class={card}>
           <p class="text-sm font-medium tracking-widest text-ink-500 uppercase">Not yet</p>
-          <p class="mt-3 font-medium">Every other state’s own rules</p>
+          <p class="mt-3 font-medium">The rules of other states</p>
           <p class="mt-2 text-sm text-ink-500">
-            California is the only state layer in the product today. If your state adds
-            something of its own, we do not track it yet — and we would rather lose the sale
-            than have you find that out afterwards. More layers are coming: a rule here is data,
-            not code, so a new state costs rule rows rather than a rewrite.
+            Today California is the only state we have added. If your state has extra rules of
+            its own, we do not track them yet. We tell you now, not after you pay. More states
+            are coming. For us a rule is data, not code, so adding a state means adding rules,
+            not rebuilding the software.
           </p>
         </div>
       </div>
@@ -320,11 +314,10 @@ const faqs = [
   <section class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
     <div class="rounded-2xl border border-brand-500/30 bg-brand-500/[0.04] p-8 sm:p-12">
       <h2 class="max-w-2xl text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
-        See your own deadlines before you decide anything.
+        See your own deadlines first.
       </h2>
       <p class="mt-4 max-w-xl text-ink-500">
-        Type your DOT number. If what comes back is not useful, close the tab — you will not
-        have given us anything.
+        Type your DOT number. If it is not useful, close the page. You gave us nothing.
       </p>
       <form method="GET" action="/check" class="mt-6 flex max-w-md flex-col gap-3 sm:flex-row">
         <input

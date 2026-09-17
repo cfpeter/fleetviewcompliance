@@ -115,13 +115,13 @@ if (Astro.request.method === 'POST') {
   const intent = String(form.get('intent') ?? '')
 
   if (intent === 'save_miles') {
-    if (!vehicle) return fail('Add a truck before entering miles against it.')
+    if (!vehicle) return fail('Add a truck first, then enter miles for it.')
     // The rows already on file could not be read, so this handler cannot tell an
     // edit of an existing jurisdiction from a new one — it would silently ignore
     // every corrected line while reporting the new ones as saved. Refusing the
     // whole save keeps what she typed wrong out of the quarter.
     if (mileError) {
-      return fail(`The miles already on file could not be read, so nothing was saved: ${mileError.message}`)
+      return fail(`We could not read the miles already on file, so nothing was saved: ${mileError.message}`)
     }
 
     /**
@@ -138,7 +138,7 @@ if (Astro.request.method === 'POST') {
     const writes = new Map<string, number>()
     const duplicate = (code: string) =>
       fail(
-        `${code} is on this form twice. Two lines for one jurisdiction are not added together — the second would replace the first, so put the quarter's total for ${code} on one line.`,
+        `${code} is on this form twice. Two lines for one jurisdiction are not added together: the second line replaces the first. Put the whole quarter's total for ${code} on one line.`,
       )
 
     // Existing rows first. A BLANK box leaves the stored figure alone; it does
@@ -170,7 +170,7 @@ if (Astro.request.method === 'POST') {
       // drops a jurisdiction she believes she entered, and the miles reappear
       // nowhere — the return is then short by exactly one state.
       if (rawJurisdiction === '') {
-        return fail(`There are miles typed on a line with no jurisdiction picked: ${rawMiles}.`)
+        return fail(`One line has miles on it (${rawMiles}) but no jurisdiction. Pick the jurisdiction, or clear the miles.`)
       }
       const jurisdiction = parseJurisdiction(rawJurisdiction, { label: 'Jurisdiction' })
       if (!jurisdiction.ok) return fail(jurisdiction.message)
@@ -178,7 +178,7 @@ if (Astro.request.method === 'POST') {
       const parsed = parseMiles(rawMiles, { label: `Miles in ${jurisdiction.value}` })
       if (!parsed.ok) return fail(parsed.message)
       if (parsed.value === null) {
-        return fail(`${jurisdiction.value} was picked with no miles beside it.`)
+        return fail(`You picked ${jurisdiction.value} but typed no miles beside it.`)
       }
 
       if (writes.has(jurisdiction.value)) return duplicate(jurisdiction.value)
@@ -308,7 +308,7 @@ const quarterHref = (p: Date) =>
 
 <App
   title={`Jurisdiction miles · ${label}`}
-  subtitle="The miles run in each state and province, per truck. This is what the taxable gallons are derived from."
+  subtitle="The miles each truck ran in each state and province. The taxable gallons come from these."
 >
   {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
   {
@@ -320,7 +320,7 @@ const quarterHref = (p: Date) =>
         </p>
       ) : (
         <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
-          Nothing changed, so nothing was written.
+          Nothing changed, so nothing was saved.
         </p>
       ))
   }
@@ -362,8 +362,8 @@ const quarterHref = (p: Date) =>
       <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
         <p class="font-medium">No trucks on file</p>
         <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
-          Miles are recorded per truck per quarter, because that is the shape the record has to
-          have if a jurisdiction ever asks to see the work behind the return. Add the truck first.
+          We record miles per truck, per quarter. That is what a jurisdiction asks to see if it
+          ever checks the work behind your return. Add the truck first.
         </p>
         <a
           href="/app/vehicles/new"
@@ -409,8 +409,8 @@ const quarterHref = (p: Date) =>
                 retyping a quarter she has already done. */}
             {mileError && (
               <p class="rounded-lg bg-red-100 px-4 py-3 text-sm text-red-800">
-                The miles already recorded for {label} could not be read, so the lines below are
-                blank whether or not anything is stored. Reload before typing.
+                We could not read the miles already saved for {label}. The lines below are blank
+                whether or not something is saved. Reload before you type.
               </p>
             )}
 
@@ -553,8 +553,8 @@ const quarterHref = (p: Date) =>
                 Save miles
               </button>
               <span class="flex-1 text-sm text-ink-500">
-                Typing a jurisdiction again corrects it rather than adding to it. A box left blank is
-                left alone — type 0 to take a jurisdiction down to nothing.
+                Typing a jurisdiction again corrects it. It does not add to it. A box left blank
+                stays as it is. Type 0 to set a jurisdiction to nothing.
               </span>
             </div>
           </form>
@@ -608,9 +608,9 @@ const quarterHref = (p: Date) =>
           <div class={card}>
             <div class="text-xs tracking-wide text-ink-500 uppercase">Where this number goes</div>
             <p class="mt-2 text-sm text-ink-500">
-              The fleet's average miles per gallon is applied to these miles to work out the gallons
-              burned in each jurisdiction — that is what the tax is charged on. Nobody measures the
-              fuel burned in a state; it is always derived from these two numbers.
+              We apply the fleet's average miles per gallon to these miles. That gives the gallons
+              burned in each jurisdiction, and the tax is charged on those gallons. Nobody measures
+              the fuel burned in a state. It always comes from these two numbers.
             </p>
           </div>
         </div>

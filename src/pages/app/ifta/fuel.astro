@@ -84,7 +84,7 @@ if (Astro.request.method === 'POST') {
   if (intent === 'add_fuel') {
     const purchasedOn = String(form.get('purchased_on') ?? '').trim()
     if (!/^\d{4}-\d{2}-\d{2}$/.test(purchasedOn)) {
-      return fail('A fuel purchase needs the date off the receipt.')
+      return fail('Enter the date from the receipt.')
     }
     /**
      * The date decides which quarter the gallons land in, and this screen shows
@@ -99,7 +99,7 @@ if (Astro.request.method === 'POST') {
      */
     if (purchasedOn < periodIso || purchasedOn >= nextIso) {
       return fail(
-        `That receipt is dated ${formatDate(purchasedOn)}, which is not in ${label}. Switch to the quarter it belongs to and enter it there.`,
+        `That receipt is dated ${formatDate(purchasedOn)}. That day is not in ${label}. Open the quarter it belongs to and enter it there.`,
       )
     }
 
@@ -120,7 +120,7 @@ if (Astro.request.method === 'POST') {
     // Without this the check below refuses a perfectly good truck with "that
     // truck is not in your fleet", which is a sentence about the wrong problem.
     if (vehicleError) {
-      return fail(`Your trucks could not be read, so nothing was saved: ${vehicleError.message}`)
+      return fail(`We could not read your trucks, so nothing was saved: ${vehicleError.message}`)
     }
     const requestedVehicle = String(form.get('vehicle_id') ?? '')
     // Blank is a real answer: a receipt that does not say which truck fuelled is
@@ -244,13 +244,13 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
 
 <App
   title={`Fuel receipts · ${label}`}
-  subtitle="Every gallon counts toward the fleet average. Only the tax-paid ones earn a credit."
+  subtitle="Every gallon counts toward the fleet average. Only gallons with tax paid at the pump earn a credit."
 >
   {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
   {
     added && (
       <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-        Receipt recorded. IFTA requires the paper itself be kept four years.
+        Receipt saved. IFTA says you must keep the paper receipt for four years.
       </p>
     )
   }
@@ -304,7 +304,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
             {
               bulkGallonsMilli > 0 ? (
                 <>
-                  <span class="tabular-nums">{gallons(bulkGallonsMilli)}</span> bulk, earning no
+                  <span class="tabular-nums">{gallons(bulkGallonsMilli)}</span> bulk gallons, no
                   credit
                 </>
               ) : (
@@ -322,7 +322,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
                  and rates, never on what was paid. It is here because it is on
                  the receipt in her hand and because the per-gallon figure it
                  gives is the cheapest check on a mistyped gallons column. */
-              'Not used in the return. It is the cross-check.'
+              'Not used in the return. It is a check on the gallons.'
             }
           </div>
         </div>
@@ -336,20 +336,20 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
            the same branch. */
         purchaseError ? (
           <div class="rounded-xl border border-red-200 bg-red-50 p-10 text-center">
-            <p class="font-medium text-red-800">The {label} receipts could not be read</p>
+            <p class="font-medium text-red-800">We could not read the {label} receipts</p>
             <p class="mx-auto mt-2 max-w-md text-sm text-red-700">
-              Nothing is listed because nothing came back, which is not the same as nothing being
-              there. Reload before entering anything — a receipt typed now could be a duplicate of
-              one already recorded.
+              The list is empty because nothing came back. That is not the same as nothing being
+              there. Reload before you type anything. A receipt you type now could be a second copy
+              of one already saved.
             </p>
           </div>
         ) : purchases.length === 0 ? (
           <div class="rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
             <p class="font-medium">No fuel recorded for {label}</p>
             <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
-              Without gallons there is no fleet average, and without a fleet average every
-              jurisdiction on the return computes zero tax owed — on however many miles the trucks
-              actually ran. Start with the receipts you have.
+              With no gallons there is no fleet average. With no fleet average, every jurisdiction
+              on the return comes out at zero tax owed, however many miles the trucks really ran.
+              Start with the receipts you have.
             </p>
           </div>
         ) : (
@@ -559,8 +559,8 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
           }
         </select>
         <span class="mt-1 block text-xs text-ink-500">
-          Optional. The return is filed for the fleet, so a receipt that does not say which truck is
-          still a gallon in that jurisdiction.
+          Optional. You file the return for the whole fleet, so a receipt that does not say which
+          truck still counts as a gallon in that jurisdiction.
         </span>
       </label>
 
@@ -578,7 +578,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
             class={`${field} tabular-nums`}
           />
           <span class="mt-1 block text-xs text-ink-500">
-            To three decimals, as the pump prints them. 125.4 and 125.400 are the same thing.
+            Three decimals, the way the pump prints them. 125.4 and 125.400 are the same.
           </span>
         </label>
         <label class="block">
@@ -594,8 +594,8 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
             />
           </div>
           <span class="mt-1 block text-xs text-ink-500">
-            Not used in the return. It gives the per-gallon figure that catches a mistyped gallons
-            column.
+            Not used in the return. It gives the price per gallon, which catches a mistyped gallons
+            figure.
           </span>
         </label>
       </div>
@@ -618,9 +618,10 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
           <span>
             <span class="text-sm font-medium">Tax paid at the pump</span>
             <span class="mt-0.5 block text-xs text-ink-500">
-              Untick for bulk or farm-tank fuel. Those gallons still count toward the fleet average —
-              the engine burned them — but they earn no credit, and claiming that they do is the
-              classic IFTA audit finding.
+              Leave this ticked for fuel bought at a pump, where the tax is already in the price.
+              Untick it for bulk fuel or a farm tank. Bulk gallons still count toward the fleet
+              average, because the engine burned them, but they earn no credit. Claiming a credit
+              on them is the most common IFTA audit finding.
             </span>
           </span>
         </label>
@@ -646,7 +647,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
         >
           Add receipt
         </button>
-        <span class="text-xs text-ink-500">Keep the paper four years.</span>
+        <span class="text-xs text-ink-500">Keep the paper receipt for four years.</span>
       </div>
     </form>
   </div>
