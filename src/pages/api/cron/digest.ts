@@ -315,7 +315,24 @@ export const POST: APIRoute = async ({ request }) => {
   // signup and read by nothing at all, while this job used a hard-coded
   // 'America/Los_Angeles' — so a Phoenix carrier's office manager had her quiet
   // hours measured on a clock an hour out from the one on her wall.
-  const { data: carriers } = await db.from('carriers').select('id, legal_name, timezone')
+  const { data: carriers, error: carriersError } = await db
+    .from('carriers')
+    .select('id, legal_name, timezone')
+
+  // A READ THAT FAILED IS NOT AN EMPTY FLEET. This used to discard the error and
+  // fall through to `carriers ?? []`, so any failure here — a bad key, a
+  // subrequest limit, a network blip — produced a run that iterated nobody,
+  // reported `ok: true, carriers: 0, sent: 0`, and exited zero. The scheduled
+  // job would have gone on "succeeding" every eight hours while every carrier
+  // silently received nothing, which is precisely the failure this product
+  // exists to prevent. Refuse loudly instead: the workflow fails, somebody
+  // looks, and the message is still owed rather than quietly written off.
+  if (carriersError) {
+    return json(
+      { error: 'could not read the carrier list', detail: carriersError.message },
+      502,
+    )
+  }
   // `held` is its own number, not folded into `skipped`. They are different
   // events with different fixes: skipped means we tried and could not, held
   // means we deliberately waited and will try again.

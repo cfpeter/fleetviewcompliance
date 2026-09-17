@@ -35,7 +35,16 @@
   // it, and flipping it to make something "work" leaves no trace. Here it shows
   // up in a pull request.
   "vars": {
-    "DEPLOY_ENV": "development"
+    "DEPLOY_ENV": "development",
+    // SUBREQUEST BUDGET, NOT A PREFERENCE. A Worker invocation may make a
+    // limited number of outbound requests (50 on the free plan), and every
+    // reconcile lookup, every Supabase query and every send spends one. The
+    // default of 50 in digest.ts spends the entire budget on reconciliation
+    // before the carrier list is even read — which is exactly what happened:
+    // the carriers query failed with "Too many subrequests", the error was
+    // discarded, and the run reported ok with 0 sent. Reconciling 50 old
+    // messages is worthless if it costs every new one.
+    "DIGEST_RECONCILE_LIMIT": "8"
   },
 
   // A SEPARATE BUCKET. Sharing production's would mean this deployment reading
