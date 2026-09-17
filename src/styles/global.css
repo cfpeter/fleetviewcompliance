@@ -83,11 +83,28 @@
      fragment target including the ones nobody remembered to mark, and there is
      a single place to correct when a header moves again.
 
-     Scoped by shell because the two are not the same height: the marketing
-     header is one deck, the signed-in header is two. Values clear the header at
-     its TALLEST for that width and leave a little above it, so the target
-     arrives with context rather than flush against the bar — a coarse pointer
-     keeps 44px nav, and between 640px and 900px the section row wraps. */
+     Scoped by shell because the two are not the same height. Each value clears
+     the signed-in header at its TALLEST for that width and leaves about 20px
+     above it, so the target arrives with a little context rather than flush
+     against the bar. Tallest, not typical: a coarse pointer keeps the 44px nav
+     target a mouse gives up, so every figure below is the touch one.
+
+     THE BREAKPOINTS ARE THE HEADER'S BREAKPOINTS, in rem so they track the
+     Tailwind ones even if the reader has enlarged his default text.
+
+       under 48rem  the header is the `<details>` bar: 48px of summary and its
+                    1px border = 49px.          4.5rem = 72px, 23px clear.
+       48rem up     one deck, sections wrapped to two lines:
+                    8 + 44 + 4 + 44 + 8 + 1 = 109px. 8rem = 128px, 19px clear.
+       75rem up     one deck, sections on one line: 8 + 44 + 8 + 1 = 61px.
+                    Measured to fit from 1078px; the rule waits until 75rem
+                    (1200px) so it is holding 122px of slack, not 4px. The band
+                    between is one line already and merely over-cleared, which
+                    costs a jump link some empty space and costs the reader
+                    nothing.                      5rem = 80px, 19px clear.
+
+     See src/layouts/App.astro — these three numbers and that file's `md:` and
+     `xl:` are one decision written in two places. Move one, move both. */
   html {
     scroll-padding-top: 5.5rem;
   }
@@ -96,15 +113,15 @@
     scroll-padding-top: 4.5rem;
   }
 
-  @media (min-width: 640px) {
+  @media (min-width: 48rem) {
     html[data-shell='app'] {
-      scroll-padding-top: 11rem;
+      scroll-padding-top: 8rem;
     }
   }
 
-  @media (min-width: 900px) {
+  @media (min-width: 75rem) {
     html[data-shell='app'] {
-      scroll-padding-top: 8rem;
+      scroll-padding-top: 5rem;
     }
   }
 
@@ -334,10 +351,10 @@
      `.is-current` is the pill. Put it on the element that already carries
      aria-current, aria-selected or aria-pressed; it is never the only signal. */
   /* 44px is a THUMB measurement, and the signed-in header is the one place in
-     the app where paying it on a mouse costs something real: two decks of nav
-     sit above every page, so each pixel here is taken from the page twice and
-     never given back. At 44px the desktop header went 97px to 121px, which is
-     what put jump links underneath it.
+     the app where paying it on a mouse costs something real: this nav sits above
+     every page, and on a narrow desktop it wraps, so each pixel here is taken
+     from the page twice over and never given back. At 44px the desktop header
+     went 97px to 121px, which is what put jump links underneath it.
 
      So the floor is spent where it was earned. A coarse pointer — a phone, a
      tablet, a touchscreen laptop — gets the full 44px. A mouse gets 36px, which
@@ -447,6 +464,11 @@
   ::view-transition-group(*),
   ::view-transition-old(*),
   ::view-transition-new(*) {
+    /* biome-ignore lint/complexity/noImportantStyles: the reader asked the
+       operating system to stop animations, and that answer outranks anything
+       this stylesheet wants. !important is the documented way to say so — a
+       motion-sensitive reader is the one case where losing the cascade
+       argument is the point. */
     animation: none !important;
   }
 }
