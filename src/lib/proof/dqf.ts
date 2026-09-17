@@ -129,7 +129,25 @@ function stateFromStanding(item: DeadlineItem, soonDays: number): ItemState {
     case 'unknown':
       return 'unknown'
     case 'current':
-      return (item.daysUntil ?? 999) <= soonDays ? 'expiring' : 'present'
+      // A DATE THAT HAS ALREADY PASSED IS NOT A DATE THAT IS COMING UP.
+      //
+      // `daysUntil` is negative for a one-time obligation that has been
+      // satisfied: the road test's only due date was the day it was due, so a
+      // road test passed 618 days ago comes back `current` with `daysUntil`
+      // -618. The old test was `<= soonDays`, which -618 passes, so every
+      // one-time item in a well-kept file — the application, the hire-time MVR,
+      // the road test — printed "Expires soon" for the rest of the driver's
+      // employment. Three of the eight items, permanently amber, on the files
+      // with nothing wrong with them.
+      //
+      // An item that is genuinely running out still lands here: `current` with
+      // a due date ahead of us. Anything already past its date and still
+      // `current` is a one-off the engine considers done, which is `present`.
+      // Nothing moves the other way — no state that used to be a gap becomes
+      // present, because `overdue`, `unknown` and the rest never reach this arm.
+      return item.daysUntil !== undefined && item.daysUntil >= 0 && item.daysUntil <= soonDays
+        ? 'expiring'
+        : 'present'
     default:
       // not_applicable and unsupported both mean "this rule is not telling us
       // anything about this item", which is not evidence that we hold it.

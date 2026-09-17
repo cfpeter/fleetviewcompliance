@@ -14,9 +14,10 @@
  */
 import Columns from '../../../components/charts/Columns.astro'
 import Figure from '../../../components/charts/Figure.astro'
-import Proportion from '../../../components/charts/Proportion.astro'
+import Funnel from '../../../components/charts/Funnel.astro'
 import App from '../../../layouts/App.astro'
-import { billingMix, revenueByMonth, sliceOf } from '../../../lib/charts/revenue.ts'
+import { funnelHeadline, moneyFunnel } from '../../../lib/charts/funnel.ts'
+import { revenueByMonth } from '../../../lib/charts/revenue.ts'
 import { ceilingFor, compactMoney } from '../../../lib/charts/scale.ts'
 import {
   LOAD_STATUSES,
@@ -133,22 +134,49 @@ const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
 const pill = 'rounded-md px-2 py-0.5 text-xs font-medium'
 
 /**
- * The two charts, and why they are two rather than one funnel.
+ * ON A PHONE THE ROWS ARE NOT ROWS.
+ *
+ * The table is 64rem wide and the window inside it is 341px, so 683px of every
+ * row was behind a sideways scroll — the rate and the lane, which is most of
+ * what a board is read for. Below `sm` every cell is a block; from `sm` the
+ * same markup is a table again. ONE set of cells, not two, the same way
+ * src/components/Documents.astro does it.
+ *
+ * The blocks are ordered rather than left in column order: this screen is read
+ * for the load number and for where that load's money is, and in column order
+ * the rate and the billing state are sixth and fifth. `order-*` needs the row
+ * to be a flex column below `sm`; from `sm` it is `table-row` again and the
+ * property is ignored, so the desktop table is unchanged.
+ */
+const cell = 'block px-4 py-1 sm:table-cell sm:py-3'
+
+/**
+ * The two charts, and why neither of them is a quote-to-cash funnel.
  *
  * This board answers "what is on it". It cannot answer either of the two
  * questions the owner asks about money — "is this month better than the last
- * three" and "where is my cash actually stuck" — because both are shapes, and a
+ * three" and "where is every dollar right now" — because both are shapes, and a
  * table sorted by date is a shape you can only see by reading forty rows and
  * holding them in your head.
  *
- * They stay SEPARATE because `status` and `billing` are separate enums, and
- * merging an operational pipeline into a financial one is the documented cause
- * of "the reports don't match" across this product category. The mix chart
- * draws `billing` alone — that is the one that is about money, and a load can
- * be delivered and unbilled without either chart calling it an error.
+ * The second chart used to be a proportion bar counting LOADS by billing state.
+ * It has been replaced by the money funnel, which answers the same question in
+ * the unit the question is actually asked in. The proportion bar's own caveat
+ * said it best — twelve small loads waiting on payment looked wider than one
+ * big one — and a board screen gets one visual per question, so the two do not
+ * both stay. `billingMix` is untouched in revenue.ts; the customer page still
+ * uses it, where a count of a single broker's loads is the right unit.
  *
- * Both are built from `rows`, the same array the table below renders, so the
- * chart and the rows under it cannot drift apart.
+ * The funnel runs down `billing` ALONE, because `billing` is the axis that is
+ * about dollars. Quoted → Booked → Dispatched → Delivered → Invoiced → Paid as
+ * one pipeline would be a lie about this data model: `status` and `billing` are
+ * separate enums that move independently, and a delivered load that is not
+ * ready to invoice is the most normal row on this page. The truck axis enters
+ * the funnel in exactly one row — "Delivered, not invoiced" — where it changes
+ * what the owner does today. See the header of src/lib/charts/funnel.ts.
+ *
+ * Both charts are built from `rows`, the same array the table below renders, so
+ * the charts and the rows under them cannot drift apart.
  */
 const unfiltered = status === 'all' && q === ''
 // Never over a filtered view. Pushing the rows somebody just searched for most
@@ -156,10 +184,16 @@ const unfiltered = status === 'all' && q === ''
 // bargain the dashboard's runway makes with its tiles.
 const charted = unfiltered && rows.length > 0
 
-const months = charted ? revenueByMonth(rows, new Date()) : null
-const mix = charted ? billingMix(rows) : null
+const now = new Date()
+const months = charted ? revenueByMonth(rows, now) : null
+const funnel = charted ? moneyFunnel(rows, now) : null
 
 const loadWord = (n: number) => (n === 1 ? 'load' : 'loads')
+// The verb too, not just the noun. "1 load have no rate" is the sentence a
+// reader who is still learning English has to stop and re-read, on the line
+// that tells him the chart above is incomplete.
+const isAre = (n: number) => (n === 1 ? 'is' : 'are')
+const hasHave = (n: number) => (n === 1 ? 'has' : 'have')
 
 /**
  * Loads the response did not carry.
@@ -205,30 +239,30 @@ const revenueCoverage = months
   : undefined
 
 /**
- * What the mix bar does not cover.
+ * What the money funnel does not cover.
  *
- * A proportion bar flatters whoever reads it, and this one is drawn from LOADS
- * rather than dollars — twelve small loads waiting on payment make a wider band
- * than one large one. That is stated rather than fixed, because the alternative
- * is a bar whose width and whose printed count mean two different things.
+ * The bars are exact to the cent for the loads that carry a rate, so every
+ * caveat here is about a load that is NOT on them. The quoted line prints what
+ * the quotes are worth rather than only how many there are: an owner who has
+ * $40,000 sitting in quotes should be able to see that without being told it is
+ * revenue, and leaving the amount out is how a "pipeline" number quietly turns
+ * into money somebody thinks he has.
  */
-const mixCoverage = mix
+const funnelCoverage = funnel
   ? [
-      'Each band counts loads, not dollars. Twelve small loads waiting on payment look wider than one big one.',
-      mix.unpricedLoads > 0 &&
-        `${mix.unpricedLoads} of them have no rate, so the amounts below are lower than the real ones.`,
-      mix.quotedLoads + mix.cancelledLoads > 0 &&
-        `${mix.quotedLoads + mix.cancelledLoads} quoted or cancelled ${loadWord(mix.quotedLoads + mix.cancelledLoads)} are not on this bar.`,
+      funnel.unpricedLoads > 0 &&
+        `${funnel.unpricedLoads} ${loadWord(funnel.unpricedLoads)} here ${hasHave(funnel.unpricedLoads)} no rate typed. That money is in no amount above — a load with no rate is not a $0 load.`,
+      funnel.quotedLoads > 0 &&
+        `${funnel.quotedLoads} quoted ${loadWord(funnel.quotedLoads)} ${isAre(funnel.quotedLoads)} left out${funnel.quotedCents > 0 ? `, priced at ${formatCents(funnel.quotedCents)}` : ''}. Nobody has agreed to pay that yet.`,
+      funnel.cancelledLoads > 0 &&
+        `${funnel.cancelledLoads} cancelled ${loadWord(funnel.cancelledLoads)} ${isAre(funnel.cancelledLoads)} left out too.`,
+      funnel.oldestWaitingDays !== null &&
+        'Days are counted from the day you added the load. A load records no invoice date and no payment date, so that is the closest date we have.',
       missingClause,
     ]
       .filter(Boolean)
       .join(' ')
   : undefined
-
-// The one band that is entirely his to fix. Everything downstream of it is
-// waiting on somebody else, which is why it is the sentence under the chart.
-const ready = mix ? sliceOf(mix, 'ready') : undefined
-const awaiting = mix ? sliceOf(mix, 'awaiting') : undefined
 
 // Computed here and passed to Columns as `max` rather than left to the
 // component, so the number printed on the axis and the number the bars are
@@ -337,8 +371,10 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
         </p>
 
         <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
-          <table class="w-full min-w-[64rem] text-sm">
-            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+          <table class="w-full text-sm sm:min-w-[64rem]">
+            {/* No header line on a phone. Seven column names above blocks that
+                are not columns explain nothing; each block says what it is. */}
+            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
               <tr>
                 <th class="px-4 py-3 font-medium">Load</th>
                 <th class="px-4 py-3 font-medium">Broker ref</th>
@@ -355,8 +391,10 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
                 const total = totalRateCents(l)
                 const customer = customerName(l.customers)
                 return (
-                  <tr class="hover:bg-ink-50/60">
-                    <td class="px-4 py-3">
+                  <tr class="flex flex-col py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                    {/* THE LOAD NUMBER LEADS. It is never empty and it is what
+                        she is holding the rate confirmation for. */}
+                    <td class={`${cell} order-1`}>
                       <a
                         href={`/app/loads/${l.id}`}
                         class="font-medium tabular-nums hover:text-brand-600 hover:underline"
@@ -367,13 +405,18 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
 
                     {/* Full weight, not a muted sub-line. This is the number
                         printed on the sheet in her hand, and the column she
-                        scans down when a broker calls asking about "6841102". */}
-                    <td class="px-4 py-3">
+                        scans down when a broker calls asking about "6841102".
+                        On a phone it sits straight under our own number, so the
+                        two ways of naming one load read as one block. */}
+                    <td
+                      class:list={[cell, 'order-2', !l.broker_reference && 'hidden sm:table-cell']}
+                    >
                       {l.broker_reference ? (
                         <a
                           href={`/app/loads/${l.id}`}
                           class="font-medium tabular-nums hover:text-brand-600 hover:underline"
                         >
+                          <span class="font-normal text-ink-500 sm:hidden">Broker ref </span>
                           {l.broker_reference}
                         </a>
                       ) : (
@@ -381,15 +424,25 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
                       )}
                     </td>
 
-                    <td class="px-4 py-3">
-                      {customer ?? <span class="text-ink-300">—</span>}
+                    {/* An empty cell is a blank line on a phone, so it is not
+                        rendered there. The em dash holds the column open from
+                        `sm` up, where a table needs one. */}
+                    <td class:list={[cell, 'order-7', !customer && 'hidden sm:table-cell']}>
+                      {customer ? (
+                        <>
+                          <span class="text-ink-500 sm:hidden">Customer </span>
+                          {customer}
+                        </>
+                      ) : (
+                        <span class="text-ink-300">—</span>
+                      )}
                     </td>
 
                     {/* Status and exception in ONE cell, side by side, because
                         the exception never replaces the status: a detained truck
                         is still at the shipper and that is where it has to be
                         looked for. */}
-                    <td class="px-4 py-3">
+                    <td class={`${cell} order-5`}>
                       <div class="flex flex-wrap items-center gap-1">
                         <span class:list={[pill, statusPillClass(l.status)]}>
                           {loadStatusLabel(l.status)}
@@ -403,14 +456,22 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
                     </td>
 
                     {/* Its own column, driven by its own enum. Nothing on this
-                        page derives one of these two from the other. */}
-                    <td class="px-4 py-3">
+                        page derives one of these two from the other. On a phone
+                        it sits beside the rate, because the two of them together
+                        are the answer to "where is this load's money". */}
+                    <td class={`${cell} order-4`}>
                       <span class:list={[pill, billingPillClass(l.billing)]}>
                         {billingStatusLabel(l.billing)}
                       </span>
                     </td>
 
-                    <td class="px-4 py-3 text-right whitespace-nowrap tabular-nums">
+                    <td
+                      class:list={[
+                        cell,
+                        'order-3 whitespace-nowrap tabular-nums sm:text-right',
+                        total === null && 'hidden sm:table-cell',
+                      ]}
+                    >
                       {total === null ? (
                         <span class="text-ink-300">—</span>
                       ) : (
@@ -423,7 +484,7 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
                         no lane and no detention clock, so this is not a fact to
                         read past — it is the one row on the board that still
                         needs work, and the stops page is where that work is. */}
-                    <td class="px-4 py-3 whitespace-nowrap">
+                    <td class={`${cell} order-6 sm:whitespace-nowrap`}>
                       {lane.origin ? (
                         <span>
                           {lane.origin}
@@ -465,8 +526,25 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
     */
   }
   {
-    months && mix && (
+    months && funnel && (
       <div class="mt-8 space-y-4">
+        {/*
+          The funnel goes above the revenue columns, because it is the only one
+          of the two that can be acted on this afternoon. The columns are last
+          month against this one; the funnel is the invoice he has not sent.
+        */}
+        <Figure
+          title={funnelHeadline(funnel)}
+          subtitle="Every load with a rate, by where its money is. Only one row uses the truck: Delivered, not invoiced."
+          coverage={funnelCoverage}
+        >
+          <Funnel
+            rows={funnel.rows}
+            totalDisplay={formatCents(funnel.totalCents)}
+            totalLoads={funnel.countedLoads}
+          />
+        </Figure>
+
         <Figure
           title="Revenue by month"
           subtitle={`Booked rates over the last ${months.months} months`}
@@ -498,36 +576,6 @@ const revenueCeiling = months ? ceilingFor(months.columns.map((c) => c.value)) :
               we are in now, so it is not a full month.
             </p>
           )}
-        </Figure>
-
-        <Figure
-          title="Where the money is"
-          subtitle="Each load by its billing status. That is a different question from where the truck is"
-          coverage={mixCoverage}
-        >
-          <Proportion
-            segments={mix.slices}
-            total={mix.total}
-            emptyMessage="No load on the board has moved past a quote yet."
-          />
-          <div class="mt-3 space-y-1 text-sm text-ink-500">
-            {ready && ready.count > 0 && (
-              <p>
-                <span class="font-medium text-ink-900 tabular-nums">
-                  {ready.count} {loadWord(ready.count)}
-                </span>{' '}
-                ready to invoice and not sent —{' '}
-                <span class="tabular-nums">{formatCents(ready.cents)}</span>. This is the only money
-                on this bar you can move today.
-              </p>
-            )}
-            {awaiting && awaiting.count > 0 && (
-              <p>
-                {awaiting.count} invoiced and waiting to be paid —{' '}
-                <span class="tabular-nums">{formatCents(awaiting.cents)}</span>.
-              </p>
-            )}
-          </div>
         </Figure>
       </div>
     )

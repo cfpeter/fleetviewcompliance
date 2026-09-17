@@ -21,6 +21,7 @@ import Bars from '../../../components/charts/Bars.astro'
 import Figure from '../../../components/charts/Figure.astro'
 import App from '../../../layouts/App.astro'
 import { truckMilesFigure } from '../../../lib/charts/ifta.ts'
+import { jurisdictionMilesBars } from '../../../lib/charts/ifta-readiness.ts'
 import { quarterLabel, returnDueOn } from '../../../lib/ifta/compute.ts'
 import {
   IFTA_JURISDICTIONS,
@@ -274,6 +275,40 @@ const truckChart = truckMilesFigure({
   unreadable: mileError !== null,
 })
 
+/**
+ * The quarter's miles per jurisdiction, across the whole fleet.
+ *
+ * BARS. Never a map, and nothing with a territory or a route on it — this
+ * product does not know where a truck is and must never look like it does. Miles
+ * by jurisdiction earns its place only because it is literally what the return
+ * reports: the codes down the left are the lines on the form.
+ *
+ * The one this chart exists for is the SMALL one. A jurisdiction with twelve
+ * miles is sub-pixel against a fleet that ran fifteen thousand, and "a little"
+ * versus "none" is the entire question an auditor is asking — `Bars` floors it
+ * at `MIN_VISIBLE_PERCENT` so it draws as a visible mark rather than as nothing.
+ *
+ * A FAILED READ IS NOT AN EMPTY QUARTER: on `mileError` the figure is not
+ * rendered at all, rather than drawn from the zero rows that came back.
+ */
+const stateChart = jurisdictionMilesBars(
+  mileError ? [] : allRows.map((r) => ({ jurisdiction: r.jurisdiction, miles: Number(r.miles) })),
+)
+
+/** Rows before the tail collapses. The rail is 20rem; more than this is a wall. */
+const STATE_ROWS = 8
+
+/**
+ * Trucks with nothing entered, taken off the chart above rather than counted a
+ * second time here.
+ *
+ * Every bar on the state chart is built from the trucks somebody has typed in,
+ * so a fleet two trip sheets short is a chart on which EVERY bar is too short at
+ * once — which looks exactly like a quiet quarter. That is what `Figure`'s
+ * coverage slot is for.
+ */
+const trucksWaiting = truckChart.items.filter((i) => i.value === null).length
+
 const vehicleTotal = rows.reduce((n, r) => n + Number(r.miles), 0)
 const quarterTotal = allRows.reduce((n, r) => n + Number(r.miles), 0)
 
@@ -298,6 +333,25 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
 const field =
   'w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
 const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition'
+
+/**
+ * ON A PHONE THE LINES ARE NOT ROWS.
+ *
+ * The table is 34rem and the window inside this card is 301px, so 243px of
+ * every line was behind a sideways scroll — the miles box itself was half off
+ * the screen, on the page whose only job is typing miles into it. Below `sm`
+ * every cell is a block and the box is full width; from `sm` the same markup is
+ * a table again. ONE set of cells, not two, the same way
+ * src/components/Documents.astro does it.
+ *
+ * No `order-*` here and no flex row: the column order already IS what a phone
+ * wants — the jurisdiction, then its miles, then Remove.
+ */
+const cell = 'block py-1 sm:table-cell sm:py-2.5'
+/** The miles box: the width of the block on a phone, a 128px column from `sm`. */
+const milesBox =
+  'w-full rounded-lg border border-ink-100 px-3 py-2 text-right text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 sm:ml-auto sm:w-32 sm:py-1.5'
+
 const usJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'US')
 const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
 
@@ -425,8 +479,10 @@ const quarterHref = (p: Date) =>
             </div>
 
             <div class="overflow-x-auto">
-              <table class="w-full min-w-[34rem] text-sm">
-                <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+              <table class="w-full text-sm sm:min-w-[34rem]">
+                {/* No header line on a phone. Each block says what it is: the
+                    jurisdiction names itself and the box is labelled. */}
+                <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
                   <tr>
                     <th class="py-2 pr-4 font-medium">Jurisdiction</th>
                     <th class="px-4 py-2 text-right font-medium">Miles this quarter</th>
@@ -435,24 +491,29 @@ const quarterHref = (p: Date) =>
                 </thead>
                 <tbody class="divide-y divide-ink-100">
                   {rows.map((row) => (
-                    <tr class:list={[confirmRemove === row.id ? 'bg-red-50/60' : '']}>
-                      <td class="py-2.5 pr-4">
+                    <tr
+                      class:list={[
+                        'block py-2 sm:table-row sm:py-0',
+                        confirmRemove === row.id ? 'bg-red-50/60' : '',
+                      ]}
+                    >
+                      <td class={`${cell} sm:pr-4`}>
                         <span class="font-medium">{row.jurisdiction}</span>
                         <span class="ml-2 text-xs text-ink-500">
                           {jurisdictionName(row.jurisdiction)}
                         </span>
                       </td>
-                      <td class="px-4 py-2.5 text-right">
+                      <td class={`${cell} sm:px-4 sm:text-right`}>
                         <input
                           type="text"
                           name={`miles_${row.id}`}
                           value={row.miles}
                           inputmode="numeric"
                           aria-label={`Miles in ${row.jurisdiction}`}
-                          class="ml-auto w-32 rounded-lg border border-ink-100 px-3 py-1.5 text-right text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                          class={milesBox}
                         />
                       </td>
-                      <td class="py-2.5 pl-4 text-right whitespace-nowrap">
+                      <td class={`${cell} sm:pl-4 sm:text-right sm:whitespace-nowrap`}>
                         {/* Removal is a link then a button, in the URL rather
                             than in a dialog, because a dialog needs script. It
                             is a separate intent from Save: clearing the box
@@ -460,7 +521,7 @@ const quarterHref = (p: Date) =>
                             emptied by accident cannot take a jurisdiction off
                             the return. */}
                         {confirmRemove === row.id ? (
-                          <span class="flex items-center justify-end gap-2">
+                          <span class="flex items-center gap-2 sm:justify-end">
                             {/* Rendered ONLY inside the confirm branch. One
                                 hidden row_id per row would post as many values
                                 for one name, and `form.get()` returns the first
@@ -472,21 +533,24 @@ const quarterHref = (p: Date) =>
                               type="submit"
                               name="intent"
                               value="remove_miles"
-                              class="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700"
+                              class="min-h-11 flex-1 rounded-lg bg-red-600 px-3 text-xs font-medium text-white transition hover:bg-red-700 sm:min-h-0 sm:flex-none sm:py-1.5"
                             >
                               Remove {row.jurisdiction}
                             </button>
                             <a
                               href={quarterHref(period)}
-                              class="text-xs font-medium text-brand-600 hover:underline"
+                              class="inline-flex min-h-11 flex-1 items-center justify-center rounded-lg border border-ink-100 px-3 text-sm font-medium text-brand-600 hover:underline sm:min-h-0 sm:flex-none sm:rounded-none sm:border-0 sm:px-0 sm:text-xs"
                             >
                               Keep
                             </a>
                           </span>
                         ) : (
+                          /* Below `sm` this sat off the right-hand edge of the
+                             row. It is a full-width bordered tap there now, and
+                             the same small link from `sm` up. */
                           <a
                             href={`${quarterHref(period)}&confirm=${row.id}`}
-                            class="text-xs text-red-600 hover:underline"
+                            class="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-ink-100 px-3 text-sm text-red-600 hover:underline sm:min-h-0 sm:w-auto sm:rounded-none sm:border-0 sm:px-0 sm:text-xs"
                           >
                             Remove
                           </a>
@@ -499,8 +563,8 @@ const quarterHref = (p: Date) =>
                       form. A separate "add a jurisdiction" form below would mean
                       one page load per state, and a quarter is commonly six. */}
                   {Array.from({ length: BLANK_ROWS }, (_, i) => (
-                    <tr>
-                      <td class="py-2.5 pr-4">
+                    <tr class="block py-2 sm:table-row sm:py-0">
+                      <td class={`${cell} sm:pr-4`}>
                         <select
                           name={`new_jurisdiction_${i}`}
                           aria-label="Jurisdiction"
@@ -526,17 +590,19 @@ const quarterHref = (p: Date) =>
                           </optgroup>
                         </select>
                       </td>
-                      <td class="px-4 py-2.5 text-right">
+                      <td class={`${cell} sm:px-4 sm:text-right`}>
                         <input
                           type="text"
                           name={`new_miles_${i}`}
                           inputmode="numeric"
                           placeholder="0"
                           aria-label="Miles"
-                          class="ml-auto w-32 rounded-lg border border-ink-100 px-3 py-1.5 text-right text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                          class={`mt-1 ${milesBox} sm:mt-0`}
                         />
                       </td>
-                      <td class="py-2.5 pl-4"></td>
+                      {/* Nothing to remove on a line that is not saved yet, so
+                          the cell is a blank line on a phone and is not there. */}
+                      <td class="hidden py-2.5 pl-4 sm:table-cell"></td>
                     </tr>
                   ))}
                 </tbody>
@@ -563,7 +629,7 @@ const quarterHref = (p: Date) =>
         {/* ------------------------------------------------------- the quarter */}
         <div class="space-y-4">
           <div class={card}>
-            <div class="text-xs tracking-wide text-ink-500 uppercase">{label} fleet miles</div>
+            <h3 class="text-xs tracking-wide text-ink-500 uppercase">{label} fleet miles</h3>
             <div class="mt-1 text-3xl font-semibold tabular-nums">
               {mileError ? (
                 <span class="text-ink-300">—</span>
@@ -605,8 +671,40 @@ const quarterHref = (p: Date) =>
             )}
           </Figure>
 
+          {/*
+            The other half of the same rows, and the half the return is actually
+            filed on: the form has a line per jurisdiction, not per truck. The
+            table on this page only ever shows ONE truck, so nothing on this
+            screen added the fleet up by state before.
+
+            Bars, never a map. Not rendered on a failed read, and the tail
+            collapses to the return's own table rather than running the rail down
+            past the form on a phone.
+          */}
+          {!mileError && stateChart.items.length > 0 && (
+            <Figure
+              title="By state or province"
+              subtitle={`Every truck added up for ${label}, biggest first`}
+              coverage={
+                trucksWaiting > 0
+                  ? `${trucksWaiting} ${trucksWaiting === 1 ? 'truck has' : 'trucks have'} no miles entered yet. Every bar here is lower than the real total.`
+                  : undefined
+              }
+              action={{ href: `/app/ifta?q=${periodIso}`, label: 'The return →' }}
+            >
+              <Bars
+                items={stateChart.items}
+                limit={STATE_ROWS}
+                moreHref={`/app/ifta?q=${periodIso}#jurisdictions`}
+              />
+              {stateChart.takeaway && (
+                <p class="mt-3 text-sm text-ink-500">{stateChart.takeaway}</p>
+              )}
+            </Figure>
+          )}
+
           <div class={card}>
-            <div class="text-xs tracking-wide text-ink-500 uppercase">Where this number goes</div>
+            <h3 class="text-xs tracking-wide text-ink-500 uppercase">Where this number goes</h3>
             <p class="mt-2 text-sm text-ink-500">
               We apply the fleet's average miles per gallon to these miles. That gives the gallons
               burned in each jurisdiction, and the tax is charged on those gallons. Nobody measures

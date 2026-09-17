@@ -12,7 +12,34 @@
  * the unit was in order during the period it covers, so it is never overwritten
  * and never deleted — the grant on the table does not even include DELETE.
  */
+import Figure from '../../../components/charts/Figure.astro'
+import Ring from '../../../components/charts/Ring.astro'
+import Documents from '../../../components/Documents.astro'
 import { type AnswerEntry, anchorSlot, planAnchorWrites } from '../../../lib/anchors/plan.ts'
+import {
+  COVERAGE_NOTE,
+  noScheduleNote,
+  ringSubtitle,
+  TRAILER_NOTE,
+  truckLine,
+  truckRing,
+} from '../../../lib/charts/truck-rings.ts'
+import { loadDeadlines } from '../../../lib/deadlines.ts'
+import {
+  type DocumentRow,
+  DOCUMENT_COLUMNS,
+  requestTooLarge,
+  uploadFromForm,
+} from '../../../lib/documents.ts'
+import { isActiveVehicle, VEHICLE_NOT_ACTIVE_MEANS } from '../../../lib/fleet/active.ts'
+import {
+  canRemove,
+  confirmBody,
+  confirmTitle,
+  refusalFor,
+  remindersLine,
+  vehicleHistory,
+} from '../../../lib/fleet/remove.ts'
 import App from '../../../layouts/App.astro'
 import {
   anchorByKey,
@@ -60,9 +87,6 @@ const vehicle = found as unknown as VehicleRow
 const maxYear = new Date().getUTCFullYear() + 2
 
 if (Astro.request.method === 'POST') {
-  const form = await Astro.request.formData()
-  const intent = String(form.get('intent') ?? '')
-
   // Every branch below ends here. 303 and not the 302 Astro.redirect() defaults
   // to: a 302 permits the browser to repeat the POST at the new location, so a
   // refresh after saving dates would append the same compliance records again —
@@ -71,6 +95,32 @@ if (Astro.request.method === 'POST') {
   const go = (query: string) => Astro.redirect(`/app/vehicles/${vehicle.id}${query}`, 303)
   const fail = (message: string, hash = '') =>
     go(`?error=${encodeURIComponent(message)}${hash}`)
+
+  // BEFORE the body is read, because formData() buffers the whole request. The
+  // real size rule is measured on the bytes in checkFile(); this only keeps an
+  // enormous post from being pulled into memory first.
+  // A document error, not the page's generic one, so it lands beside the file
+  // box rather than at the top of the page above the vehicle form.
+  const oversized = requestTooLarge(Astro.request)
+  if (oversized) return go(`?doc_error=${encodeURIComponent(oversized)}#documents`)
+
+  const form = await Astro.request.formData()
+  const intent = String(form.get('intent') ?? '')
+
+  if (intent === 'upload_document') {
+    // Shared with the driver page. See src/lib/documents.ts for the storage key,
+    // the type sniff and the write order.
+    return go(
+      `?${await uploadFromForm({
+        form,
+        supabase,
+        carrierId,
+        userId: Astro.locals.userId ?? null,
+        subjectType: 'vehicle',
+        subjectId: vehicle.id,
+      })}`,
+    )
+  }
 
   if (intent === 'save') {
     const kind = String(form.get('kind') ?? '')
@@ -232,6 +282,32 @@ if (Astro.request.method === 'POST') {
     return go(`?dates=${inserts.length}#dates`)
   }
 
+  /**
+   * Delete the unit — and refuse whenever there is anything to preserve.
+   *
+   * CHECKED AGAIN HERE even though the panel below already checked before it
+   * drew the button. The ordinary way this fires is a tab left open: the screen
+   * was drawn this morning when the row was empty, and a document was uploaded
+   * against it at noon. The button was enabled. The answer is still no.
+   *
+   * A refusal goes back to the panel rather than to a generic error, because the
+   * panel is where the refusal is written out in full — what is on file, why we
+   * keep it, and the status change to make instead. See src/lib/fleet/remove.ts.
+   */
+  if (intent === 'delete') {
+    const report = await vehicleHistory(supabase, vehicle.id)
+    if (!canRemove(report)) return go('?confirm=delete#delete')
+
+    // No carrier_id filter: RLS already makes another carrier's row invisible to
+    // this statement, and 0028_fleet_delete_guard.sql is the backstop under it —
+    // the same list of checks, in the database, where a privilege the role
+    // actually holds cannot be talked out of by an app that forgot to look.
+    const { error } = await supabase.from('vehicles').delete().eq('id', vehicle.id)
+    if (error) return go('?confirm=delete#delete')
+
+    return Astro.redirect('/app/vehicles?removed=1', 303)
+  }
+
   if (intent === 'withdraw_date') {
     const recordId = String(form.get('record_id') ?? '')
     if (!recordId) return fail('Nothing to withdraw.', '#history')
@@ -258,7 +334,8 @@ if (Astro.request.method === 'POST') {
 
 // --- GET -------------------------------------------------------------------
 
-const [{ data: anchorRows }, { data: historyRows }] = await Promise.all([
+const [{ data: anchorRows }, { data: historyRows }, { data: documentRows }, allDeadlines] =
+  await Promise.all([
   supabase
     .from('current_compliance_anchors')
     .select('id, anchor_key, occurred_on, source')
@@ -271,7 +348,54 @@ const [{ data: anchorRows }, { data: historyRows }] = await Promise.all([
     .eq('subject_id', vehicle.id)
     .order('occurred_on', { ascending: false })
     .order('recorded_at', { ascending: false }),
+  // Both filters matter. RLS keeps this to the carrier; the subject keeps it to
+  // this unit. A document id alone never opens anything — see the download route.
+  supabase
+    .from('documents')
+    .select(DOCUMENT_COLUMNS)
+    .eq('subject_type', 'vehicle')
+    .eq('subject_id', vehicle.id)
+    .order('uploaded_at', { ascending: false })
+    .limit(200),
+  // The rule engine, in the same round as everything else. It is what the
+  // dashboard's own ring is drawn from, so the circle in the sidebar and the
+  // count on the front page cannot disagree about this unit.
+  loadDeadlines(supabase, carrierId),
 ])
+
+const documents = (documentRows ?? []) as unknown as DocumentRow[]
+
+/**
+ * This unit's ring.
+ *
+ * Gated on ACTIVE because `loadDeadlines` now evaluates active units and nothing
+ * else: anything sold, parked or out of service comes back with no items at all,
+ * which would draw an empty circle and read as "we know nothing about this
+ * truck" rather than "you took it off the fleet". The gate and the loader share
+ * one predicate — src/lib/fleet/active.ts — so this cannot drift into drawing a
+ * blank ring the day the rule changes.
+ *
+ * `vehicle.kind` is passed in and is load-bearing. A TRAILER HAS NO ENGINE, so
+ * the catalogue gives it two rules — the annual § 396.17 inspection and keeping
+ * the report — against seven or more for a power unit, and `truckRing` filters
+ * on the kind a second time so a Clean Truck Check or a Form 2290 can never be
+ * counted against a thing that cannot owe one. Judged on a power unit's list a
+ * trailer in perfect order would sit at 2/9 in red, which is the same mistake
+ * as asking it for mileage.
+ */
+const unitRing = !isActiveVehicle(vehicle)
+  ? null
+  : truckRing(allDeadlines.filter((i) => i.subjectId === vehicle.id), vehicle.kind, new Date())
+
+// The trailer sentence and the unschedulable count are caveats on the figure,
+// not footnotes under it: the shape is read before any prose is.
+const ringCaveats = unitRing
+  ? [
+      COVERAGE_NOTE,
+      vehicle.kind === 'trailer' ? TRAILER_NOTE : undefined,
+      noScheduleNote(unitRing),
+    ].filter((s): s is string => Boolean(s))
+  : []
 
 /** anchor_key -> the date in force, and the row it came from. */
 const current = new Map<string, { on: string; id: string }>()
@@ -301,6 +425,23 @@ const saved = params.get('saved') === '1'
 const withdrew = params.get('withdrew') === '1'
 const dates = params.get('dates')
 const datesCount = dates === null ? null : Number(dates)
+
+/**
+ * The delete panel, opened by a plain link.
+ *
+ * TWO STEPS, NO JAVASCRIPT. A destructive button that fires on one press is a
+ * truck deleted by a thumb on a phone in a yard, and `confirm()` is not on the
+ * table — nothing in this app runs a line of client script. So the first press
+ * is a GET that opens a panel naming the unit, and the second is a POST with an
+ * intent, exactly like every other write on this page.
+ *
+ * The counting only happens when the panel is open. It is six head queries, and
+ * a page nobody is deleting from should not pay for them.
+ */
+const wantsDelete = params.get('confirm') === 'delete'
+const removal = wantsDelete ? await vehicleHistory(supabase, vehicle.id) : null
+const refusal = removal ? refusalFor('vehicle', vehicleLabel(vehicle), removal) : null
+const alsoGoes = removal ? remindersLine('vehicle', removal) : null
 
 const gvwr = gvwrReading(vehicle.gvwr_lbs)
 const weightUnknown = vehicle.gvwr_lbs === null
@@ -336,6 +477,40 @@ const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
 const today = new Date().toISOString().slice(0, 10)
+
+/**
+ * ONE HEADING SCALE, THREE STEPS, THE SAME ON EVERY SCREEN IN THIS APP.
+ *
+ *   h2  text-lg font-semibold tracking-tight        — a section of the page
+ *   h3  text-sm font-semibold tracking-tight        — a subsection inside a card
+ *   h3  text-xs tracking-wide text-ink-500 uppercase — the label on a small card
+ *
+ * `cardHeading` is the middle one, and it is the size and weight the chart frame
+ * already gives its own heading (src/components/charts/Figure.astro), so a chart
+ * card and a plain card next to it start the same way.
+ *
+ * The third is written out in full where it is used rather than kept in a
+ * constant here, because it has to stay BYTE-IDENTICAL to the same label on
+ * /app/dispatch, /app/settlements and /app/ifta — one string, greppable, on
+ * fourteen screens. The small labels on this page were `<div>`s: not headings at
+ * all, invisible to the document outline and to a screen reader walking the page
+ * by headings, which is how somebody who cannot see the page finds the GVWR
+ * block on it. The element changed; the class string did not, so nothing moved.
+ */
+const cardHeading = 'text-sm font-semibold tracking-tight'
+
+/**
+ * ON A PHONE THE ROWS ARE NOT ROWS.
+ *
+ * The history table is 46rem wide and the window inside this card on a 375px
+ * phone is about 299px, so most of every row — Withdraw included — was behind a
+ * sideways scroll. Below `sm` every cell becomes a block; from `sm` the same
+ * markup is a table again. ONE set of cells, not two. The pattern is written
+ * down in src/components/Documents.astro.
+ */
+const cell = 'block px-4 sm:table-cell sm:py-3'
+/** The column name, said on the block that has no column. */
+const said = 'text-ink-500 sm:hidden'
 ---
 
 <App
@@ -502,6 +677,14 @@ const today = new Date().toISOString().slice(0, 10)
               ))
             }
           </select>
+          {/*
+            BOTH CONSEQUENCES, UNDER THE BOX THAT CAUSES THEM. A status that
+            quietly switches off the reminders is how a registration expires on
+            a truck somebody parked in the app six months ago, and a status that
+            quietly keeps charging is how a customer stops trusting the invoice.
+            One sentence, from src/lib/fleet/active.ts, shared with /app/billing.
+          */}
+          <span class="mt-1 block text-xs text-ink-500">{VEHICLE_NOT_ACTIVE_MEANS}</span>
         </label>
       </div>
 
@@ -528,8 +711,43 @@ const today = new Date().toISOString().slice(0, 10)
     </form>
 
     <div class="space-y-4">
+      {
+        /*
+          First in the rail, like the ring on the driver page, because it is the
+          one thing on this screen that answers "is there anything wrong with
+          this unit" without reading a table. The fraction sits inside the ring
+          so the arithmetic is never out of sight, and the sentence under it is
+          the actual answer — the circle is only how it is read in a second.
+
+          It says what is on file and what is not, and stops there. A verdict a
+          carrier issues about himself is worth nothing to the broker reading
+          it, which is why the proof binder refuses to pass judgement either.
+
+          Note for whoever edits this: tests/truck-rings.test.ts scans this file
+          for verdict words, comments included. That is why the policy is
+          described here rather than quoted — the quotation would fail the test
+          that exists to enforce it.
+
+          A sold unit has no ring at all. `unitRing` is null there, because
+          judging equipment that left the yard invites fixing a date on a truck
+          somebody else owns.
+        */
+      }
+      {
+        unitRing && (
+          <Figure
+            title="What is on file"
+            subtitle={ringSubtitle(unitRing)}
+            coverage={ringCaveats}
+          >
+            <Ring ring={unitRing} size={76} centre legend />
+            <p class="mt-4 text-sm font-medium">{truckLine(unitRing)}</p>
+          </Figure>
+        )
+      }
+
       <div class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">GVWR</div>
+        <h3 class="text-xs tracking-wide text-ink-500 uppercase">GVWR</h3>
         <div class={`mt-1 text-3xl font-semibold tabular-nums ${gvwr.className}`}>{gvwr.text}</div>
         {/*
           The one sentence this whole feature turns on. An empty GVWR column is
@@ -547,7 +765,7 @@ const today = new Date().toISOString().slice(0, 10)
       </div>
 
       <div class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">Status</div>
+        <h3 class="text-xs tracking-wide text-ink-500 uppercase">Status</h3>
         <div class="mt-2">
           <span
             class:list={[
@@ -558,6 +776,19 @@ const today = new Date().toISOString().slice(0, 10)
             {statusLabel(vehicle.status)}
           </span>
         </div>
+        {/*
+          Why the ring above is missing, said where the status is. Without this
+          the circle simply is not there and the page looks broken rather than
+          switched off.
+        */}
+        {
+          !isActiveVehicle(vehicle) && (
+            <p class="mt-3 text-xs text-ink-500">
+              This truck is not Active, so we do not watch its dates and you are not charged for
+              it. Set it back to Active to start again.
+            </p>
+          )
+        }
         <dl class="mt-4 divide-y divide-ink-100 text-sm">
           <div class="flex justify-between gap-4 py-2">
             <dt class="text-ink-500">Kind</dt>
@@ -608,7 +839,13 @@ const today = new Date().toISOString().slice(0, 10)
           (group) =>
             group.items.length > 0 && (
               <div class="mt-6">
-                <h3 class="text-xs tracking-wide text-ink-500 uppercase">{group.title}</h3>
+                {/*
+                  The same heading the driver page gives its date groups. The two
+                  pages had two different treatments for one thing — 12px grey
+                  uppercase here, 16px black there — on screens an owner moves
+                  between all morning.
+                */}
+                <h3 class={cardHeading}>{group.title}</h3>
                 <div class="mt-3 space-y-5">
                   {group.items.map((anchor) => {
                     const live = current.get(anchor.key)
@@ -670,6 +907,19 @@ const today = new Date().toISOString().slice(0, 10)
     </form>
   </section>
 
+  <!-- --------------------------------------------------------- documents -->
+
+  {/*
+    Straight after the dates, because they are the two halves of one answer: the
+    date says the inspection happened, the file is the report that proves it.
+  */}
+  <Documents
+    subjectType="vehicle"
+    subjectId={vehicle.id}
+    documents={documents}
+    noun="this truck"
+  />
+
   <!-- ----------------------------------------------------------- history -->
 
   {
@@ -685,8 +935,13 @@ const today = new Date().toISOString().slice(0, 10)
           </p>
 
           <div class="mt-4 overflow-x-auto rounded-xl border border-ink-100">
-            <table class="w-full min-w-[46rem] text-sm">
-              <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+            <table class="w-full text-sm sm:min-w-[46rem]">
+              {/*
+                No header line on a phone. Four column names above blocks that
+                are not columns explain nothing — each block says what it is in
+                its own words instead.
+              */}
+              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
                 <tr>
                   <th class="px-4 py-3 font-medium">What</th>
                   <th class="px-4 py-3 font-medium">Date</th>
@@ -701,8 +956,12 @@ const today = new Date().toISOString().slice(0, 10)
                   const inForce = current.get(r.anchor_key)?.id === r.id
                   const collected = anchors.some((a) => a.key === r.anchor_key)
                   return (
-                    <tr class="hover:bg-ink-50/60">
-                      <td class="px-4 py-3">
+                    /* The block leads with WHAT the date is for, because that is
+                       what an owner is looking down this list for. The date and
+                       the badge that says whether it is the one in force follow
+                       it on the next line. */
+                    <tr class="block py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                      <td class={cell}>
                         <span class="font-medium">{anchor?.label ?? r.anchor_key}</span>
                         {/*
                           A date recorded before the kind was changed is not
@@ -717,7 +976,7 @@ const today = new Date().toISOString().slice(0, 10)
                         )}
                         {r.note && <span class="mt-0.5 block text-xs text-ink-300">{r.note}</span>}
                       </td>
-                      <td class="px-4 py-3 whitespace-nowrap tabular-nums">
+                      <td class={`${cell} mt-1 whitespace-nowrap tabular-nums sm:mt-0`}>
                         <span class:list={[r.superseded_at ? 'text-ink-300 line-through' : '']}>
                           {formatDay(r.occurred_on)}
                         </span>
@@ -732,21 +991,46 @@ const today = new Date().toISOString().slice(0, 10)
                           </span>
                         )}
                       </td>
-                      <td class="px-4 py-3 whitespace-nowrap text-ink-500 tabular-nums">
-                        {formatDay(r.recorded_at)}
+                      {/*
+                        The date keeps its own `nowrap`; the line it sits on does
+                        not. Run together as one unbreakable string this cell was
+                        300px inside a 299px card — one pixel of sideways scroll,
+                        which is the whole bug in miniature.
+                      */}
+                      <td
+                        class={`${cell} mt-0.5 text-xs text-ink-500 tabular-nums sm:mt-0 sm:text-sm sm:whitespace-nowrap`}
+                      >
+                        <span class="whitespace-nowrap">
+                          <span class={said}>Recorded </span>
+                          {formatDay(r.recorded_at)}
+                        </span>
+                        <span class="sm:hidden">
+                          {' · '}
+                          {r.source === 'fmcsa'
+                            ? 'Federal record'
+                            : r.source === 'import'
+                              ? 'Import'
+                              : 'You'}
+                        </span>
                       </td>
-                      <td class="px-4 py-3 text-ink-500">
+                      {/* The source, on its own line from `sm` up and folded
+                          into the line above on a phone: two words on a line of
+                          their own is a line an owner skips. */}
+                      <td class="hidden px-4 text-ink-500 sm:table-cell sm:py-3">
                         {r.source === 'fmcsa' ? 'Federal record' : r.source === 'import' ? 'Import' : 'You'}
                       </td>
-                      <td class="px-4 py-3 text-right whitespace-nowrap">
+                      <td class={`${cell} sm:text-right sm:whitespace-nowrap`}>
                         {!r.superseded_at && (
-                          <form method="POST">
+                          /* Below `sm` this is a full-width bordered tap rather
+                             than a bare text link. It used to be off the right
+                             edge of the screen entirely. */
+                          <form method="POST" class="mt-2 sm:mt-0">
                             <input type="hidden" name="record_id" value={r.id} />
                             <button
                               type="submit"
                               name="intent"
                               value="withdraw_date"
-                              class="text-sm text-red-600 hover:underline"
+                              class="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-ink-100 px-3 text-sm font-medium text-red-600 hover:underline sm:min-h-0 sm:w-auto sm:rounded-none sm:border-0 sm:px-0 sm:font-normal"
                             >
                               Withdraw
                             </button>
@@ -763,4 +1047,86 @@ const today = new Date().toISOString().slice(0, 10)
       </section>
     )
   }
+
+  <!-- ------------------------------------------------------------ delete -->
+
+  {/*
+    LAST ON THE PAGE, AND CLOSED BY DEFAULT.
+
+    This is for one thing only: a unit number typed twice, a VIN that turned out
+    to be the tractor already on the list, a row somebody made while learning the
+    screen. Anything with history refuses, and the refusal says what to do
+    instead — see src/lib/fleet/remove.ts for the list and
+    0028_fleet_delete_guard.sql for the same list in the database.
+  */}
+  <section id="delete" class="mt-6 scroll-mt-24">
+    {
+      !wantsDelete ? (
+        <div class={card}>
+          <h2 class="text-lg font-semibold tracking-tight">Delete this truck</h2>
+          <p class="mt-1 max-w-2xl text-sm text-ink-500">
+            Only for a truck you added by mistake. If you sold it or parked it, change the status
+            above instead — that stops the reminders and the charge, and keeps the records.
+          </p>
+          <a
+            href={`/app/vehicles/${vehicle.id}?confirm=delete#delete`}
+            class="mt-4 inline-block rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 transition hover:bg-red-50"
+          >
+            Delete this truck
+          </a>
+        </div>
+      ) : refusal ? (
+        <div class="rounded-xl border border-amber-200 bg-amber-50 p-5">
+          <h2 class="text-lg font-semibold tracking-tight text-amber-900">{refusal.title}</h2>
+          {refusal.held.length > 0 && (
+            <>
+              <p class="mt-2 text-sm text-amber-900">What is on file:</p>
+              <ul class="mt-1 list-disc space-y-0.5 pl-5 text-sm text-amber-900">
+                {refusal.held.map((line) => (
+                  <li>{line}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          <p class="mt-3 text-sm text-amber-900">{refusal.why}</p>
+          {/* The dead end is also the answer. */}
+          <p class="mt-2 text-sm font-medium text-amber-900">{refusal.instead}</p>
+          <a
+            href={`/app/vehicles/${vehicle.id}`}
+            class="mt-4 inline-block rounded-lg border border-amber-300 px-4 py-2 text-sm font-medium text-amber-900 transition hover:bg-amber-100"
+          >
+            Go back
+          </a>
+        </div>
+      ) : (
+        <div class="rounded-xl border border-red-200 bg-red-50 p-5">
+          {/* The confirmation NAMES THE UNIT. A red button that says only
+              "Delete" is a button pressed on the wrong row. */}
+          <h2 class="text-lg font-semibold tracking-tight text-red-800">
+            {confirmTitle(vehicleLabel(vehicle))}
+          </h2>
+          <p class="mt-2 text-sm text-red-700">{confirmBody('vehicle')}</p>
+          {alsoGoes && <p class="mt-2 text-sm font-medium text-red-700">{alsoGoes}</p>}
+          <div class="mt-4 flex flex-wrap items-center gap-3">
+            <form method="POST">
+              <button
+                type="submit"
+                name="intent"
+                value="delete"
+                class="rounded-lg bg-red-600 px-5 py-2.5 font-medium text-white transition hover:bg-red-700"
+              >
+                Yes, delete {vehicleLabel(vehicle)}
+              </button>
+            </form>
+            <a
+              href={`/app/vehicles/${vehicle.id}`}
+              class="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 transition hover:bg-red-100"
+            >
+              Keep it
+            </a>
+          </div>
+        </div>
+      )
+    }
+  </section>
 </App>

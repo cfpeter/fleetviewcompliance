@@ -18,6 +18,7 @@ import Bars from '../../../components/charts/Bars.astro'
 import Columns from '../../../components/charts/Columns.astro'
 import Diverging from '../../../components/charts/Diverging.astro'
 import Figure from '../../../components/charts/Figure.astro'
+import Proportion from '../../../components/charts/Proportion.astro'
 import App from '../../../layouts/App.astro'
 import {
   milesFigure,
@@ -27,7 +28,9 @@ import {
   quarterTotals,
   truckCoverage,
 } from '../../../lib/charts/ifta.ts'
+import { returnReadiness } from '../../../lib/charts/ifta-readiness.ts'
 import { ceilingFor } from '../../../lib/charts/scale.ts'
+import { TONES } from '../../../lib/charts/tones.ts'
 import { formatDate } from '../../../lib/drivers.ts'
 import {
   type FuelRow,
@@ -52,6 +55,7 @@ import {
   recentQuarters,
 } from '../../../lib/ifta/input.ts'
 import { formatCents } from '../../../lib/loads.ts'
+import { vehicleLabel } from '../../../lib/vehicles.ts'
 
 const supabase = Astro.locals.supabase!
 
@@ -127,12 +131,21 @@ const [milesResult, fuelResult, ratesResult, vehiclesResult] = await Promise.all
     .select('jurisdiction, fuel_type, period_start, rate_mills')
     .eq('fuel_type', FUEL_TYPE)
     .lte('period_start', periodIso),
-  // Ids only, and only so the charts can say "drawn from 6 of 9 trucks". Its
+  // Ids and unit numbers, and only so the charts can say "4 of 7 trucks have
+  // miles" and then NAME the three that do not — "3 trucks still need miles" is
+  // a sentence somebody can act on only once it comes with unit numbers. Its
   // error is deliberately NOT part of `readError` below: a failure here leaves
   // every figure on this page correct, and costs only the sentence about what
   // those figures cover — which `truckCoverage(null, …)` then says instead of
   // claiming the fleet all reported.
-  supabase.from('vehicles').select('id'),
+  // POWER UNITS ONLY. IFTA is a fuel tax: a trailer has no engine, buys no
+  // diesel and can never have miles of its own. Counting trailers here made the
+  // readiness bar read "4 of 9 trucks still need miles" on a fleet of seven
+  // trucks and two trailers — sending the owner to hunt for numbers that cannot
+  // exist, on the one screen whose job is telling him what is still missing.
+  // This list is only the denominator and the "still waiting on" names; the
+  // miles themselves come from the mileage rows, so no reported total moves.
+  supabase.from('vehicles').select('id, unit_number, vin').eq('kind', 'power_unit'),
 ])
 
 const readError =
@@ -263,13 +276,57 @@ const open = quarterStillOpen(period, today)
  * cannot drift apart. `null` for the id list when the read failed, which is not
  * the same claim as a carrier with no trucks.
  */
-const trucks = truckCoverage(
-  vehiclesResult.error ? null : ((vehiclesResult.data ?? []) as { id: string }[]).map((v) => v.id),
-  currentMiles,
-)
+type VehicleRow = { id: string; unit_number: string | null; vin: string | null }
+
+const fleet = vehiclesResult.error
+  ? null
+  : ((vehiclesResult.data ?? []) as VehicleRow[]).map((v) => ({
+      id: v.id,
+      label: vehicleLabel(v),
+    }))
+
+const trucks = truckCoverage(fleet === null ? null : fleet.map((v) => v.id), currentMiles)
 
 const milesChart = milesFigure({ result, fuel: fuelRows, trucks, open })
 const netChart = netTaxFigure({ result, trucks, open })
+
+/**
+ * What is still missing before this quarter can go on a form.
+ *
+ * The one thing this page could not say before: it had a coverage SENTENCE
+ * under a chart reading "only 4 of 7 trucks have miles entered", read second and
+ * only if the chart above it drew at all — and when the quarter is half-entered
+ * the charts refuse to draw, so the sentence went with them. The quarter that
+ * most needs this told the owner least about it.
+ *
+ * It is drawn as progress and it must never be read as permission. Three things
+ * hold that line, and none of them is the wording alone:
+ *
+ *   - The bar counts TYPING, and it is labelled as typing. "4 of 7 trucks have
+ *     miles entered" is a fact about the boxes, not about the return.
+ *   - The checklist under it ends with two steps no software can ever tick —
+ *     you checking the figures, and the form actually being filed — so the list
+ *     still has open items on it at the moment every truck turns green.
+ *   - There is no button anywhere on this page that files anything, which is the
+ *     same absence the "do not file this return yet" banners rely on.
+ *
+ * `fleet === null` is a failed read, which is NOT a carrier with no trucks. It
+ * says so and counts nothing.
+ */
+const readiness = returnReadiness({
+  trucks: fleet,
+  rows: currentMiles,
+  missingRates: result.missingRates,
+  totalMiles: result.totalMiles,
+  totalGallonsMilli: result.totalGallonsMilli,
+  daysLeft,
+  dueLabel: formatDate(isoDay(due)),
+  hrefs: {
+    miles: `/app/ifta/miles?q=${periodIso}`,
+    fuel: `/app/ifta/fuel?q=${periodIso}`,
+    trucks: '/app/vehicles/new',
+  },
+})
 
 /**
  * Fleet MPG over five quarters — far enough back that the same quarter a year
@@ -290,6 +347,28 @@ const quarterHref = (p: Date) => `/app/ifta?q=${isoDay(p)}`
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
 const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition'
+
+/**
+ * ON A PHONE THE RETURN IS NOT A TABLE.
+ *
+ * It is 56rem wide and the window inside it is 341px, so 555px of every line —
+ * 62% — was behind a sideways scroll, and the column furthest off the edge was
+ * the net owed, which is the number the whole page exists to produce. Worse,
+ * the "no rate on file" badge lives in that same column: the one cell that says
+ * a line is NOT priced was the one cell nobody on a phone could see.
+ *
+ * Below `sm` every cell is a block; from `sm` the same markup is a table again.
+ * ONE set of cells, not two, the same way src/components/Documents.astro does
+ * it. The blocks are ordered so a line reads jurisdiction, then miles, then the
+ * net — `order-*` needs the row to be a flex column below `sm`, and from `sm`
+ * it is `table-row` again and the property is ignored.
+ *
+ * Every red banner above this table, the net tile, the readiness strip and the
+ * nil-return state are untouched by all of it: they are not table rows.
+ */
+const cell = 'block px-4 py-1 sm:table-cell sm:py-3'
+/** The column name, carried into the block that no longer has a header row. */
+const colName = 'text-ink-500 sm:hidden'
 
 /** The deadline card's colour, and it earns red. A late return is a penalty. */
 const deadlineTone =
@@ -330,7 +409,7 @@ const deadlineTone =
   }
   <div class:list={['mb-5 flex flex-wrap items-center gap-4 rounded-xl border p-5', deadlineTone]}>
     <div class="min-w-0 flex-1">
-      <div class="text-xs tracking-wide text-ink-500 uppercase">{label} return is due</div>
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">{label} return is due</h3>
       <div class="mt-1 text-3xl font-semibold tabular-nums">{formatDate(isoDay(due))}</div>
       {
         /* The sentence that makes the date mean something. A nil return is still
@@ -508,10 +587,85 @@ const deadlineTone =
           </p>
         )}
 
+        {/* ----------------------------------------------------- what is missing */}
+        {/*
+          ABOVE the four tiles, because the net figure in the fourth tile is the
+          number somebody copies onto a form, and "3 trucks still need miles" has
+          to be read before it rather than after.
+
+          The title is the ANSWER, not the name of a chart. "3 trucks still need
+          miles" is something an owner can do; "data completeness" is not.
+
+          The caveat is `Figure`'s own coverage slot, so it prints in the same
+          amber "Not the whole picture" voice the rest of the IFTA charts use —
+          the warning this page already made, attached to the one widget on the
+          page that could be mistaken for a green light.
+        */}
+        <Figure
+          class="mb-5"
+          title={readiness.headline}
+          subtitle={readiness.countLine}
+          coverage={readiness.caveat}
+          action={
+            readiness.withoutMiles > 0
+              ? { href: `/app/ifta/miles?q=${periodIso}`, label: 'Enter miles →' }
+              : undefined
+          }
+        >
+          {/* Reused rather than rebuilt: `Proportion` already refuses to ship a
+              bar without a legend, and its min-width stops the last grey truck
+              in a big fleet rounding away to nothing. Green is trucks with miles
+              on file; grey is trucks with none, and grey is NOT progress. */}
+          <Proportion
+            segments={readiness.segments}
+            total={readiness.totalTrucks}
+            emptyMessage={
+              readiness.unreadable
+                ? 'We could not read your truck list, so we cannot count.'
+                : 'No trucks on file yet.'
+            }
+          />
+
+          {/* The list that stops a full bar reading as permission. The last two
+              rows are grey on every quarter that ever renders — nothing here can
+              see whether the figures are right or whether the form was filed —
+              so there is no state of this page in which every row is green. */}
+          <ul class="mt-4 space-y-2.5 border-t border-ink-100 pt-4 text-sm">
+            {
+              readiness.steps.map((step) => (
+                <li class="flex gap-2.5">
+                  {/* Decorative: the sentence beside it carries the same state in
+                      words, because roughly one man in twelve cannot separate the
+                      red dot from the amber one. */}
+                  <span
+                    class:list={['mt-1.5 h-2 w-2 shrink-0 rounded-full', TONES[step.tone].swatch]}
+                    aria-hidden="true"
+                  />
+                  <div class="min-w-0">
+                    <span class="font-medium">{step.label}</span>
+                    <span class="text-ink-500"> — {step.detail}</span>
+                    {step.href && step.action && (
+                      <>
+                        {' '}
+                        <a
+                          href={step.href}
+                          class="font-medium whitespace-nowrap text-brand-600 hover:underline"
+                        >
+                          {step.action} →
+                        </a>
+                      </>
+                    )}
+                  </div>
+                </li>
+              ))
+            }
+          </ul>
+        </Figure>
+
         {/* ------------------------------------------------------------- figures */}
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div class={card}>
-            <div class="text-xs tracking-wide text-ink-500 uppercase">Total miles</div>
+            <h3 class="text-xs tracking-wide text-ink-500 uppercase">Total miles</h3>
             <div class="mt-1 text-3xl font-semibold tabular-nums">
               {result.totalMiles.toLocaleString('en-US')}
             </div>
@@ -519,7 +673,7 @@ const deadlineTone =
           </div>
 
           <div class={card}>
-            <div class="text-xs tracking-wide text-ink-500 uppercase">Total gallons</div>
+            <h3 class="text-xs tracking-wide text-ink-500 uppercase">Total gallons</h3>
             <div class="mt-1 text-3xl font-semibold tabular-nums">
               {gallons(result.totalGallonsMilli)}
             </div>
@@ -530,7 +684,7 @@ const deadlineTone =
           </div>
 
           <div class={card}>
-            <div class="text-xs tracking-wide text-ink-500 uppercase">Fleet MPG</div>
+            <h3 class="text-xs tracking-wide text-ink-500 uppercase">Fleet MPG</h3>
             <div class="mt-1 text-3xl font-semibold tabular-nums">
               {result.mpgCentis > 0 ? mpg(result.mpgCentis) : <span class="text-ink-300">—</span>}
             </div>
@@ -548,13 +702,16 @@ const deadlineTone =
               incomplete ? 'border-red-200 bg-red-50/40' : '',
             ]}
           >
-            <div class="text-xs tracking-wide text-ink-500 uppercase">
+            {/* A real heading, not a styled div — the wording, the size and the
+                position are exactly as they were. This is the line that tells
+                an owner the big number under it is not the one to file. */}
+            <h3 class="text-xs tracking-wide text-ink-500 uppercase">
               {incomplete
                 ? 'Part of the net — do not file this figure'
                 : result.netCents < 0
                   ? 'Net credit'
                   : 'Net owed'}
-            </div>
+            </h3>
             <div
               class:list={[
                 'mt-1 text-3xl font-semibold tabular-nums',
@@ -665,8 +822,10 @@ const deadlineTone =
           </div>
         ) : (
           <div class="mt-3 overflow-x-auto rounded-xl border border-ink-100 bg-white">
-            <table class="w-full min-w-[56rem] text-sm">
-              <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+            <table class="w-full text-sm sm:min-w-[56rem]">
+              {/* No header line on a phone. Six column names above blocks that
+                  are not columns explain nothing; each block says what it is. */}
+              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
                 <tr>
                   <th class="px-4 py-3 font-medium">Jurisdiction</th>
                   <th class="px-4 py-3 text-right font-medium">Miles</th>
@@ -680,35 +839,48 @@ const deadlineTone =
                 {result.lines.map((line) => {
                   const unknown = line.outcome.kind === 'rate_unknown'
                   return (
-                    <tr class:list={[unknown ? 'bg-red-50/60' : 'hover:bg-ink-50/60']}>
-                      <td class="px-4 py-3">
+                    <tr
+                      class:list={[
+                        'flex flex-col py-3 sm:table-row sm:py-0',
+                        unknown ? 'bg-red-50/60' : 'hover:bg-ink-50/60',
+                      ]}
+                    >
+                      {/* THE JURISDICTION LEADS, then the miles, then the net.
+                          That is the order the return is read in and the order
+                          it is copied onto the form in. */}
+                      <td class={`${cell} order-1`}>
                         <span class="font-medium">{line.jurisdiction}</span>
                         <span class="ml-2 text-xs text-ink-500">
                           {jurisdictionName(line.jurisdiction)}
                         </span>
                       </td>
-                      <td class="px-4 py-3 text-right tabular-nums">
+                      <td class={`${cell} order-2 tabular-nums sm:text-right`}>
+                        <span class={colName}>Miles </span>
                         {line.miles.toLocaleString('en-US')}
                       </td>
                       {/* Derived from miles and fleet MPG, never measured. */}
-                      <td class="px-4 py-3 text-right tabular-nums">
+                      <td class={`${cell} order-4 tabular-nums sm:text-right`}>
+                        <span class={colName}>Taxable gallons </span>
                         {gallons(line.taxableGallonsMilli)}
                       </td>
                       {/* Tax-paid purchases ONLY. Bulk gallons are missing from
                           this column on purpose: claiming them is the classic
                           audit finding, and they are already counted in the
                           fleet MPG. */}
-                      <td class="px-4 py-3 text-right tabular-nums">
+                      <td class={`${cell} order-5 tabular-nums sm:text-right`}>
+                        <span class={colName}>Tax-paid gallons </span>
                         {gallons(line.purchasedGallonsMilli)}
                       </td>
-                      <td class="px-4 py-3 text-right tabular-nums">
+                      <td class={`${cell} order-6 tabular-nums sm:text-right`}>
+                        <span class={colName}>Rate </span>
                         {line.outcome.kind === 'computed' ? (
                           rate(line.outcome.rateMills)
                         ) : (
                           <span class="font-medium text-red-700">unknown</span>
                         )}
                       </td>
-                      <td class="px-4 py-3 text-right tabular-nums">
+                      <td class={`${cell} order-3 tabular-nums sm:text-right`}>
+                        <span class={colName}>Net owed / (credit) </span>
                         {line.outcome.kind === 'computed' ? (
                           <span
                             class:list={[
@@ -734,20 +906,33 @@ const deadlineTone =
                 })}
               </tbody>
               <tfoot class="border-t border-ink-100">
-                <tr>
-                  <td class="px-4 py-3 font-medium">{incomplete ? 'Total so far' : 'Total'}</td>
-                  <td class="px-4 py-3 text-right font-medium tabular-nums">
+                <tr class="flex flex-col py-3 sm:table-row sm:py-0">
+                  <td class={`${cell} font-medium`}>{incomplete ? 'Total so far' : 'Total'}</td>
+                  <td class={`${cell} font-medium tabular-nums sm:text-right`}>
+                    <span class={colName}>Miles </span>
                     {result.totalMiles.toLocaleString('en-US')}
                   </td>
-                  <td class="px-4 py-3" />
-                  <td class="px-4 py-3" />
-                  <td class="px-4 py-3" />
+                  {/* Three empty cells. They hold the columns open from `sm` up
+                      and are three blank lines on a phone, so they are not
+                      rendered there. */}
+                  <td class="hidden px-4 py-3 sm:table-cell" />
+                  <td class="hidden px-4 py-3 sm:table-cell" />
+                  <td class="hidden px-4 py-3 sm:table-cell" />
                   <td
                     class:list={[
-                      'px-4 py-3 text-right font-semibold tabular-nums',
+                      cell,
+                      'font-semibold tabular-nums sm:text-right',
                       incomplete ? 'text-red-700' : result.netCents < 0 ? 'text-emerald-700' : '',
                     ]}
                   >
+                    {/* Not `label`: this one inherits the cell's colour instead
+                        of going grey, so on an incomplete return the phone
+                        reads the warning in the same red as the figure, in the
+                        same words as the tile above. A grey caveat beside a red
+                        number is the one version of this that must not ship. */}
+                    <span class="font-normal sm:hidden">
+                      {incomplete ? 'Part of the net — do not file this figure ' : 'Net '}
+                    </span>
                     {result.netCents < 0
                       ? `(${formatCents(-result.netCents)})`
                       : formatCents(result.netCents)}

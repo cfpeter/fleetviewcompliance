@@ -315,7 +315,8 @@ async function assess(
           thisLoadId: id,
         }),
       ],
-      // `loadDeadlines()` only evaluates ACTIVE drivers and unsold vehicles, so
+      // `loadDeadlines()` only evaluates ACTIVE drivers and ACTIVE vehicles —
+      // see src/lib/fleet/active.ts, which billing reads too — so
       // an empty item list is ambiguous: it is either a subject with no
       // applicable rules or a subject the engine never saw. Saying "no issues"
       // about the second one is the exact shape of the lie this product exists

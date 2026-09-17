@@ -355,6 +355,43 @@ const phoneUndialable = formatPhone(customer.phone) !== '' && toE164(customer.ph
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
 const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+
+/**
+ * ONE HEADING SCALE, THREE STEPS, THE SAME ON EVERY SCREEN IN THIS APP.
+ *
+ *   h2  text-lg font-semibold tracking-tight        — a section of the page
+ *   h3  text-sm font-semibold tracking-tight        — a subsection inside a card
+ *   h3  text-xs tracking-wide text-ink-500 uppercase — the label on a small card
+ *
+ * Both cards in the rail on this page are the third kind, so the string is
+ * written out where it is used rather than kept in a constant: it has to stay
+ * BYTE-IDENTICAL to the same label on /app/dispatch, /app/settlements and
+ * /app/ifta — one string, greppable, on fourteen screens. They were `<div>`s,
+ * which are not headings at all — invisible to the document outline and to
+ * anybody moving through the page by headings. The element changed; the class
+ * string did not, so nothing moved.
+ */
+
+/**
+ * ON A PHONE THE ROWS ARE NOT ROWS.
+ *
+ * The loads table is 48rem wide and the window on a 375px phone is about 341px,
+ * so most of every row — the total among it — was behind a sideways scroll.
+ * Below `sm` every cell becomes a block; from `sm` the same markup is a table
+ * again. ONE set of cells, not two. The pattern is written down in
+ * src/components/Documents.astro.
+ *
+ * THE BLOCKS ARE ORDERED, WHICH IS THE ONE ADDITION TO THAT PATTERN. This table
+ * is on a CUSTOMER page, and what is read off it is whether their money arrives:
+ * the total and the billing state were fifth and fourth, furthest off the edge.
+ * Where the truck is belongs to the dispatch board, so the load status drops
+ * below them here. `order-*` needs the row to be a flex column below `sm`; from
+ * `sm` it is `table-row` again and the property is ignored, so the desktop table
+ * is untouched and the header row still names the columns in their own order.
+ */
+const cell = 'block px-4 sm:table-cell sm:py-3'
+/** The column name, said on the block that has no column. */
+const said = 'text-ink-500 sm:hidden'
 ---
 
 <App title={customer.name} subtitle={subtitle}>
@@ -516,7 +553,7 @@ const field =
 
     <div class="space-y-4">
       <div class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">Days to pay</div>
+        <h3 class="text-xs tracking-wide text-ink-500 uppercase">Days to pay</h3>
         {
           customer.days_to_pay === null ? (
             <>
@@ -561,7 +598,7 @@ const field =
         federal && (
           <div class={card}>
             <div class="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 class="font-medium tracking-tight">Operating authority</h3>
+              <h3 class="text-xs tracking-wide text-ink-500 uppercase">Operating authority</h3>
               <span class="text-xs text-ink-300">Public FMCSA record</span>
             </div>
 
@@ -767,8 +804,13 @@ const field =
         </div>
       ) : (
         <div class="mt-4 overflow-x-auto rounded-xl border border-ink-100 bg-white">
-          <table class="w-full min-w-[48rem] text-sm">
-            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+          <table class="w-full text-sm sm:min-w-[48rem]">
+            {/*
+              No header line on a phone. Five column names above blocks that are
+              not columns explain nothing — each block says what it is in its own
+              words instead.
+            */}
+            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
               <tr>
                 <th class="px-4 py-3 font-medium">Load</th>
                 <th class="px-4 py-3 font-medium">Booked</th>
@@ -779,8 +821,10 @@ const field =
             </thead>
             <tbody class="divide-y divide-ink-100">
               {loads.map((l) => (
-                <tr class="hover:bg-ink-50/60">
-                  <td class="px-4 py-3">
+                /* The block leads with the load number, which is what a broker
+                   quotes down the phone and what this table is looked up by. */
+                <tr class="flex flex-col py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                  <td class={`${cell} order-1`}>
                     <a
                       href={`/app/loads/${l.id}`}
                       class="font-medium hover:text-brand-600 hover:underline"
@@ -793,10 +837,16 @@ const field =
                       </div>
                     )}
                   </td>
-                  <td class="px-4 py-3 whitespace-nowrap tabular-nums">
+                  {/* Last on a phone. The day it was booked is how the list is
+                      sorted, not something read off a row. */}
+                  <td
+                    class={`${cell} order-5 mt-0.5 text-xs whitespace-nowrap text-ink-500 tabular-nums sm:mt-0 sm:text-sm sm:text-ink-900`}
+                  >
+                    <span class="sm:hidden">Booked </span>
                     {formatStamp(l.created_at)}
                   </td>
-                  <td class="px-4 py-3">
+                  {/* Fourth on a phone. Where the truck is has its own screen. */}
+                  <td class={`${cell} order-4 mt-1.5 sm:mt-0`}>
                     <span
                       class:list={[
                         'rounded-md px-2 py-0.5 text-xs font-medium',
@@ -821,7 +871,11 @@ const field =
                       </span>
                     )}
                   </td>
-                  <td class="px-4 py-3">
+                  {/* The billing state keeps its own line on a phone: where the
+                      truck is and where the money is are two different answers,
+                      and running them together is what this table is at pains
+                      not to do. */}
+                  <td class={`${cell} order-3 mt-1.5 sm:mt-0`}>
                     <span
                       class:list={[
                         'rounded-md px-2 py-0.5 text-xs font-medium',
@@ -836,7 +890,12 @@ const field =
                        unpriced load and a load that pays nothing go to two
                        different people. */
                   }
-                  <td class="px-4 py-3 text-right whitespace-nowrap tabular-nums">
+                  {/* SECOND ON A PHONE. What the load pays is the number this
+                      page is opened for, and it was the furthest off the edge. */}
+                  <td
+                    class={`${cell} order-2 mt-1.5 font-medium whitespace-nowrap tabular-nums sm:mt-0 sm:text-right sm:font-normal`}
+                  >
+                    <span class={said}>Total </span>
                     {formatCents(totalRateCents(l))}
                   </td>
                 </tr>

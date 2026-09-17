@@ -9,7 +9,15 @@
  */
 import Columns from '../../../components/charts/Columns.astro'
 import Figure from '../../../components/charts/Figure.astro'
+import Ring from '../../../components/charts/Ring.astro'
+import Documents from '../../../components/Documents.astro'
 import App from '../../../layouts/App.astro'
+import {
+  type DocumentRow,
+  DOCUMENT_COLUMNS,
+  requestTooLarge,
+  uploadFromForm,
+} from '../../../lib/documents.ts'
 import {
   driverYearToDate,
   monthsEnding,
@@ -18,7 +26,10 @@ import {
   paidSettlements,
   payByMonth,
 } from '../../../lib/charts/pay.ts'
+import { dqRing, driverLine } from '../../../lib/charts/dq-rings.ts'
 import { ceilingFor, compactMoney } from '../../../lib/charts/scale.ts'
+import { loadDeadlines } from '../../../lib/deadlines.ts'
+import { assembleDqf } from '../../../lib/proof/dqf.ts'
 import {
   DRIVER_STATUSES,
   US_STATE_CODES,
@@ -30,6 +41,15 @@ import {
   statusPillClass,
   todayInCalifornia,
 } from '../../../lib/drivers.ts'
+import { DRIVER_NOT_ACTIVE_MEANS, isActiveDriver } from '../../../lib/fleet/active.ts'
+import {
+  canRemove,
+  confirmBody,
+  confirmTitle,
+  driverHistory,
+  refusalFor,
+  remindersLine,
+} from '../../../lib/fleet/remove.ts'
 import { formatCents } from '../../../lib/loads.ts'
 import { formatPhone, parsePhoneEdit, toE164 } from '../../../lib/phone.ts'
 import { anchorSlot, planAnchorWrites } from '../../../lib/anchors/plan.ts'
@@ -97,8 +117,34 @@ if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
 }
 
 if (Astro.request.method === 'POST') {
+  // BEFORE the body is read. formData() pulls the whole request into memory, so
+  // an enormous upload has to be refused by its declared length or it is a dead
+  // Worker instead of a message she can act on. The real limit is measured on
+  // the bytes later; this only stops us buffering them.
+  //
+  // Answered as a DOCUMENT error rather than the page's generic one, so the
+  // sentence lands beside the file box she was using instead of at the top of a
+  // long page, where it reads as a complaint about something else entirely.
+  const oversized = requestTooLarge(Astro.request)
+  if (oversized) return back(`doc_error=${encodeURIComponent(oversized)}#documents`)
+
   const form = await Astro.request.formData()
   const intent = String(form.get('intent') ?? '')
+
+  if (intent === 'upload_document') {
+    // Everything — the type sniff, the key, the R2 put, the row, the supersede —
+    // is in src/lib/documents.ts, shared with the vehicle page.
+    return back(
+      await uploadFromForm({
+        form,
+        supabase,
+        carrierId,
+        userId,
+        subjectType: 'driver',
+        subjectId: id,
+      }),
+    )
+  }
 
   if (intent === 'save_driver') {
     const first = formText(form, 'first_name')
@@ -166,6 +212,34 @@ if (Astro.request.method === 'POST') {
     // exist or belongs to somebody else.
     if (!data || data.length === 0) return toRoster(NOT_YOURS)
     return back('saved=1')
+  }
+
+  /**
+   * Delete the driver — and refuse whenever there is anything to preserve.
+   *
+   * THE REFUSAL IS THE NORMAL OUTCOME HERE, not the exception. A driver row is
+   * the spine of a qualification file, and 49 CFR 391.51(c) requires that file
+   * be kept for as long as he is employed plus three years. `documents` and
+   * `compliance_records` have no DELETE grant and no foreign key to this table,
+   * so a delete would not even fail loudly — it would succeed and leave his
+   * medical card pointing at an id that no longer names anybody.
+   *
+   * What gets through is the row with nothing behind it: the driver somebody
+   * typed twice. Checked again on POST because a tab left open all morning is
+   * the ordinary way a stale "yes, it is empty" reaches this handler.
+   */
+  if (intent === 'delete') {
+    const report = await driverHistory(supabase, id)
+    if (!canRemove(report)) return back('confirm=delete#delete')
+
+    // RLS makes another carrier's driver invisible to this statement, and
+    // 0028_fleet_delete_guard.sql carries the same checks in the database — the
+    // grant to DELETE has been on this table since 0002, so an app-side check on
+    // its own is a suggestion.
+    const { error } = await supabase.from('drivers').delete().eq('id', id)
+    if (error) return back('confirm=delete#delete')
+
+    return Astro.redirect('/app/drivers?removed=1', 303)
   }
 
   if (intent === 'save_dates') {
@@ -283,7 +357,12 @@ interface DriverSettlementRow {
 // by a row count rather than by a date, because a settlement can be marked paid
 // months after the period it covers and a date floor would drop it out of the
 // chart with nothing on screen to say so.
-const [current, { data: settlementData }] = await Promise.all([
+//
+// The documents join the same round of reads. RLS scopes them to this carrier,
+// and the subject filter is what makes them THIS driver's — a document id is
+// never enough on its own, here or on the download route.
+const [current, { data: settlementData }, { data: documentData }, allDeadlines] =
+  await Promise.all([
   loadCurrentAnchors(),
   supabase
     .from('settlements')
@@ -294,12 +373,49 @@ const [current, { data: settlementData }] = await Promise.all([
     .order('period_start', { ascending: false })
     .order('revision', { ascending: false })
     .limit(400),
+  supabase
+    .from('documents')
+    .select(DOCUMENT_COLUMNS)
+    .eq('subject_type', 'driver')
+    .eq('subject_id', id)
+    .order('uploaded_at', { ascending: false })
+    .limit(200),
+  // The rule engine, in the same round as everything else. It is the first of
+  // the three calls the printed qualification file makes, and this page makes
+  // them in the same order for the same reason: the ring in the sidebar must
+  // count what the binder counts, or it is a false assurance on the one
+  // document somebody asks for when they are checking up on you.
+  loadDeadlines(supabase, carrierId),
 ])
+
+const documents = (documentData ?? []) as unknown as DocumentRow[]
+
+/**
+ * The qualification ring.
+ *
+ * Gated on the active roster because `loadDeadlines` evaluates active drivers
+ * and nobody else: a terminated driver comes back with no items at all, and no
+ * items scores as eight things not on file. A red ring on a man who left last
+ * year teaches the owner to ignore the colour on the forty he still employs.
+ *
+ * The gate is the shared predicate, so it cannot drift from the loader.
+ */
+const dqf = isActiveDriver(driver)
+  ? dqRing(assembleDqf({ items: allDeadlines.filter((i) => i.subjectId === id) }), new Date())
+  : null
 
 // Only the anchors a normal driver is expected to have. The exemption dates are
 // blank for almost everyone, and counting them here would report every driver in
 // the fleet as four dates short forever, which trains her to ignore the number.
-const missing = DRIVER_ANCHORS.filter((a) => a.expected === 'always' && !current.has(a.key))
+// SLOT KEY, NOT THE BARE ANCHOR KEY. `loadCurrentAnchors` keys this Map by
+// `anchorSlot('driver', id, key)`; looking it up by `a.key` alone never matches,
+// so every date read as missing and "Dates not recorded" showed the full count
+// for a driver whose file was complete. The date inputs below were fixed for
+// this once and this line was missed — the two must move together, and the
+// types cannot catch it because both keys are strings.
+const missing = DRIVER_ANCHORS.filter(
+  (a) => a.expected === 'always' && !current.has(anchorSlot('driver', id, a.key)),
+)
 
 const settlements = (settlementData ?? []) as unknown as DriverSettlementRow[]
 const today = todayInCalifornia()
@@ -355,6 +471,22 @@ const added = params.get('added') === '1'
 const saved = params.get('saved') === '1'
 const datesSaved = params.has('dates') ? Number(params.get('dates')) : null
 
+/**
+ * The delete panel, opened by a plain link.
+ *
+ * TWO STEPS, NO JAVASCRIPT. Nothing in this app runs client script, so
+ * `confirm()` is not available and would not be wanted: the first press is a GET
+ * that opens a panel naming the driver, the second is a POST with an intent,
+ * exactly like every other write on this page.
+ *
+ * The counting only happens when the panel is open — six head queries that a
+ * page nobody is deleting from should not pay for.
+ */
+const wantsDelete = params.get('confirm') === 'delete'
+const removal = wantsDelete ? await driverHistory(supabase, id) : null
+const refusal = removal ? refusalFor('driver', fullName(driver), removal) : null
+const alsoGoes = removal ? remindersLine('driver', removal) : null
+
 // Advisory, and deliberately not a save-time refusal — see parsePhoneEdit. The
 // save now lets a legacy number through so nobody is blocked on a field they did
 // not touch, and the cost of that mercy is a number that sits there looking
@@ -369,6 +501,45 @@ const phoneUndialable = formatPhone(driver.phone) !== '' && toE164(driver.phone)
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
 const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+
+/**
+ * ONE HEADING SCALE, THREE STEPS, THE SAME ON EVERY SCREEN IN THIS APP.
+ *
+ *   h2  text-lg font-semibold tracking-tight        — a section of the page
+ *   h3  text-sm font-semibold tracking-tight        — a subsection inside a card
+ *   h3  text-xs tracking-wide text-ink-500 uppercase — the label on a small card
+ *
+ * `cardHeading` is the middle one, and it is the size and weight the chart frame
+ * already gives its own heading (src/components/charts/Figure.astro), so the
+ * ring card and the table card beside it start the same way.
+ *
+ * The third is written out in full where it is used rather than kept in a
+ * constant here, because it has to stay BYTE-IDENTICAL to the same label on
+ * /app/dispatch, /app/settlements and /app/ifta — one string, greppable, on
+ * fourteen screens. The small labels on this page were `<div>`s: not headings at
+ * all, invisible to the document outline and to anybody moving through this page
+ * by headings, which is how a screen-reader user finds the count of dates that
+ * are missing. The element changed; the class string did not, so nothing moved.
+ */
+const cardHeading = 'text-sm font-semibold tracking-tight'
+
+/**
+ * IS THE DRIVER RECORD OPEN WHEN THE PAGE LOADS?
+ *
+ * Twelve fields, 1,077px tall, at the top of a page the office opens to look at
+ * a medical card date. The names, the licence number and the date of birth are
+ * typed once and corrected about once a year, so the form is folded away and
+ * what it holds is printed on the summary instead — see the markup below.
+ *
+ * IT OPENS ON ITS OWN WHENEVER A SAVE WAS REFUSED, and that is the whole of the
+ * rule: every refusal on this page comes back through `fail()`, which redirects
+ * with `?error=`, and the message prints at the top of the page. A closed form
+ * under that message would be a failure with nothing on screen to fix. Keyed off
+ * the message rather than off which form produced it, deliberately — it is the
+ * one version of this that cannot be broken by adding a thirteenth field or a
+ * new way to refuse one.
+ */
+const recordOpen = error !== null
 ---
 
 <App
@@ -399,138 +570,261 @@ const field =
   }
 
   <div class="grid gap-6 lg:grid-cols-[1fr_minmax(0,20rem)]">
-    <form method="POST" class="space-y-4 rounded-xl border border-ink-100 bg-white p-5">
-      <h2 class="text-lg font-semibold tracking-tight">Driver record</h2>
+    {/*
+      THE RECORD IS FOLDED AWAY, ON `details` ALONE.
 
-      <div class="grid gap-4 sm:grid-cols-2">
-        <label class="block">
-          <span class="text-sm font-medium">First name <span class="text-red-600">*</span></span>
-          <input type="text" name="first_name" value={driver.first_name} required class={field} />
-        </label>
-        <label class="block">
-          <span class="text-sm font-medium">Last name <span class="text-red-600">*</span></span>
-          <input type="text" name="last_name" value={driver.last_name} required class={field} />
-        </label>
-      </div>
+      No script runs in this app and none is needed: `details` opens on a tap and
+      from the keyboard by itself, the same way the phone menu in
+      src/layouts/App.astro and the upload form in src/components/Documents.astro
+      already do.
 
-      <div class="grid gap-4 sm:grid-cols-2">
-        <label class="block">
-          <span class="text-sm font-medium">Phone</span>
+      WHAT IS FOLDED AWAY IS THE TYPING, NOT THE ANSWERS. The summary keeps the
+      three facts somebody opens a driver for when he is not editing anything —
+      the number to ring him on, his licence number, and the day that licence
+      runs out — so the closed card still answers the question the page was
+      opened with. Collapsing is only worth doing if nothing he came for
+      disappears; otherwise it is hiding data and calling it tidying.
+
+      `open` is decided on the server, so a refused save always comes back with
+      the form already open under its own error message. See `recordOpen`.
+    */}
+    <div class="rounded-xl border border-ink-100 bg-white p-5">
+      <details open={recordOpen} class="group">
+        <summary
+          class="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-3 select-none [&::-webkit-details-marker]:hidden"
+        >
+          <h2 class="text-lg font-semibold tracking-tight">Driver record</h2>
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180"
+          >
+            <path d="M5 8l5 5 5-5"></path>
+          </svg>
+          {/* One word, and it goes when the form is open, where the form itself
+              says what it is for. */}
+          <span class="ml-auto text-sm font-medium text-brand-600 group-open:hidden">Change</span>
+
+          <span class="flex w-full flex-wrap gap-x-6 gap-y-1 text-sm">
+            <span class="whitespace-nowrap">
+              <span class="text-ink-500">Phone </span>
+              {
+                formatPhone(driver.phone) ? (
+                  <span class="tabular-nums">{formatPhone(driver.phone)}</span>
+                ) : (
+                  <span class="text-ink-300">not on file</span>
+                )
+              }
+            </span>
+            <span class="whitespace-nowrap">
+              <span class="text-ink-500">CDL </span>
+              {
+                driver.cdl_number ? (
+                  <span class="tabular-nums">
+                    {driver.cdl_number}
+                    {driver.cdl_state && ` ${driver.cdl_state}`}
+                  </span>
+                ) : (
+                  <span class="text-ink-300">not on file</span>
+                )
+              }
+            </span>
+            <span class="whitespace-nowrap">
+              <span class="text-ink-500">CDL expires </span>
+              {
+                driver.cdl_expires_on ? (
+                  <span class="tabular-nums">{formatDate(driver.cdl_expires_on)}</span>
+                ) : (
+                  <span class="text-ink-300">not on file</span>
+                )
+              }
+            </span>
+          </span>
+
           {/*
-            Shown the way a person reads it, stored as E.164. The two are
-            deliberately different: '+18183340168' is what a provider needs and
-            what makes two spellings of one number compare equal, and it is also
-            what nobody recognises as their own driver's line at a glance.
+            The phone advisory follows the phone onto the summary. It used to sit
+            under the field, which is behind the fold now — and a number we
+            cannot text is exactly the thing that must not go quiet. The long
+            version, with what to do about it, is still under the field.
           */}
-          <input
-            type="tel"
-            name="phone"
-            value={formatPhone(driver.phone)}
-            placeholder="(818) 334-0168"
-            class={`${field} tabular-nums`}
-          />
           {
             phoneUndialable && (
-              <span class="mt-1.5 inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
-                We cannot text this number. Reminders for this driver have nowhere to go. We
-                saved it anyway.
+              <span class="w-full rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                We cannot text this number.
               </span>
             )
           }
-        </label>
-        <label class="block">
-          <span class="text-sm font-medium">Email</span>
-          <input type="email" name="email" value={driver.email ?? ''} class={field} />
-        </label>
-      </div>
+        </summary>
 
-      <div class="grid gap-4 sm:grid-cols-2">
-        <label class="block">
-          <span class="text-sm font-medium">CDL number</span>
-          <input
-            type="text"
-            name="cdl_number"
-            value={driver.cdl_number ?? ''}
-            class={`${field} tabular-nums`}
-          />
-        </label>
-        <label class="block">
-          <span class="text-sm font-medium">CDL state</span>
-          <select name="cdl_state" class={field}>
-            <option value="">—</option>
-            {
-              US_STATE_CODES.map((code) => (
-                <option value={code} selected={driver.cdl_state === code}>
-                  {code}
-                </option>
-              ))
-            }
-          </select>
-        </label>
-      </div>
+        <form method="POST" class="mt-5 space-y-4 border-t border-ink-100 pt-5">
+          <div class="grid gap-4 sm:grid-cols-2">
+            <label class="block">
+              <span class="text-sm font-medium">
+                First name <span class="text-red-600">*</span>
+              </span>
+              <input
+                type="text"
+                name="first_name"
+                value={driver.first_name}
+                required
+                class={field}
+              />
+            </label>
+            <label class="block">
+              <span class="text-sm font-medium">
+                Last name <span class="text-red-600">*</span>
+              </span>
+              <input
+                type="text"
+                name="last_name"
+                value={driver.last_name}
+                required
+                class={field}
+              />
+            </label>
+          </div>
 
-      <div class="grid gap-4 sm:grid-cols-2">
-        <label class="block">
-          <span class="text-sm font-medium">CDL expires</span>
-          <input
-            type="date"
-            name="cdl_expires_on"
-            value={driver.cdl_expires_on ?? ''}
-            class={`${field} tabular-nums`}
-          />
-        </label>
-        <label class="block">
-          <span class="text-sm font-medium">Hire date</span>
-          <input
-            type="date"
-            name="hired_on"
-            value={driver.hired_on ?? ''}
-            max={today}
-            class={`${field} tabular-nums`}
-          />
-          <span class="mt-1 block text-xs text-ink-500">
-            Five federal deadlines are counted from this day, so do not leave it blank.
-          </span>
-        </label>
-      </div>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <label class="block">
+              <span class="text-sm font-medium">Phone</span>
+              {/*
+                Shown the way a person reads it, stored as E.164. The two are
+                deliberately different: '+18183340168' is what a provider needs and
+                what makes two spellings of one number compare equal, and it is also
+                what nobody recognises as their own driver's line at a glance.
+              */}
+              <input
+                type="tel"
+                name="phone"
+                value={formatPhone(driver.phone)}
+                placeholder="(818) 334-0168"
+                class={`${field} tabular-nums`}
+              />
+              {
+                phoneUndialable && (
+                  <span class="mt-1.5 inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                    We cannot text this number. Reminders for this driver have nowhere to go. We
+                    saved it anyway.
+                  </span>
+                )
+              }
+            </label>
+            <label class="block">
+              <span class="text-sm font-medium">Email</span>
+              <input type="email" name="email" value={driver.email ?? ''} class={field} />
+            </label>
+          </div>
 
-      <div class="grid gap-4 sm:grid-cols-2">
-        <label class="block">
-          <span class="text-sm font-medium">Date of birth</span>
-          <input
-            type="date"
-            name="date_of_birth"
-            value={driver.date_of_birth ?? ''}
-            max={today}
-            class={`${field} tabular-nums`}
-          />
-        </label>
-        <label class="block">
-          <span class="text-sm font-medium">Status</span>
-          <select name="status" class={field}>
-            {
-              DRIVER_STATUSES.map((s) => (
-                <option value={s.value} selected={driver.status === s.value}>
-                  {s.label}
-                </option>
-              ))
-            }
-          </select>
-          <span class="mt-1 block text-xs text-ink-500">
-            Inactive and terminated drivers come off the roster. Their records stay.
-          </span>
-        </label>
-      </div>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <label class="block">
+              <span class="text-sm font-medium">CDL number</span>
+              <input
+                type="text"
+                name="cdl_number"
+                value={driver.cdl_number ?? ''}
+                class={`${field} tabular-nums`}
+              />
+            </label>
+            <label class="block">
+              <span class="text-sm font-medium">CDL state</span>
+              <select name="cdl_state" class={field}>
+                <option value="">—</option>
+                {
+                  US_STATE_CODES.map((code) => (
+                    <option value={code} selected={driver.cdl_state === code}>
+                      {code}
+                    </option>
+                  ))
+                }
+              </select>
+            </label>
+          </div>
 
-      <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-        <button
-          type="submit"
-          name="intent"
-          value="save_driver"
-          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-        >
-          Save driver
-        </button>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <label class="block">
+              <span class="text-sm font-medium">CDL expires</span>
+              <input
+                type="date"
+                name="cdl_expires_on"
+                value={driver.cdl_expires_on ?? ''}
+                class={`${field} tabular-nums`}
+              />
+            </label>
+            <label class="block">
+              <span class="text-sm font-medium">Hire date</span>
+              <input
+                type="date"
+                name="hired_on"
+                value={driver.hired_on ?? ''}
+                max={today}
+                class={`${field} tabular-nums`}
+              />
+              <span class="mt-1 block text-xs text-ink-500">
+                Five federal deadlines are counted from this day, so do not leave it blank.
+              </span>
+            </label>
+          </div>
+
+          <div class="grid gap-4 sm:grid-cols-2">
+            <label class="block">
+              <span class="text-sm font-medium">Date of birth</span>
+              <input
+                type="date"
+                name="date_of_birth"
+                value={driver.date_of_birth ?? ''}
+                max={today}
+                class={`${field} tabular-nums`}
+              />
+            </label>
+            <label class="block">
+              <span class="text-sm font-medium">Status</span>
+              <select name="status" class={field}>
+                {
+                  DRIVER_STATUSES.map((s) => (
+                    <option value={s.value} selected={driver.status === s.value}>
+                      {s.label}
+                    </option>
+                  ))
+                }
+              </select>
+              {/*
+                One sentence, from src/lib/fleet/active.ts, shared with the truck
+                page and /app/billing. It has to say the consequence out loud: a
+                status that quietly switches off the reminders is how a medical card
+                expires on a man somebody marked inactive and then re-hired.
+              */}
+              <span class="mt-1 block text-xs text-ink-500">
+                {DRIVER_NOT_ACTIVE_MEANS} His records stay on file.
+              </span>
+            </label>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+            <button
+              type="submit"
+              name="intent"
+              value="save_driver"
+              class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+            >
+              Save driver
+            </button>
+          </div>
+        </form>
+      </details>
+
+      {/*
+        The two links are OUTSIDE the fold. They are how you leave this page, and
+        a way out that only exists once you have opened an edit form is not a way
+        out. The qualification file matters twice over here: for a driver who is
+        not active there is no ring card in the rail, so this is the only link to
+        it on the screen.
+      */}
+      <div class="mt-5 flex flex-wrap items-center gap-4 border-t border-ink-100 pt-4">
         <a href={`/app/drivers/${id}/file`} class="text-sm font-medium text-brand-600 hover:underline">
           Qualification file →
         </a>
@@ -538,11 +832,32 @@ const field =
           Back to drivers
         </a>
       </div>
-    </form>
+    </div>
 
     <div class="space-y-4">
+      {
+        dqf && (
+          /*
+            The one visual on this page that answers "would this file survive
+            somebody asking for it". The sentence under it is the answer; the
+            ring is only how it is read in a second. The fraction sits in the
+            middle of the ring so the arithmetic behind it is never out of
+            sight — a bare score is a number a broker quotes back at you.
+          */
+          <Figure
+            title="Driver file"
+            subtitle="The 8 items 49 CFR 391.51(b) asks for"
+            coverage="Counted from what you typed in. Nobody here has seen the paper documents."
+            action={{ href: `/app/drivers/${id}/file`, label: 'Open the file →' }}
+          >
+            <Ring ring={dqf} size={76} centre legend />
+            <p class="mt-4 text-sm font-medium">{driverLine(dqf)}</p>
+          </Figure>
+        )
+      }
+
       <div class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">Dates not recorded</div>
+        <h3 class="text-xs tracking-wide text-ink-500 uppercase">Dates not recorded</h3>
         <div class="mt-1 text-3xl font-semibold tabular-nums">{missing.length}</div>
         <p class="mt-2 text-sm text-ink-500">
           A missing date is not a safe date. Until you record it, we list this driver as missing
@@ -560,7 +875,7 @@ const field =
       </div>
 
       <div class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">Record</div>
+        <h3 class="text-xs tracking-wide text-ink-500 uppercase">Record</h3>
         <dl class="mt-2 divide-y divide-ink-100 text-sm">
           <div class="flex justify-between gap-4 py-2">
             <dt class="text-ink-500">Status</dt>
@@ -591,10 +906,77 @@ const field =
   </div>
 
   {/*
-    Pay sits between the record and the compliance dates, not at the foot of the
-    page: the dates form ends in a sticky save bar, and anything under that bar
-    is found by nobody. It is also the honest order — this is the other half of
-    what the office opens a driver for.
+    THE DATES COME FIRST, RIGHT UNDER THE RECORD.
+
+    They used to sit at the foot of the page, and the box that says when this
+    man's medical certificate runs out was 4,076px down a 6,003px page on a
+    phone — five screens, behind a form the owner touches about once a year.
+    That is the one date in this product that puts a truck out of service, so it
+    is now the first thing under the record, the way it already is on the truck
+    page (src/pages/app/vehicles/[id].astro).
+
+    The pay chart and the documents follow it. Both are things the office comes
+    to this page to LOOK at; the dates are what it comes to fix.
+  */}
+  <form method="POST" class="mt-8 space-y-4">
+    <div>
+      <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
+      <p class="mt-1 max-w-3xl text-sm text-ink-500">
+        These are the dates we count the deadlines from. We save each one as a new entry instead
+        of replacing the old one, because an expired medical card is the proof this driver was
+        qualified while it ran. A blank box changes nothing. To fix a date, type the new one over
+        the old one.
+      </p>
+    </div>
+
+    {
+      DRIVER_ANCHOR_GROUPS.map((group) => (
+        <div class={card}>
+          {/* The same heading the truck page gives its date groups. The two
+              pages had two different treatments for one thing — 16px black here,
+              12px grey uppercase there — on screens an owner moves between all
+              morning. */}
+          <h3 class={cardHeading}>{group.name}</h3>
+          <div class="mt-4 grid gap-4 sm:grid-cols-2">
+            {group.anchors.map((anchor) => (
+              <label class="block">
+                <span class="text-sm font-medium">{anchor.label}</span>
+                <input
+                  type="date"
+                  name={`date_${anchor.key}`}
+                  value={current.get(anchorSlot('driver', id, anchor.key))?.occurred_on ?? ''}
+                  max={anchor.kind === 'last_done' ? today : undefined}
+                  class={`${field} tabular-nums`}
+                />
+                <span class="mt-1 block text-xs text-ink-500">{anchor.help}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      ))
+    }
+
+    <div
+      class="sticky bottom-0 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white/95 p-4 backdrop-blur"
+    >
+      <span class="flex-1 text-sm text-ink-500">
+        Only the boxes you changed are written. Blank boxes are left alone.
+      </span>
+      <button
+        type="submit"
+        name="intent"
+        value="save_dates"
+        class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+      >
+        Save dates
+      </button>
+    </div>
+  </form>
+
+  {/*
+    Pay, then the papers. This is the other half of what the office opens a
+    driver for, and it stays above the documents because a settlement is looked
+    at weekly and a filed medical card is looked at when somebody asks for it.
   */}
   <section class="mt-8">
     <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -668,7 +1050,7 @@ const field =
           )}
 
           <div class={card}>
-            <h3 class="text-sm font-semibold tracking-tight">Recent settlements</h3>
+            <h3 class={cardHeading}>Recent settlements</h3>
             <table class="mt-3 w-full text-sm">
               <tbody class="divide-y divide-ink-100">
                 {recent.map((s) => (
@@ -683,8 +1065,11 @@ const field =
                       >
                         {formatDate(s.period_start)} – {formatDate(s.period_end)}
                       </a>
+                      {/* `whitespace-nowrap` on the badge because this card is
+                          three columns inside 301px on a phone, and without it
+                          the badge broke across two lines as "rev" then "3". */}
                       {s.revision > 1 && (
-                        <span class="ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs text-ink-500 tabular-nums">
+                        <span class="ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs whitespace-nowrap text-ink-500 tabular-nums">
                           rev {s.revision}
                         </span>
                       )}
@@ -735,54 +1120,90 @@ const field =
     }
   </section>
 
-  <form method="POST" class="mt-8 space-y-4">
-    <div>
-      <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
-      <p class="mt-1 max-w-3xl text-sm text-ink-500">
-        These are the dates we count the deadlines from. We save each one as a new entry instead
-        of replacing the old one, because an expired medical card is the proof this driver was
-        qualified while it ran. A blank box changes nothing. To fix a date, type the new one over
-        the old one.
-      </p>
-    </div>
+  {/*
+    The papers, under the dates, the same order the truck page uses: the date
+    says the physical happened, the file is the card that proves it.
+  */}
+  <Documents subjectType="driver" subjectId={id} documents={documents} noun="this driver" />
 
+  <!-- ------------------------------------------------------------ delete -->
+
+  {/*
+    LAST ON THE PAGE, AND CLOSED BY DEFAULT.
+
+    For one thing only: a driver somebody typed twice, or a row made while
+    learning the screen. A real driver refuses, and the refusal says what to do
+    instead. src/lib/fleet/remove.ts holds the list and the words;
+    0028_fleet_delete_guard.sql holds the same list in the database.
+  */}
+  <section id="delete" class="mt-8 scroll-mt-24">
     {
-      DRIVER_ANCHOR_GROUPS.map((group) => (
+      !wantsDelete ? (
         <div class={card}>
-          <h3 class="font-medium tracking-tight">{group.name}</h3>
-          <div class="mt-4 grid gap-4 sm:grid-cols-2">
-            {group.anchors.map((anchor) => (
-              <label class="block">
-                <span class="text-sm font-medium">{anchor.label}</span>
-                <input
-                  type="date"
-                  name={`date_${anchor.key}`}
-                  value={current.get(anchorSlot('driver', id, anchor.key))?.occurred_on ?? ''}
-                  max={anchor.kind === 'last_done' ? today : undefined}
-                  class={`${field} tabular-nums`}
-                />
-                <span class="mt-1 block text-xs text-ink-500">{anchor.help}</span>
-              </label>
-            ))}
+          <h2 class="text-lg font-semibold tracking-tight">Delete this driver</h2>
+          <p class="mt-1 max-w-2xl text-sm text-ink-500">
+            Only for a driver you added by mistake. If he left, set his status to Terminated
+            above. That takes him off your reminders and keeps his file.
+          </p>
+          <a
+            href={`/app/drivers/${id}?confirm=delete#delete`}
+            class="mt-4 inline-block rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 transition hover:bg-red-50"
+          >
+            Delete this driver
+          </a>
+        </div>
+      ) : refusal ? (
+        <div class="rounded-xl border border-amber-200 bg-amber-50 p-5">
+          <h2 class="text-lg font-semibold tracking-tight text-amber-900">{refusal.title}</h2>
+          {refusal.held.length > 0 && (
+            <>
+              <p class="mt-2 text-sm text-amber-900">What is on file:</p>
+              <ul class="mt-1 list-disc space-y-0.5 pl-5 text-sm text-amber-900">
+                {refusal.held.map((line) => (
+                  <li>{line}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          <p class="mt-3 text-sm text-amber-900">{refusal.why}</p>
+          {/* The dead end is also the answer. */}
+          <p class="mt-2 text-sm font-medium text-amber-900">{refusal.instead}</p>
+          <a
+            href={`/app/drivers/${id}`}
+            class="mt-4 inline-block rounded-lg border border-amber-300 px-4 py-2 text-sm font-medium text-amber-900 transition hover:bg-amber-100"
+          >
+            Go back
+          </a>
+        </div>
+      ) : (
+        <div class="rounded-xl border border-red-200 bg-red-50 p-5">
+          {/* The confirmation NAMES THE DRIVER. A red button that says only
+              "Delete" is a button pressed on the wrong row. */}
+          <h2 class="text-lg font-semibold tracking-tight text-red-800">
+            {confirmTitle(fullName(driver))}
+          </h2>
+          <p class="mt-2 text-sm text-red-700">{confirmBody('driver')}</p>
+          {alsoGoes && <p class="mt-2 text-sm font-medium text-red-700">{alsoGoes}</p>}
+          <div class="mt-4 flex flex-wrap items-center gap-3">
+            <form method="POST">
+              <button
+                type="submit"
+                name="intent"
+                value="delete"
+                class="rounded-lg bg-red-600 px-5 py-2.5 font-medium text-white transition hover:bg-red-700"
+              >
+                Yes, delete {fullName(driver)}
+              </button>
+            </form>
+            <a
+              href={`/app/drivers/${id}`}
+              class="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 transition hover:bg-red-100"
+            >
+              Keep him
+            </a>
           </div>
         </div>
-      ))
+      )
     }
-
-    <div
-      class="sticky bottom-0 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white/95 p-4 backdrop-blur"
-    >
-      <span class="flex-1 text-sm text-ink-500">
-        Only the boxes you changed are written. Blank boxes are left alone.
-      </span>
-      <button
-        type="submit"
-        name="intent"
-        value="save_dates"
-        class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-      >
-        Save dates
-      </button>
-    </div>
-  </form>
+  </section>
 </App>

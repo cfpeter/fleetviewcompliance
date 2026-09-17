@@ -6,7 +6,10 @@
  * URL she can bookmark, text to the owner, or reload on one bar of signal in a
  * yard. Nothing here runs JavaScript.
  */
+import Ring from '../../../components/charts/Ring.astro'
 import App from '../../../layouts/App.astro'
+import { dqRing, rosterLine, rowLine } from '../../../lib/charts/dq-rings.ts'
+import { loadDeadlines } from '../../../lib/deadlines.ts'
 import {
   DRIVER_STATUSES,
   formatDate,
@@ -14,9 +17,14 @@ import {
   statusPillClass,
   todayInCalifornia,
 } from '../../../lib/drivers.ts'
+import { isActiveDriver } from '../../../lib/fleet/active.ts'
+import { removedMessage } from '../../../lib/fleet/remove.ts'
 import { formatPhone } from '../../../lib/phone.ts'
+import { assembleDqf } from '../../../lib/proof/dqf.ts'
+import type { DeadlineItem } from '../../../lib/rules/index.ts'
 
 const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
 
 const params = Astro.url.searchParams
 const q = (params.get('q') ?? '').trim()
@@ -75,13 +83,64 @@ if (filter) query = query.or(filter)
 // The unfiltered count exists so the empty state can tell the truth. "No drivers
 // yet" on a fleet of twelve, all of whom happen to be inactive, is a lie that
 // sends her to the add form to type a driver who is already in here.
-const [{ data: drivers, error }, { count: totalCount }] = await Promise.all([
+const [{ data: drivers, error }, { count: totalCount }, deadlines] = await Promise.all([
   query,
   supabase.from('drivers').select('*', { count: 'exact', head: true }),
+  // In the same round trip as the roster itself. It is four more reads, not
+  // four more per driver: the engine takes the whole carrier at once and the
+  // scoring afterwards is pure arithmetic on what came back.
+  loadDeadlines(supabase, carrierId),
 ])
 
 const rows = drivers ?? []
 const notice = params.get('error') ?? (error ? error.message : null)
+// A flag, not a sentence. The wording lives in src/lib/fleet/remove.ts and never
+// comes out of the query string — /app/billing documents why.
+const removed = params.get('removed') === '1'
+
+/**
+ * The ring beside each name.
+ *
+ * Same three calls the printed file makes, in the same order —
+ * `loadDeadlines` → `assembleDqf` → (inside `dqRing`) `summarise`. The roster
+ * and the binder cannot disagree about what is on file, because neither of them
+ * is allowed its own opinion about it.
+ */
+const observedAt = new Date()
+
+const byDriver = new Map<string, DeadlineItem[]>()
+for (const i of deadlines) {
+  if (i.subjectType !== 'driver' || !i.subjectId) continue
+  const list = byDriver.get(i.subjectId)
+  if (list) list.push(i)
+  else byDriver.set(i.subjectId, [i])
+}
+
+/**
+ * Only drivers the engine actually looked at.
+ *
+ * `loadDeadlines` evaluates active drivers and nobody else, so an inactive one
+ * comes back with no items at all — and an empty item list scores as eight
+ * things not on file. That is a red ring on a man who left last year, next to
+ * forty he still employs, and the first thing it teaches is to ignore the
+ * colour. So the Terminated and Inactive tabs get a dash and a reason instead.
+ */
+const ringByDriver = new Map(
+  rows
+    // The shared predicate, not a hand-written status test: this list and
+    // `loadDeadlines` must never disagree about who was looked at.
+    .filter(isActiveDriver)
+    .map((d) => [
+      d.id,
+      dqRing(assembleDqf({ items: byDriver.get(d.id) ?? [] }), observedAt),
+    ]),
+)
+
+const rings = [...ringByDriver.values()]
+const answer = rosterLine(rings)
+// Counted rather than assumed: the roster mixes tabs, and the caveat is only
+// true of the rows actually on this screen.
+const unchecked = rows.length - rings.length
 
 /** A link that keeps the other filter intact. */
 function withParam(key: string, value: string): string {
@@ -95,10 +154,39 @@ function withParam(key: string, value: string): string {
 const tabs = [...DRIVER_STATUSES, { value: 'all', label: 'All' }]
 const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
 const today = todayInCalifornia()
+
+/**
+ * ON A PHONE THE ROWS ARE NOT ROWS.
+ *
+ * The table is 48rem wide and the window on a 375px phone is about 341px, so
+ * better than half of it was behind a sideways scroll — including the CDL
+ * expiry, which is the date this roster exists to show. Below `sm` every cell
+ * becomes a block; from `sm` the same markup is a table again. ONE set of
+ * cells, not two: a second copy of a row is a second place to forget a rule.
+ * The pattern is written down in src/components/Documents.astro.
+ *
+ * THE BLOCKS ARE ORDERED, WHICH IS THE ONE ADDITION TO THAT PATTERN. A roster is
+ * read to answer "can this man drive today", and the two things that answer it —
+ * whether he is still on the active list, and whether his licence has run out —
+ * were fourth and third in column order, under a licence NUMBER nobody scans a
+ * roster by. `order-*` needs the row to be a flex column below `sm`; from `sm`
+ * it is `table-row` again and the property is ignored, so the desktop table is
+ * untouched and the header row still names the columns in their own order.
+ */
+const cell = 'block px-4 sm:table-cell sm:py-3'
+/** The column name, said on the block that has no column. */
+const said = 'text-ink-500 sm:hidden'
 ---
 
 <App title="Drivers" subtitle="Everyone you can dispatch, and what you have on file for them.">
   {notice && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{notice}</p>}
+  {
+    removed && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        {removedMessage('driver')}
+      </p>
+    )
+  }
 
   <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
     <form method="GET" class="relative flex-1">
@@ -186,14 +274,47 @@ const today = todayInCalifornia()
       )
     ) : (
       <>
-        <p class="mb-3 text-sm text-ink-500">
-          <span class="tabular-nums">{rows.length}</span>
-          {rows.length === 1 ? ' driver' : ' drivers'}
+        {/*
+          The answer, not the name of a chart. This is the one sentence on the
+          screen that says whose file would not survive somebody asking for it,
+          and it sits ABOVE the table while the rings sit INSIDE it — a work
+          surface leads with its rows (docs/charts.md), and nothing here pushes
+          the first driver down the page.
+        */}
+        <div class="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+          <span class="text-ink-500">
+            <span class="tabular-nums">{rows.length}</span>
+            {rows.length === 1 ? ' driver' : ' drivers'}
+          </span>
+          {answer && <span class="font-medium">{answer}</span>}
+        </div>
+
+        {/*
+          What the rings do NOT cover, beside them rather than in a footnote.
+          The shape is taken in before any prose is read, so the caveat has to
+          be where the shape is.
+        */}
+        <p class="mb-3 text-xs text-ink-500">
+          The circle is the 8 items a driver file needs. It counts what you typed in. Nobody here
+          has seen the paper.
+          {unchecked > 0 && (
+            <span>
+              {' '}
+              <span class="tabular-nums">{unchecked}</span>
+              {unchecked === 1 ? ' driver here is' : ' drivers here are'} off the active list, so we
+              do not check {unchecked === 1 ? 'him' : 'them'}.
+            </span>
+          )}
         </p>
 
         <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
-          <table class="w-full min-w-[48rem] text-sm">
-            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+          <table class="w-full text-sm sm:min-w-[48rem]">
+            {/*
+              No header line on a phone. Five column names above blocks that are
+              not columns explain nothing — each block says what it is in its
+              own words instead.
+            */}
+            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
               <tr>
                 <th class="px-4 py-3 font-medium">Driver</th>
                 <th class="px-4 py-3 font-medium">CDL</th>
@@ -203,32 +324,80 @@ const today = todayInCalifornia()
               </tr>
             </thead>
             <tbody class="divide-y divide-ink-100">
-              {rows.map((d) => (
-                <tr class="hover:bg-ink-50/60">
-                  <td class="px-4 py-3">
-                    <a
-                      href={`/app/drivers/${d.id}`}
-                      class="font-medium hover:text-brand-600 hover:underline"
-                    >
-                      {d.last_name}, {d.first_name}
-                    </a>
-                    {/* Stored as E.164, read the way a person reads it. A roster
-                        of forty '+1818...' strings is a roster nobody scans. */}
-                    {(d.phone || d.email) && (
-                      <div class="text-xs text-ink-300 tabular-nums">
-                        {d.phone ? formatPhone(d.phone) : d.email}
+              {rows.map((d) => {
+                const ring = ringByDriver.get(d.id)
+                return (
+                <tr class="flex flex-col py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                  {/* The ring lives in the FIRST column, with the name, and on a
+                      phone that block is what the row leads with: the name, and
+                      whether his file has a gap. Those are the two things being
+                      scanned for; everything else on the row is detail. */}
+                  <td class={`${cell} order-1`}>
+                    <div class="flex items-center gap-3">
+                      {ring ? (
+                        <Ring ring={ring} size={34} />
+                      ) : (
+                        <span
+                          class="flex size-[34px] shrink-0 items-center justify-center rounded-full border border-dashed border-ink-200 text-ink-300"
+                          aria-hidden="true"
+                        >
+                          —
+                        </span>
+                      )}
+                      <div class="min-w-0">
+                        <a
+                          href={`/app/drivers/${d.id}`}
+                          class="font-medium hover:text-brand-600 hover:underline"
+                        >
+                          {d.last_name}, {d.first_name}
+                        </a>
+                        {/* The numbers, in words, under the name: the ring is
+                            never the only carrier. One man in twelve cannot
+                            separate the red arc from the amber one. */}
+                        <div class="text-xs tabular-nums">
+                          {ring ? (
+                            <a
+                              href={`/app/drivers/${d.id}/file`}
+                              class="text-ink-500 hover:text-brand-600 hover:underline"
+                            >
+                              {rowLine(ring)}
+                            </a>
+                          ) : (
+                            <span class="text-ink-300">Not checked — off the active list</span>
+                          )}
+                        </div>
+                        {/* Stored as E.164, read the way a person reads it. A
+                            roster of forty '+1818...' strings is a roster
+                            nobody scans. */}
+                        {(d.phone || d.email) && (
+                          <div class="text-xs text-ink-300 tabular-nums">
+                            {d.phone ? formatPhone(d.phone) : d.email}
+                          </div>
+                        )}
                       </div>
-                    )}
+                    </div>
                   </td>
-                  <td class="px-4 py-3">
+                  {/* Fourth on a phone. A CDL number is read off the licence in
+                      his hand, never scanned down a roster of forty. */}
+                  <td class={`${cell} order-4 mt-1 sm:mt-0`}>
+                    <span class={said}>CDL </span>
                     {d.cdl_number ? (
                       <span class="tabular-nums">{d.cdl_number}</span>
                     ) : (
                       <span class="text-ink-300">—</span>
                     )}
-                    {d.cdl_state && <div class="text-xs text-ink-300">{d.cdl_state}</div>}
+                    {d.cdl_state && (
+                      <span class="text-xs text-ink-300 sm:block">
+                        <span class="sm:hidden"> · </span>
+                        {d.cdl_state}
+                      </span>
+                    )}
                   </td>
-                  <td class="px-4 py-3 whitespace-nowrap tabular-nums">
+                  {/* THIRD ON A PHONE, right under the status: an expired CDL is
+                      a man who cannot be under a load today, and the date goes
+                      red by itself. */}
+                  <td class={`${cell} order-3 mt-1 whitespace-nowrap tabular-nums sm:mt-0`}>
+                    <span class={said}>CDL expires </span>
                     {
                       /* Red for a date already gone, and nothing at all for a
                          date in the future. This is a plain string comparison on
@@ -245,7 +414,10 @@ const today = todayInCalifornia()
                       <span class="text-ink-300">—</span>
                     )}
                   </td>
-                  <td class="px-4 py-3">
+                  {/* SECOND ON A PHONE. "Is he still one of mine" comes before
+                      any date on the row, and it was fourth — the bottom of the
+                      block, and off the right edge of the old sideways scroll. */}
+                  <td class={`${cell} order-2 mt-1.5 sm:mt-0`}>
                     <span
                       class:list={[
                         'rounded-md px-2 py-0.5 text-xs font-medium',
@@ -255,11 +427,14 @@ const today = todayInCalifornia()
                       {d.status}
                     </span>
                   </td>
-                  <td class="px-4 py-3 whitespace-nowrap tabular-nums">
+                  {/* Last. The hire date is for the file, not for the roster. */}
+                  <td class={`${cell} order-5 mt-1 whitespace-nowrap tabular-nums sm:mt-0`}>
+                    <span class={said}>Hired </span>
                     {d.hired_on ? formatDate(d.hired_on) : <span class="text-ink-300">—</span>}
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         </div>

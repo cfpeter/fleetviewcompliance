@@ -188,6 +188,28 @@ const rankingCoverage = ranking
       .join(' ')
   : undefined
 
+/**
+ * ON A PHONE THE ROWS ARE NOT ROWS.
+ *
+ * The book is 52rem wide and the window on a 375px phone is about 341px, so
+ * over half of every row — the phone number among it — was behind a sideways
+ * scroll. Below `sm` every cell becomes a block; from `sm` the same markup is a
+ * table again. ONE set of cells, not two: a second copy of a row is a second
+ * place to forget a rule. The pattern is written down in
+ * src/components/Documents.astro.
+ *
+ * THE BLOCKS ARE ORDERED, WHICH IS THE ONE ADDITION TO THAT PATTERN. This book
+ * is opened on a phone to ring somebody about a load or a cheque, so the number
+ * and the name of the person to ask for come straight under the company — they
+ * were fourth and third, with the MC number, which nobody dials, above both.
+ * `order-*` needs the row to be a flex column below `sm`; from `sm` it is
+ * `table-row` again and the property is ignored, so the desktop table is
+ * untouched and the header row still names the columns in their own order.
+ */
+const cell = 'block px-4 sm:table-cell sm:py-3'
+/** The column name, said on the block that has no column. */
+const said = 'text-ink-500 sm:hidden'
+
 const topName = ranking?.rows[0]?.name ?? ''
 const concentration =
   !ranking || ranking.topShare === null
@@ -331,8 +353,13 @@ const concentration =
         </p>
 
         <div id="customer-book" class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
-          <table class="w-full min-w-[52rem] text-sm">
-            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+          <table class="w-full text-sm sm:min-w-[52rem]">
+            {/*
+              No header line on a phone. Six column names above blocks that are
+              not columns explain nothing — each block says what it is in its own
+              words instead.
+            */}
+            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
               <tr>
                 <th class="px-4 py-3 font-medium">Customer</th>
                 <th class="px-4 py-3 font-medium">MC number</th>
@@ -344,8 +371,11 @@ const concentration =
             </thead>
             <tbody class="divide-y divide-ink-100">
               {rows.map((c) => (
-                <tr class="hover:bg-ink-50/60">
-                  <td class="px-4 py-3">
+                /* The block leads with the company name. It is the only thing on
+                   this row anybody scans a book of forty brokers for, and it is
+                   the link to the rest. */
+                <tr class="flex flex-col py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                  <td class={`${cell} order-1`}>
                     <a
                       href={`/app/customers/${c.id}`}
                       class="font-medium hover:text-brand-600 hover:underline"
@@ -353,27 +383,39 @@ const concentration =
                       {c.name}
                     </a>
                   </td>
-                  <td class="px-4 py-3">
+                  {/* Last on a phone. An MC number is typed into a lookup, not
+                      scanned down a book of forty brokers. */}
+                  <td class={`${cell} order-6 mt-1 sm:mt-0`}>
+                    <span class={said}>MC </span>
                     {c.mc_number ? (
                       <span class="tabular-nums">{c.mc_number}</span>
                     ) : (
                       <span class="text-ink-300">—</span>
                     )}
                   </td>
-                  <td class="px-4 py-3">
+                  <td class={`${cell} order-3 mt-1 sm:mt-0`}>
+                    <span class={said}>Contact </span>
                     {c.contact_name ?? <span class="text-ink-300">—</span>}
                   </td>
-                  <td class="px-4 py-3 whitespace-nowrap tabular-nums">
+                  {/* SECOND ON A PHONE, with the person to ask for right under
+                      it. This is the reason the book is opened standing up. */}
+                  <td class={`${cell} order-2 mt-1 whitespace-nowrap tabular-nums sm:mt-0`}>
                     {/* Stored as E.164, read as a person reads it. */}
+                    <span class={said}>Phone </span>
                     {c.phone ? formatPhone(c.phone) : <span class="text-ink-300">—</span>}
                   </td>
-                  <td class="px-4 py-3 text-right whitespace-nowrap tabular-nums">
+                  {/* Fourth: the money question, and the one an owner asks
+                      before he takes the next load from them. */}
+                  <td
+                    class={`${cell} order-4 mt-1 whitespace-nowrap tabular-nums sm:mt-0 sm:text-right`}
+                  >
                     {
                       /* Blank is "they never told us", and it stays blank. A
                          default of 30 here would be a payment term we invented
                          on a screen the owner uses to decide whether he can
                          afford to take the load. */
                     }
+                    <span class={said}>{c.days_to_pay === null ? 'Days to pay ' : 'Pays in '}</span>
                     {c.days_to_pay === null ? (
                       <span class="text-ink-300">—</span>
                     ) : (
@@ -383,7 +425,8 @@ const concentration =
                       </>
                     )}
                   </td>
-                  <td class="px-4 py-3 text-right tabular-nums">
+                  <td class={`${cell} order-5 mt-1 tabular-nums sm:mt-0 sm:text-right`}>
+                    <span class={said}>Loads </span>
                     {loadCountOf(c) === null ? (
                       <span class="text-ink-300">—</span>
                     ) : loadCountOf(c) === 0 ? (

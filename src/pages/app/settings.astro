@@ -918,6 +918,29 @@ const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
 const checkbox = 'size-4 rounded border-ink-300'
 const th = 'px-4 py-3 font-medium'
+
+/**
+ * ON A PHONE THE TWO TABLES ON THIS PAGE ARE NOT TABLES.
+ *
+ * The matrix is 56rem and the message log is 48rem; the window inside each is
+ * 341px. So 555px and 427px of every row was behind a sideways scroll — and on
+ * the matrix that meant the boxes themselves, which is the entire control. A
+ * grid of bare checkboxes is also unreadable without its column heads, so below
+ * `sm` each box carries its own name and its own caveat.
+ *
+ * Below `sm` every cell is a block; from `sm` the same markup is a table again.
+ * ONE set of cells, not two, the same way src/components/Documents.astro does
+ * it. The matrix keeps its column order down a phone because that order already
+ * reads correctly; the log is reordered with `order-*` so a message leads with
+ * what it was about rather than with a timestamp. `order-*` needs the row to be
+ * a flex column below `sm`, and from `sm` it is `table-row` again and the
+ * property is ignored, so neither desktop table moves.
+ */
+const cell = 'block px-4 py-1 sm:table-cell sm:py-3'
+/** The column name, carried into the block that no longer has a header row. */
+const colName = 'text-ink-500 sm:hidden'
+/** A checkbox with its name beside it on a phone, a bare box in a column from `sm`. */
+const boxRow = 'flex min-h-11 items-center gap-3 sm:block sm:min-h-0'
 const button =
   'rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-brand-700'
 const help = 'mt-1 block text-xs text-ink-500'
@@ -944,7 +967,7 @@ const help = 'mt-1 block text-xs text-ink-500'
 
     <div class="mt-3 grid items-start gap-4 lg:grid-cols-2">
       <form method="POST" class={card}>
-        <h3 class="font-medium tracking-tight">Your details</h3>
+        <h3 class="text-sm font-semibold tracking-tight">Your details</h3>
 
         <label class="mt-3 block">
           <span class="text-sm font-medium">Your name</span>
@@ -1019,7 +1042,7 @@ const help = 'mt-1 block text-xs text-ink-500'
         {/* ------------------------------------------------ sign-in email */}
 
         <div class={card}>
-          <h3 class="font-medium tracking-tight">Your email</h3>
+          <h3 class="text-sm font-semibold tracking-tight">Your email</h3>
           <p class="mt-3 text-sm text-ink-500">You sign in with this email:</p>
           <p class="mt-1 text-base font-medium break-all">
             {signInEmail || <span class="font-normal text-ink-300">not known</span>}
@@ -1073,7 +1096,7 @@ const help = 'mt-1 block text-xs text-ink-500'
         {/* ---------------------------------------------------- password */}
 
         <div class={card}>
-          <h3 class="font-medium tracking-tight">Your password</h3>
+          <h3 class="text-sm font-semibold tracking-tight">Your password</h3>
 
           {/*
             THIS BOX USED TO BE A WARNING, and it was amber because it carried
@@ -1335,9 +1358,11 @@ const help = 'mt-1 block text-xs text-ink-500'
 
     <form method="POST" class="mt-3">
       <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
-        <table class="w-full min-w-[56rem] text-sm">
+        <table class="w-full text-sm sm:min-w-[56rem]">
+          {/* No header line on a phone. Every box below carries its own name
+              and its own caveat instead. */}
           <thead
-            class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase"
+            class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group"
           >
             <tr>
               <th class={th}>What</th>
@@ -1373,8 +1398,8 @@ const help = 'mt-1 block text-xs text-ink-500'
           <tbody class="divide-y divide-ink-100">
             {
               NOTIFY_CATEGORIES.map((category) => (
-                <tr class="hover:bg-ink-50/60">
-                  <td class="px-4 py-3 align-top">
+                <tr class="block py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                  <td class={`${cell} sm:align-top`}>
                     <div class="font-medium">{category.label}</div>
                     <div class="mt-0.5 max-w-xs text-xs text-ink-500">{category.blurb}</div>
                     {!category.live && (
@@ -1386,33 +1411,57 @@ const help = 'mt-1 block text-xs text-ink-500'
                   </td>
 
                   {NOTIFY_CHANNELS.map((channel) => (
-                    <td class="px-4 py-3 text-center align-top">
-                      {channel.live ? (
-                        <input
-                          type="checkbox"
-                          name={`on_${category.value}_${channel.value}`}
-                          checked={isEnabled(category.value, channel.value)}
-                          aria-label={`${category.label} by ${channel.label}`}
-                          class={checkbox}
-                        />
-                      ) : (
-                        /* Disabled, not absent, and not a live box that does
-                           nothing. A ticked box that produced no text message
-                           would be a promise the system cannot keep — which is
-                           exactly the mistake the last build shipped. */
-                        <input
-                          type="checkbox"
-                          disabled
-                          checked={false}
-                          aria-label={`${category.label} by ${channel.label} — not available`}
-                          title="Text messages are not switched on yet."
-                          class={`${checkbox} opacity-40`}
-                        />
-                      )}
+                    <td class={`${cell} sm:text-center sm:align-top`}>
+                      {/* The whole line is the target on a phone, which is what
+                          makes a 16px box tappable standing in a yard. The
+                          visible word is part of the aria-label above it, so
+                          the two names cannot disagree. */}
+                      <label class={boxRow}>
+                        {channel.live ? (
+                          <input
+                            type="checkbox"
+                            name={`on_${category.value}_${channel.value}`}
+                            checked={isEnabled(category.value, channel.value)}
+                            aria-label={`${category.label} by ${channel.label}`}
+                            class={checkbox}
+                          />
+                        ) : (
+                          /* Disabled, not absent, and not a live box that does
+                             nothing. A ticked box that produced no text message
+                             would be a promise the system cannot keep — which is
+                             exactly the mistake the last build shipped. */
+                          <input
+                            type="checkbox"
+                            disabled
+                            checked={false}
+                            aria-label={`${category.label} by ${channel.label} — not available`}
+                            title="Text messages are not switched on yet."
+                            class={`${checkbox} opacity-40`}
+                          />
+                        )}
+                        {/* The column head, carried onto the box. A grid of
+                            unnamed boxes is what this becomes on a phone
+                            otherwise, and the caveat under the head is the
+                            difference between a setting and a promise. */}
+                        <span class="sm:hidden">
+                          {channel.label}
+                          {channel.note && (
+                            <span
+                              class:list={[
+                                'ml-1 text-xs',
+                                channel.live ? 'text-ink-300' : 'text-amber-700',
+                              ]}
+                            >
+                              {channel.note}
+                            </span>
+                          )}
+                        </span>
+                      </label>
                     </td>
                   ))}
 
-                  <td class="px-4 py-3 align-top">
+                  <td class={`${cell} mt-2 sm:mt-0 sm:align-top`}>
+                    <span class={`${colName} mb-1 block`}>Warn me this many days out</span>
                     {category.perItemLeadDays ? (
                       /* No box, because there is nothing here to store. Each
                          reminder carries its own number — an insurance renewal
@@ -1432,17 +1481,18 @@ const help = 'mt-1 block text-xs text-ink-500'
                           name={`lead_${category.value}`}
                           value={formatLeadDays(leadDaysFor(category.value))}
                           inputmode="text"
-                          class={`${field} w-44 tabular-nums`}
+                          class={`${field} w-full tabular-nums sm:w-44`}
                           aria-label={`Lead times for ${category.label}`}
                         />
-                        <span class="mt-1 block max-w-[14rem] text-xs text-ink-500">
+                        <span class="mt-1 block text-xs text-ink-500 sm:max-w-[14rem]">
                           {describeLeadDays(leadDaysFor(category.value))}
                         </span>
                       </>
                     )}
                   </td>
 
-                  <td class="px-4 py-3 text-center align-top">
+                  <td class={`${cell} sm:text-center sm:align-top`}>
+                    <label class={boxRow}>
                     {/* Disabled, not absent, and not a live box that does
                         nothing — the same treatment a channel we cannot deliver
                         on gets, for the same reason. The digest job batches
@@ -1460,6 +1510,17 @@ const help = 'mt-1 block text-xs text-ink-500'
                       title="Everything already arrives as one message a day. There is no other setting yet."
                       class={`${checkbox} opacity-40`}
                     />
+                      {/* The column head, carried onto the box, caveat and all.
+                          Without it this is a ticked box on a phone with
+                          nothing on screen saying what it is or that it is not
+                          yet yours to change. */}
+                      <span class="sm:hidden">
+                        Roll into one daily message
+                        <span class="ml-1 text-xs text-amber-700">
+                          always on, not yours to change yet
+                        </span>
+                      </span>
+                    </label>
                     {!digestFor(category.value) && (
                       /* Somebody unticked this while the box was still live.
                          The row survives the save untouched, so say so here
@@ -1723,8 +1784,9 @@ const help = 'mt-1 block text-xs text-ink-500'
         </div>
       ) : (
         <div class="mt-3 overflow-x-auto rounded-xl border border-ink-100 bg-white">
-          <table class="w-full min-w-[48rem] text-sm">
-            <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+          <table class="w-full text-sm sm:min-w-[48rem]">
+            {/* No header line on a phone. Each block says what it is instead. */}
+            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
               <tr>
                 <th class={th}>When</th>
                 <th class={th}>How</th>
@@ -1735,14 +1797,25 @@ const help = 'mt-1 block text-xs text-ink-500'
             </thead>
             <tbody class="divide-y divide-ink-100">
               {log.map((row) => (
-                <tr class="hover:bg-ink-50/60">
-                  <td class="px-4 py-3 whitespace-nowrap tabular-nums">{stamp(row.sent_at)}</td>
-                  <td class="px-4 py-3">{channelLabel(row.channel)}</td>
-                  <td class="px-4 py-3 tabular-nums">{row.destination}</td>
-                  <td class="px-4 py-3">
+                <tr class="flex flex-col py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                  {/* WHAT IT WAS ABOUT LEADS on a phone. This list answers "did
+                      you tell me?", and the subject line is the answer; the
+                      stamp and the address are what back it up. */}
+                  <td class={`${cell} order-2 tabular-nums sm:whitespace-nowrap`}>
+                    {stamp(row.sent_at)}
+                  </td>
+                  <td class={`${cell} order-4`}>
+                    <span class={colName}>How </span>
+                    {channelLabel(row.channel)}
+                  </td>
+                  <td class={`${cell} order-5 tabular-nums`}>
+                    <span class={`${colName} tabular-nums`}>To </span>
+                    {row.destination}
+                  </td>
+                  <td class={`${cell} order-1 font-medium sm:font-normal`}>
                     {row.subject ?? <span class="text-ink-300">no subject line</span>}
                   </td>
-                  <td class="px-4 py-3">
+                  <td class={`${cell} order-3`}>
                     <span
                       class:list={[
                         'rounded-md px-2 py-0.5 text-xs font-medium',

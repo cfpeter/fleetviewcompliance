@@ -238,6 +238,31 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
 const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
 const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition'
+
+/**
+ * ON A PHONE THE RECEIPTS ARE NOT ROWS.
+ *
+ * The table is 60rem and the window inside it is 341px, so 619px of every row —
+ * 64% — was behind a sideways scroll, including Remove at the far right, which
+ * is the only control on the row. Below `sm` every cell is a block; from `sm`
+ * the same markup is a table again. ONE set of cells, not two, the same way
+ * src/components/Documents.astro does it.
+ *
+ * The blocks are ordered rather than left in column order, so a receipt reads
+ * where it was bought and how many gallons before anything else. `order-*`
+ * needs the row to be a flex column below `sm`; from `sm` it is `table-row`
+ * again and the property is ignored, so the desktop table is unchanged.
+ */
+const cell = 'block px-4 py-1 sm:table-cell sm:py-3'
+/** The column name, carried into the block that no longer has a header row. */
+const colName = 'text-ink-500 sm:hidden'
+/**
+ * Below `sm` the row's control is a full-width bordered tap at the end of the
+ * block; from `sm` it is a small link at the end of the row again.
+ */
+const rowAction =
+  'inline-flex min-h-11 items-center justify-center rounded-lg border border-ink-100 px-3 text-sm font-medium hover:underline sm:min-h-0 sm:justify-start sm:rounded-none sm:border-0 sm:px-0 sm:text-xs'
+
 const usJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'US')
 const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
 ---
@@ -290,7 +315,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
     <div class="min-w-0">
       <div class="mb-4 grid gap-4 sm:grid-cols-3">
         <div class={card}>
-          <div class="text-xs tracking-wide text-ink-500 uppercase">Gallons this quarter</div>
+          <h3 class="text-xs tracking-wide text-ink-500 uppercase">Gallons this quarter</h3>
           <div class="mt-1 text-2xl font-semibold tabular-nums">{gallons(totalGallonsMilli)}</div>
           <div class="mt-1 text-xs text-ink-500">
             <span class="tabular-nums">{purchases.length}</span>
@@ -298,7 +323,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
           </div>
         </div>
         <div class={card}>
-          <div class="text-xs tracking-wide text-ink-500 uppercase">Tax paid at the pump</div>
+          <h3 class="text-xs tracking-wide text-ink-500 uppercase">Tax paid at the pump</h3>
           <div class="mt-1 text-2xl font-semibold tabular-nums">{gallons(taxPaidGallonsMilli)}</div>
           <div class="mt-1 text-xs text-ink-500">
             {
@@ -314,7 +339,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
           </div>
         </div>
         <div class={card}>
-          <div class="text-xs tracking-wide text-ink-500 uppercase">Spent on fuel</div>
+          <h3 class="text-xs tracking-wide text-ink-500 uppercase">Spent on fuel</h3>
           <div class="mt-1 text-2xl font-semibold tabular-nums">{formatCents(totalCents)}</div>
           <div class="mt-1 text-xs text-ink-500">
             {
@@ -354,8 +379,10 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
           </div>
         ) : (
           <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
-            <table class="w-full min-w-[60rem] text-sm">
-              <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+            <table class="w-full text-sm sm:min-w-[60rem]">
+              {/* No header line on a phone. Eight column names above blocks that
+                  are not columns explain nothing; each block says what it is. */}
+              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
                 <tr>
                   <th class="px-4 py-3 font-medium">Date</th>
                   <th class="px-4 py-3 font-medium">Where</th>
@@ -378,11 +405,20 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
                   // audit every row by eye to find the one.
                   const flags = implausible(Number(p.gallons_milli), p.total_cents)
                   return (
-                    <tr class:list={[removing ? 'bg-red-50/60' : 'hover:bg-ink-50/60']}>
-                      <td class="px-4 py-3 whitespace-nowrap tabular-nums">
+                    <tr
+                      class:list={[
+                        'flex flex-col py-3 sm:table-row sm:py-0',
+                        removing ? 'bg-red-50/60' : 'hover:bg-ink-50/60',
+                      ]}
+                    >
+                      <td class={`${cell} order-3 tabular-nums sm:whitespace-nowrap`}>
                         {formatDate(p.purchased_on)}
                       </td>
-                      <td class="px-4 py-3">
+                      {/* WHERE THE FUEL WAS BOUGHT LEADS, and it carries both
+                          flags with it: "check this" and "bulk · no credit" are
+                          the only two things on a receipt row that need doing
+                          something about. */}
+                      <td class={`${cell} order-1`}>
                         <span class="font-medium">{p.jurisdiction}</span>
                         {flags.length > 0 && (
                           <span class="ml-2 rounded-md bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-700">
@@ -402,31 +438,39 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
                           </span>
                         )}
                       </td>
-                      <td class="px-4 py-3">
+                      <td class={`${cell} order-6`}>
+                        <span class={colName}>Truck </span>
                         {vehicle ? (
                           vehicleLabel(vehicle)
                         ) : (
                           <span class="text-ink-300">not recorded</span>
                         )}
                       </td>
-                      <td class="px-4 py-3 text-right font-medium tabular-nums">
+                      {/* The gallons are second. They are the figure the whole
+                          return is built on and the one being checked against
+                          the paper receipt in her hand. */}
+                      <td class={`${cell} order-2 font-medium tabular-nums sm:text-right`}>
+                        <span class={`${colName} font-normal`}>Gallons </span>
                         {gallons(Number(p.gallons_milli))}
                       </td>
-                      <td class="px-4 py-3 text-right tabular-nums">
+                      <td class={`${cell} order-4 tabular-nums sm:text-right`}>
+                        <span class={colName}>Cost </span>
                         {p.total_cents === null ? (
                           <span class="text-ink-300">—</span>
                         ) : (
                           formatCents(p.total_cents)
                         )}
                       </td>
-                      <td class="px-4 py-3 text-right tabular-nums text-ink-500">
+                      <td class={`${cell} order-5 tabular-nums text-ink-500 sm:text-right`}>
+                        <span class={colName}>Per gallon </span>
                         {perGallon === null ? (
                           <span class="text-ink-300">—</span>
                         ) : (
                           `$${(perGallon / 1000).toFixed(3)}`
                         )}
                       </td>
-                      <td class="px-4 py-3">
+                      <td class={`${cell} order-7`}>
+                        <span class={colName}>Vendor </span>
                         {p.vendor ?? <span class="text-ink-300">—</span>}
                         {p.receipt_number && (
                           <span class="block text-xs tabular-nums text-ink-300">
@@ -434,33 +478,38 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
                           </span>
                         )}
                       </td>
-                      <td class="px-4 py-3 text-right whitespace-nowrap">
+                      <td
+                        class={`${cell} order-8 mt-2 sm:mt-0 sm:text-right sm:whitespace-nowrap`}
+                      >
                         {/* Removal is two steps and the second one is a POST. A
                             single button here is a receipt deleted by a thumb on
                             a phone, and a deleted receipt is gallons missing
                             from the fleet average. */}
                         {removing ? (
-                          <form method="POST" class="flex items-center justify-end gap-2">
+                          <form method="POST" class="flex items-center gap-2 sm:justify-end">
                             <input type="hidden" name="purchase_id" value={p.id} />
                             <button
                               type="submit"
                               name="intent"
                               value="remove_fuel"
-                              class="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700"
+                              class="min-h-11 flex-1 rounded-lg bg-red-600 px-3 text-xs font-medium text-white transition hover:bg-red-700 sm:min-h-0 sm:flex-none sm:py-1.5"
                             >
                               Remove
                             </button>
                             <a
                               href={`/app/ifta/fuel?q=${periodIso}`}
-                              class="text-xs font-medium text-brand-600 hover:underline"
+                              class={`${rowAction} flex-1 text-brand-600 sm:flex-none`}
                             >
                               Keep
                             </a>
                           </form>
                         ) : (
+                          /* Below `sm` this was off the right-hand edge of the
+                             row entirely. It is a full-width bordered tap there
+                             now, and the same small link from `sm` up. */
                           <a
                             href={`/app/ifta/fuel?q=${periodIso}&confirm=${p.id}`}
-                            class="text-xs text-red-600 hover:underline"
+                            class={`${rowAction} w-full text-red-600 sm:w-auto`}
                           >
                             Remove
                           </a>
@@ -471,17 +520,22 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
                 })}
               </tbody>
               <tfoot class="border-t border-ink-100">
-                <tr>
-                  <td class="px-4 py-3 font-medium" colspan="3">Total</td>
-                  <td class="px-4 py-3 text-right font-semibold tabular-nums">
+                <tr class="flex flex-col py-3 sm:table-row sm:py-0">
+                  <td class={`${cell} font-medium`} colspan="3">Total</td>
+                  <td class={`${cell} font-semibold tabular-nums sm:text-right`}>
+                    <span class={`${colName} font-normal`}>Gallons </span>
                     {gallons(totalGallonsMilli)}
                   </td>
-                  <td class="px-4 py-3 text-right font-semibold tabular-nums">
+                  <td class={`${cell} font-semibold tabular-nums sm:text-right`}>
+                    <span class={`${colName} font-normal`}>Cost </span>
                     {formatCents(totalCents)}
                   </td>
-                  <td class="px-4 py-3"></td>
-                  <td class="px-4 py-3"></td>
-                  <td class="px-4 py-3"></td>
+                  {/* Three empty cells. They hold the columns open from `sm` up
+                      and are three blank lines on a phone, so they are not
+                      rendered there. */}
+                  <td class="hidden px-4 py-3 sm:table-cell"></td>
+                  <td class="hidden px-4 py-3 sm:table-cell"></td>
+                  <td class="hidden px-4 py-3 sm:table-cell"></td>
                 </tr>
               </tfoot>
             </table>

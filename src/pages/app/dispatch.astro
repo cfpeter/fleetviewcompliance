@@ -342,7 +342,32 @@ const released = params.get('released')
 const error = params.get('error') ?? (loadError ? loadError.message : null)
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const cell = 'px-4 py-3'
+
+/**
+ * ON A PHONE THE ROWS ARE NOT ROWS.
+ *
+ * This table is 68rem and the window inside it is 341px, so 747px of every row
+ * — 69% of it — was behind a sideways scroll, including the Assign link at the
+ * far right, which is the only thing on the row anybody presses. Below `sm`
+ * every cell becomes a block; from `sm` the same markup is a table again. ONE
+ * set of cells, not two, exactly as src/components/Documents.astro does it.
+ *
+ * The blocks are ORDERED rather than left in column order, which is the one
+ * addition to that pattern. The dispatcher is scanning for the load and for
+ * whether the driver on it can legally take it, and in column order those two
+ * are first and fifth with the customer and both stops between them. `order-*`
+ * needs the row to be a flex column below `sm`; from `sm` it is `table-row`
+ * again and the property is ignored, so the desktop table is untouched.
+ */
+const cell = 'block px-4 py-1 sm:table-cell sm:py-3'
+/** A link you can hit with a thumb. 44px is the floor; this is pressed in a yard. */
+const action = 'inline-flex min-h-11 items-center text-sm font-medium text-brand-600 hover:underline'
+/**
+ * Below `sm` the action is a full-width bordered tap at the end of the block,
+ * because that is where it used to be off the side of the screen entirely; from
+ * `sm` it is a plain link at the end of the row again.
+ */
+const rowAction = `${action} flex-1 justify-center rounded-lg border border-ink-100 px-3 sm:flex-none sm:justify-start sm:rounded-none sm:border-0 sm:px-0`
 
 const sections = [
   {
@@ -388,11 +413,14 @@ const sections = [
         needsDriver.length > 0 ? 'border-brand-500/40 bg-brand-500/[0.04]' : 'border-ink-100 bg-white',
       ]}
     >
-      <div class="text-xs tracking-wide text-ink-500 uppercase">Needs a driver</div>
+      {/* A real heading, not a styled div. The label on a tile is the name of
+          the number under it, and as a `div` it was invisible to the document
+          outline and to a screen reader walking the page by headings. */}
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Needs a driver</h3>
       <div class="mt-1 text-3xl font-semibold tabular-nums">{needsDriver.length}</div>
     </div>
     <div class={card}>
-      <div class="text-xs tracking-wide text-ink-500 uppercase">On the board</div>
+      <h3 class="text-xs tracking-wide text-ink-500 uppercase">On the board</h3>
       <div class="mt-1 text-3xl font-semibold tabular-nums">{running.length}</div>
     </div>
     <div
@@ -401,14 +429,14 @@ const sections = [
         notQualified.length > 0 ? 'border-red-200 bg-red-50/40' : 'border-ink-100 bg-white',
       ]}
     >
-      <div
+      <h3
         class:list={[
           'text-xs tracking-wide uppercase',
           notQualified.length > 0 ? 'text-red-700' : 'text-ink-500',
         ]}
       >
         Driver not qualified today
-      </div>
+      </h3>
       <div
         class:list={[
           'mt-1 text-3xl font-semibold tabular-nums',
@@ -451,8 +479,13 @@ const sections = [
           <p class="mt-1 mb-3 text-sm text-ink-500">{section.blurb}</p>
 
           <div class={section.wrapper}>
-            <table class="w-full min-w-[68rem] text-sm">
-              <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+            <table class="w-full text-sm sm:min-w-[68rem]">
+              {/*
+                No header line on a phone. Nine column names above blocks that
+                are not columns explain nothing — each block says what it is in
+                its own words instead.
+              */}
+              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
                 <tr>
                   <th class="px-4 py-3 font-medium">Load</th>
                   <th class="px-4 py-3 font-medium">Customer</th>
@@ -467,8 +500,10 @@ const sections = [
               </thead>
               <tbody class="divide-y divide-ink-100">
                 {section.rows.map((r) => (
-                  <tr class="hover:bg-ink-50/60">
-                    <td class={cell}>
+                  <tr class="flex flex-col py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                    {/* THE LOAD LEADS. It is the one thing on the row that is
+                        never empty and the thing she is holding paperwork for. */}
+                    <td class={`${cell} order-1`}>
                       <a
                         href={`/app/loads/${r.id}/assign`}
                         class="font-medium tabular-nums hover:text-brand-600 hover:underline"
@@ -485,13 +520,29 @@ const sections = [
                         </div>
                       )}
                     </td>
-                    <td class={cell}>
-                      {r.customer ?? <span class="text-ink-300">—</span>}
+                    {/* An empty cell is a blank line on a phone, so it is not
+                        rendered there at all. The em dash still holds the
+                        column open from `sm` up, where a table needs it. */}
+                    <td class:list={[cell, 'order-6', !r.customer && 'hidden sm:table-cell']}>
+                      {r.customer ? (
+                        <>
+                          <span class="text-ink-500 sm:hidden">Customer </span>
+                          {r.customer}
+                        </>
+                      ) : (
+                        <span class="text-ink-300">—</span>
+                      )}
                     </td>
-                    <td class={cell}>
+                    <td class={`${cell} order-4`}>
                       {r.pickupWhere || r.pickupWhen ? (
                         <>
-                          <div>{r.pickupWhere || '—'}</div>
+                          {/* The column names are hidden on a phone, so the two
+                              stops carry their own words. "From" and "To" are
+                              shorter than the headings and read the same. */}
+                          <div>
+                            <span class="text-ink-500 sm:hidden">From </span>
+                            {r.pickupWhere || '—'}
+                          </div>
                           {r.pickupWhen && (
                             <div class="text-xs text-ink-300 tabular-nums">{r.pickupWhen}</div>
                           )}
@@ -508,10 +559,19 @@ const sections = [
                         </a>
                       )}
                     </td>
-                    <td class={cell}>
+                    <td
+                      class:list={[
+                        cell,
+                        'order-5',
+                        !r.deliveryWhere && !r.deliveryWhen && 'hidden sm:table-cell',
+                      ]}
+                    >
                       {r.deliveryWhere || r.deliveryWhen ? (
                         <>
-                          <div>{r.deliveryWhere || '—'}</div>
+                          <div>
+                            <span class="text-ink-500 sm:hidden">To </span>
+                            {r.deliveryWhere || '—'}
+                          </div>
                           {r.deliveryWhen && (
                             <div class="text-xs text-ink-300 tabular-nums">{r.deliveryWhen}</div>
                           )}
@@ -520,35 +580,64 @@ const sections = [
                         <span class="text-ink-300">—</span>
                       )}
                     </td>
-                    <td class={cell}>
+                    {/*
+                      THE DRIVER IS SECOND ON A PHONE, under the load and the
+                      status. "Can this man legally be under this load today" is
+                      the other half of what this board is read for, and the two
+                      warnings below are the only place in the product that ever
+                      says so about a load already running.
+                    */}
+                    <td class={`${cell} order-3`}>
                       {r.driver ? (
                         <>
                           <div class="font-medium">{r.driver}</div>
                           {r.coDriver && (
                             <div class="text-xs text-ink-300">with {r.coDriver}</div>
                           )}
+                          {/* A full-width block on a phone, the same badge from
+                              `sm` up. It is wider than the text because this is
+                              the line that must not be skimmed past, and making
+                              it bigger is the only lever a layout has — the
+                              colours are the deadline palette and are not
+                              borrowed for anything else. */}
                           {r.blocked && (
-                            <div class="mt-1">
-                              <span class="rounded-md bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-700">
-                                Not qualified today
-                              </span>
-                            </div>
+                            <span class="mt-1 block rounded-md bg-red-100 px-2 py-1 text-xs font-medium text-red-700 sm:inline-block sm:px-1.5 sm:py-0.5">
+                              Not qualified today
+                            </span>
                           )}
                           {r.driverOffRoster && (
-                            <div class="mt-1">
-                              <span class="rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
-                                Not on the active roster
-                              </span>
-                            </div>
+                            <span class="mt-1 block rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-800 sm:inline-block sm:px-1.5 sm:py-0.5">
+                              Not on the active roster
+                            </span>
                           )}
                         </>
                       ) : (
                         <span class="font-medium text-brand-700">Nobody yet</span>
                       )}
                     </td>
-                    <td class={cell}>{r.tractor ?? <span class="text-ink-300">—</span>}</td>
-                    <td class={cell}>{r.trailer ?? <span class="text-ink-300">—</span>}</td>
-                    <td class={cell}>
+                    <td class:list={[cell, 'order-7', !r.tractor && 'hidden sm:table-cell']}>
+                      {r.tractor ? (
+                        <>
+                          <span class="text-ink-500 sm:hidden">Tractor </span>
+                          {r.tractor}
+                        </>
+                      ) : (
+                        <span class="text-ink-300">—</span>
+                      )}
+                    </td>
+                    <td class:list={[cell, 'order-8', !r.trailer && 'hidden sm:table-cell']}>
+                      {r.trailer ? (
+                        <>
+                          <span class="text-ink-500 sm:hidden">Trailer </span>
+                          {r.trailer}
+                        </>
+                      ) : (
+                        <span class="text-ink-300">—</span>
+                      )}
+                    </td>
+                    {/* Straight under the load number on a phone: where the
+                        truck is, in two words, before anything else. */}
+                    <td class={`${cell} order-2`}>
                       <span
                         class:list={[
                           'rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
@@ -561,23 +650,23 @@ const sections = [
                           replacing it: a detained load is still at_shipper, and
                           collapsing the two loses where the truck actually is. */}
                       {r.exception && (
-                        <div class="mt-1">
-                          <span
-                            class:list={[
-                              'rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
-                              EXCEPTION_PILL[r.exception] ?? 'bg-amber-100 text-amber-800',
-                            ]}
-                          >
-                            {words(r.exception)}
-                          </span>
-                        </div>
+                        <span
+                          class:list={[
+                            'ml-1 rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
+                            // Beside the status on a phone, under it from `sm`,
+                            // which is the line the desktop table already had.
+                            'sm:mt-1 sm:ml-0 sm:block sm:w-fit',
+                            EXCEPTION_PILL[r.exception] ?? 'bg-amber-100 text-amber-800',
+                          ]}
+                        >
+                          {words(r.exception)}
+                        </span>
                       )}
                     </td>
-                    <td class="px-4 py-3 text-right whitespace-nowrap">
-                      <a
-                        href={`/app/loads/${r.id}/assign`}
-                        class="text-sm font-medium text-brand-600 hover:underline"
-                      >
+                    <td
+                      class={`${cell} order-9 mt-2 flex gap-2 sm:mt-0 sm:table-cell sm:py-3 sm:text-right sm:whitespace-nowrap`}
+                    >
+                      <a href={`/app/loads/${r.id}/assign`} class={rowAction}>
                         {section.action} →
                       </a>
                     </td>

@@ -8,7 +8,19 @@
  * and works on a phone with one bar of signal in a yard — which is where this
  * screen actually gets used.
  */
+import Ring from '../../../components/charts/Ring.astro'
 import App from '../../../layouts/App.astro'
+import {
+  fleetLine,
+  rowLine,
+  TRAILER_NOTE,
+  truckRing,
+  type TruckRing,
+} from '../../../lib/charts/truck-rings.ts'
+import { loadDeadlines } from '../../../lib/deadlines.ts'
+import { isActiveVehicle } from '../../../lib/fleet/active.ts'
+import { removedMessage } from '../../../lib/fleet/remove.ts'
+import type { DeadlineItem } from '../../../lib/rules/index.ts'
 import {
   byUnitNumber,
   gvwrReading,
@@ -21,6 +33,7 @@ import {
 } from '../../../lib/vehicles.ts'
 
 const supabase = Astro.locals.supabase!
+const carrierId = Astro.locals.carrierId!
 
 const params = Astro.url.searchParams
 const rawKind = params.get('kind') ?? ''
@@ -30,6 +43,10 @@ const kind: VehicleKind | null =
   rawKind === 'power_unit' || rawKind === 'trailer' ? rawKind : null
 const q = (params.get('q') ?? '').trim()
 const error = params.get('error')
+// A flag, not a sentence. The wording is in src/lib/fleet/remove.ts and never
+// comes out of the query string — /app/billing documents why this app refuses to
+// print query-string text back at the owner.
+const removed = params.get('removed') === '1'
 
 const search = likeSafe(q)
 
@@ -50,7 +67,13 @@ if (search) {
   query = query.or(`unit_number.ilike.%${search}%,vin.ilike.%${search}%`)
 }
 
-const { data, error: loadError } = await query
+// In the same round trip as the fleet itself. It is four more reads, not four
+// more per truck: the engine takes the whole carrier at once and the scoring
+// afterwards is arithmetic on what already came back.
+const [{ data, error: loadError }, deadlines] = await Promise.all([
+  query,
+  loadDeadlines(supabase, carrierId),
+])
 const all = ((data ?? []) as VehicleRow[]).slice().sort(byUnitNumber)
 
 // The segment counts are taken from the SEARCHED set, not from the whole fleet.
@@ -76,12 +99,83 @@ const segments = [
   { key: '', label: 'All', count: all.length },
 ]
 
+/**
+ * The ring beside each unit number.
+ *
+ * `loadDeadlines` → `truckRing` → `buildHealth`, which is the same chain the
+ * dashboard's own ring runs. The fleet table and the dashboard cannot disagree
+ * about how many things are overdue, because only one of them counts.
+ *
+ * A TRAILER IS NOT A TRUCK AND IS NOT SCORED AS ONE. The engine already hands
+ * a trailer only the rules written `subject: 'trailer'` — the annual § 396.17
+ * inspection and keeping its report — so its denominator is 2 where a power
+ * unit's is 7 or more. `truckRing` is told the kind and filters again on it, so
+ * a Clean Truck Check or a Form 2290 can never reach a thing with no engine.
+ * The IFTA screen made that mistake this morning and asked for miles on
+ * trailers; the ring is where it would have been drawn in red.
+ */
+const observedAt = new Date()
+
+const byVehicle = new Map<string, DeadlineItem[]>()
+for (const i of deadlines) {
+  if (i.subjectType !== 'power_unit' && i.subjectType !== 'trailer') continue
+  if (!i.subjectId) continue
+  const list = byVehicle.get(i.subjectId)
+  if (list) list.push(i)
+  else byVehicle.set(i.subjectId, [i])
+}
+
+/**
+ * Only the units the engine actually looked at.
+ *
+ * `loadDeadlines` evaluates ACTIVE units and nothing else, so anything sold,
+ * parked or out of service comes back with no items at all — and an empty list
+ * scores as an empty circle. A blank ring on a truck he sold last year, next to
+ * the nine he still runs, teaches him to ignore the shape. So a unit that is not
+ * active gets a dash and the reason instead.
+ *
+ * The filter is the shared predicate, not a hand-written status test: this list
+ * and the loader must never disagree about which units were looked at.
+ */
+const ringByVehicle = new Map<string, TruckRing>(
+  shown
+    .filter(isActiveVehicle)
+    .map((v) => [v.id, truckRing(byVehicle.get(v.id) ?? [], v.kind, observedAt)]),
+)
+
+const rings = [...ringByVehicle.values()]
+const answer = fleetLine(rings)
+// Counted rather than assumed: the caveat is only true of the rows on screen.
+const unscored = shown.length - rings.length
+const showsTrailers = shown.some((v) => v.kind === 'trailer')
+
 // The add button carries the segment you are standing on, so "Add" from the
 // Trailers tab pre-selects trailer instead of making that choice twice.
 const addHref = kind ? `/app/vehicles/new?kind=${kind}` : '/app/vehicles/new'
 
 const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
 const emptyAll = all.length === 0 && !q
+
+/**
+ * ON A PHONE THE ROWS ARE NOT ROWS.
+ *
+ * The table is 56rem wide and the window on a 375px phone is about 341px, so
+ * roughly 60% of every row was behind a sideways scroll — the status among it.
+ * Below `sm` every cell becomes a block; from `sm` the same markup is a table
+ * again. ONE set of cells, not two: a second copy of a row is a second place to
+ * forget a rule. The pattern is written down in src/components/Documents.astro.
+ *
+ * THE BLOCKS ARE ORDERED, WHICH IS THE ONE ADDITION TO THAT PATTERN. A yard is
+ * read by what is painted on the truck — the unit number, then the plate, then
+ * the year and make. The VIN is 17 characters nobody scans a list by, and in
+ * column order it was third, breaking across two lines above both of them.
+ * `order-*` needs the row to be a flex column below `sm`; from `sm` it is
+ * `table-row` again and the property is ignored, so the desktop table is
+ * untouched and the header row still names the columns in their own order.
+ */
+const cell = 'block px-4 sm:table-cell sm:py-3'
+/** The column name, said on the block that has no column. */
+const said = 'text-ink-500 sm:hidden'
 ---
 
 <App
@@ -89,6 +183,13 @@ const emptyAll = all.length === 0 && !q
   subtitle="Power units and trailers. A tractor and its trailer each have their own inspection dates."
 >
   {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {
+    removed && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        {removedMessage('vehicle')}
+      </p>
+    )
+  }
   {
     loadError && (
       <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -188,40 +289,143 @@ const emptyAll = all.length === 0 && !q
         )}
       </div>
     ) : (
-      <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
-        <table class="w-full min-w-[56rem] text-sm">
-          <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+      <>
+        {/*
+          The answer, not the name of a chart. One sentence that says how much
+          of the yard has something outstanding, ABOVE the table while the rings
+          sit INSIDE it — a work surface leads with its rows, and nothing here
+          pushes the first truck down the page.
+        */}
+        <div class="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+          <span class="text-ink-500">
+            <span class="tabular-nums">{shown.length}</span>
+            {shown.length === 1 ? ' unit' : ' units'}
+          </span>
+          {answer && <span class="font-medium">{answer}</span>}
+        </div>
+
+        {/*
+          What the rings do NOT cover, beside them rather than in a footnote.
+          The shape is taken in before any prose is read, so the caveat has to
+          be where the shape is.
+        */}
+        <p class="mb-3 text-xs text-ink-500">
+          The circle is the deadlines we track for that one unit. It counts the dates you typed
+          in. Nobody here has looked at the truck or the paper.
+          {showsTrailers && <span> {TRAILER_NOTE}</span>}
+          {unscored > 0 && (
+            <span>
+              {' '}
+              <span class="tabular-nums">{unscored}</span>
+              {unscored === 1 ? ' unit here is not Active' : ' units here are not Active'}, so we
+              do not check {unscored === 1 ? 'it' : 'them'} and you do not pay for
+              {unscored === 1 ? ' it' : ' them'}.
+            </span>
+          )}
+        </p>
+
+        <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
+        <table class="w-full text-sm sm:min-w-[56rem]">
+          {/*
+            No header line on a phone. Six column names above blocks that are not
+            columns explain nothing — each block says what it is in its own words
+            instead.
+
+            STATUS MOVED TO THE SECOND COLUMN. On a phone the block reads down,
+            so the second column is the second line — and the second thing an
+            owner wants after the unit number is whether the unit is still his to
+            worry about. It was last, which on a phone is the bottom of the
+            block and off the right edge of the old sideways scroll.
+          */}
+          <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
             <tr>
               <th class="px-4 py-3 font-medium">Unit</th>
+              <th class="px-4 py-3 font-medium">Status</th>
               <th class="px-4 py-3 font-medium">VIN</th>
               <th class="px-4 py-3 font-medium">Year / make / model</th>
               <th class="px-4 py-3 font-medium">Plate</th>
               <th class="px-4 py-3 text-right font-medium">GVWR</th>
-              <th class="px-4 py-3 font-medium">Status</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-ink-100">
             {shown.map((v) => {
               const gvwr = gvwrReading(v.gvwr_lbs)
               const ymm = [v.model_year, v.make, v.model].filter(Boolean).join(' ')
+              const ring = ringByVehicle.get(v.id)
               return (
-                <tr class="hover:bg-ink-50/60">
-                  <td class="px-4 py-3">
-                    <a
-                      href={`/app/vehicles/${v.id}`}
-                      class="font-medium hover:text-brand-600 hover:underline"
-                    >
-                      {vehicleLabel(v)}
-                    </a>
-                    <div class="text-xs text-ink-300">
-                      {v.kind === 'trailer' ? 'Trailer' : 'Power unit'}
+                <tr class="flex flex-col py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                  {/* The ring lives in the FIRST column, with the unit number,
+                      and on a phone that block is what the row leads with: the
+                      unit number, and whether anything on it is outstanding.
+                      A seventh column would be a seventh line nobody reads. */}
+                  <td class={`${cell} order-1`}>
+                    <div class="flex items-center gap-3">
+                      {ring ? (
+                        <Ring ring={ring} size={34} />
+                      ) : (
+                        <span
+                          class="flex size-[34px] shrink-0 items-center justify-center rounded-full border border-dashed border-ink-200 text-ink-300"
+                          aria-hidden="true"
+                        >
+                          —
+                        </span>
+                      )}
+                      <div class="min-w-0">
+                        <a
+                          href={`/app/vehicles/${v.id}`}
+                          class="font-medium hover:text-brand-600 hover:underline"
+                        >
+                          {vehicleLabel(v)}
+                        </a>
+                        {/* The numbers, in words, under the unit number: the
+                            ring is never the only carrier. One man in twelve
+                            cannot separate the red arc from the amber one. */}
+                        <div class="text-xs tabular-nums">
+                          {ring ? (
+                            <a
+                              href={`/app/vehicles/${v.id}#dates`}
+                              class="text-ink-500 hover:text-brand-600 hover:underline"
+                            >
+                              {rowLine(ring)}
+                            </a>
+                          ) : (
+                            <span class="text-ink-300">Not checked — not Active</span>
+                          )}
+                        </div>
+                        <div class="text-xs text-ink-300">
+                          {v.kind === 'trailer' ? 'Trailer' : 'Power unit'}
+                        </div>
+                      </div>
                     </div>
                   </td>
-                  <td class="px-4 py-3 font-mono text-xs tracking-tight text-ink-500 tabular-nums">
+                  {/* Second: is this unit still one we watch and charge for. */}
+                  <td class={`${cell} order-2 mt-1.5 sm:mt-0`}>
+                    <span
+                      class:list={[
+                        'rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
+                        statusPillClass(v.status),
+                      ]}
+                    >
+                      {statusLabel(v.status)}
+                    </span>
+                  </td>
+                  {/* LAST ON A PHONE. It is the longest string on the row and the
+                      one nobody reads a list by — it is copied off a title or a
+                      registration when there is a reason to. */}
+                  <td
+                    class={`${cell} order-6 mt-1.5 font-mono text-xs tracking-tight break-all text-ink-500 tabular-nums sm:mt-0 sm:break-normal`}
+                  >
+                    <span class={`${said} font-sans`}>VIN </span>
                     {v.vin ?? <span class="font-sans text-ink-300">Not given</span>}
                   </td>
-                  <td class="px-4 py-3">{ymm || <span class="text-ink-300">Not given</span>}</td>
-                  <td class="px-4 py-3 whitespace-nowrap">
+                  {/* Third and fourth: what the truck looks like and what is on
+                      the back of it. This is how a unit is recognised standing
+                      in front of it. */}
+                  <td class={`${cell} order-3 mt-1 sm:mt-0`}>
+                    {ymm || <span class="text-ink-300">Not given</span>}
+                  </td>
+                  <td class={`${cell} order-4 mt-1 whitespace-nowrap sm:mt-0`}>
+                    <span class={said}>Plate </span>
                     {v.plate ? (
                       <>
                         <span class="tabular-nums">{v.plate}</span>
@@ -237,23 +441,19 @@ const emptyAll = all.length === 0 && !q
                     under the line" — the engine reads it as the opposite, and
                     treats the unit as fully regulated.
                   */}
-                  <td class={`px-4 py-3 text-right tabular-nums ${gvwr.className}`}>{gvwr.text}</td>
-                  <td class="px-4 py-3">
-                    <span
-                      class:list={[
-                        'rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
-                        statusPillClass(v.status),
-                      ]}
-                    >
-                      {statusLabel(v.status)}
-                    </span>
+                  <td
+                    class={`${cell} order-5 mt-1 tabular-nums sm:mt-0 sm:text-right ${gvwr.className}`}
+                  >
+                    <span class={said}>GVWR </span>
+                    {gvwr.text}
                   </td>
                 </tr>
               )
             })}
           </tbody>
         </table>
-      </div>
+        </div>
+      </>
     )
   }
 
