@@ -20,6 +20,15 @@ import App from '../../layouts/App.astro'
 import { bucketValues, ceilingFor, weekBuckets, weekStart } from '../../lib/charts/scale.ts'
 import { loadDeadlines } from '../../lib/deadlines.ts'
 import { eligibility, isBlocked } from '../../lib/dispatch/eligibility.ts'
+// The status and exception colours are NOT decided here. They come from the same
+// four functions the Loads list and the load page call, so one status is one
+// colour everywhere in the app — see src/lib/loads.ts.
+import {
+  exceptionLabel,
+  exceptionPillClass,
+  loadStatusLabel,
+  statusPillClass,
+} from '../../lib/loads.ts'
 import type { DeadlineItem } from '../../lib/rules/index.ts'
 import { formatCents } from '../../lib/stops.ts'
 
@@ -394,26 +403,18 @@ function loadLabel(l: LoadRow): string {
   return l.load_number || l.broker_reference || `Load ${l.id.slice(0, 8)}`
 }
 
-const STATUS_PILL: Record<string, string> = {
-  // Nothing has happened yet: grey, so it does not compete with the red this
-  // product spends on compliance.
-  booked: 'bg-ink-100 text-ink-500',
-  assigned: 'bg-blue-100 text-blue-800',
-  dispatched: 'bg-blue-100 text-blue-800',
-  at_shipper: 'bg-emerald-100 text-emerald-800',
-  loaded: 'bg-emerald-100 text-emerald-800',
-  in_transit: 'bg-emerald-100 text-emerald-800',
-  at_consignee: 'bg-emerald-100 text-emerald-800',
-}
-
-const EXCEPTION_PILL: Record<string, string> = {
-  detained: 'bg-amber-100 text-amber-800',
-  breakdown: 'bg-red-100 text-red-700',
-  late: 'bg-amber-100 text-amber-800',
-  tonu: 'bg-ink-100 text-ink-500',
-}
-
-const words = (v: string) => v.replace(/_/g, ' ')
+/*
+ * There is no status colour table in this file any more.
+ *
+ * There was one, and it disagreed with the Loads list on six of the seven
+ * statuses the board can show: `booked` was grey here and blue there,
+ * `at_shipper` through `at_consignee` were green here and blue there, and
+ * `breakdown` was red-700 here and red-800 there. A dispatcher who reads the
+ * board and then opens the Loads list is looking at the same load twice, and the
+ * colour changed underneath her. `statusPillClass` and `exceptionPillClass` are
+ * imported at the top instead, and the words come from `loadStatusLabel` and
+ * `exceptionLabel` so "at_shipper" renders as "At shipper" on both screens.
+ */
 
 /**
  * The one state a load is in for the dot on its card.
@@ -432,7 +433,10 @@ const READINESS: Record<Readiness, { dot: string; text: string; word: string }> 
   blocked: { dot: 'bg-red-500', text: 'text-red-700', word: 'Not qualified' },
   off_roster: { dot: 'bg-amber-500', text: 'text-amber-800', word: 'Not on the roster' },
   ready: { dot: 'bg-emerald-500', text: 'text-emerald-800', word: 'Driver is good' },
-  nobody: { dot: 'bg-ink-300', text: 'text-ink-500', word: 'No driver yet' },
+  // ink-700, not ink-500: this word is printed at 12px, and 12px is where the
+  // floor in global.css moves up. Grey still means "we do not know" — it is just
+  // grey somebody can read.
+  nobody: { dot: 'bg-ink-300', text: 'text-ink-700', word: 'No driver yet' },
 }
 
 interface BoardRow {
@@ -548,14 +552,22 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
  * again and the property is ignored, so the desktop table is untouched.
  */
 const cell = 'block px-4 py-1 sm:table-cell sm:py-3'
-/** A link you can hit with a thumb. 44px is the floor; this is pressed in a yard. */
-const action = 'inline-flex min-h-11 items-center text-sm font-medium text-brand-600 hover:underline'
 /**
- * Below `sm` the action is a full-width bordered tap at the end of the block,
+ * "Assign" and "Change" ARE BUTTONS, not links that happen to be pressed.
+ *
+ * They were a bare `<a>` with no padding — a 20px line of text, which is the
+ * shortest thing on this page and the only thing on the row anybody touches. A
+ * thumb in a yard misses it. `.btn .btn-tertiary` is the shared repeated-action
+ * skin from global.css and carries the 44px floor with it, so the target is the
+ * button rather than the six characters inside it.
+ *
+ * Below `sm` it stays the full-width bordered tap at the end of the block,
  * because that is where it used to be off the side of the screen entirely; from
- * `sm` it is a plain link at the end of the row again.
+ * `sm` it is the tertiary button at the end of the row. The `flex gap-2` on the
+ * cell keeps 8px under it, which is the minimum gap between two 44px targets.
  */
-const rowAction = `${action} flex-1 justify-center rounded-lg border border-ink-100 px-3 sm:flex-none sm:justify-start sm:rounded-none sm:border-0 sm:px-0`
+const rowAction =
+  'btn btn-tertiary btn-sm flex-1 rounded-lg border border-ink-100 sm:-mr-4 sm:flex-none sm:border-0'
 
 /**
  * What one column of the board is worth.
@@ -626,12 +638,15 @@ const sections = [
     >
       {/* A real heading, not a styled div. The label on a tile is the name of
           the number under it, and as a `div` it was invisible to the document
-          outline and to a screen reader walking the page by headings. */}
-      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Needs a driver</h3>
+          outline and to a screen reader walking the page by headings.
+
+          ink-700 and not ink-500 on every one of these: they are 12px, and the
+          floor in global.css is ink-700 at 12px and under. */}
+      <h3 class="text-xs tracking-wide text-ink-700 uppercase">Needs a driver</h3>
       <div class="mt-1 text-3xl font-semibold tabular-nums">{needsDriver.length}</div>
     </div>
     <div class={card}>
-      <h3 class="text-xs tracking-wide text-ink-500 uppercase">On the board</h3>
+      <h3 class="text-xs tracking-wide text-ink-700 uppercase">On the board</h3>
       <div class="mt-1 text-3xl font-semibold tabular-nums">{running.length}</div>
     </div>
     <div
@@ -643,7 +658,7 @@ const sections = [
       <h3
         class:list={[
           'text-xs tracking-wide uppercase',
-          notQualified.length > 0 ? 'text-red-700' : 'text-ink-500',
+          notQualified.length > 0 ? 'text-red-700' : 'text-ink-700',
         ]}
       >
         Driver not qualified today
@@ -700,10 +715,9 @@ const sections = [
           A load shows here once you book it, and drops off once it is delivered. A new load stays
           at the top of this page until it has a driver.
         </p>
-        <a
-          href="/app/loads/new"
-          class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
-        >
+        {/* The one Primary on this page, and it only exists while the board is
+            empty. Hand-rolled it was 36px tall; `.btn .btn-primary` is 44px. */}
+        <a href="/app/loads/new" class="btn btn-primary mt-4">
           Book a load →
         </a>
       </div>
@@ -739,7 +753,7 @@ const sections = [
               holds them, in the colour it always has.
             */}
             {section.key === 'running' && notQualified.length > 0 && (
-              <span class="inline-flex items-center gap-1.5 rounded-md bg-red-100 px-2 py-1 text-xs font-medium text-red-700">
+              <span class="badge badge-danger">
                 <span class="size-2 shrink-0 rounded-full bg-red-500" aria-hidden="true" />
                 <span class="tabular-nums">{notQualified.length}</span> not qualified today
               </span>
@@ -758,7 +772,7 @@ const sections = [
               </span>
             )}
             {section.money.unpriced > 0 && (
-              <span class="text-sm text-ink-300 tabular-nums">
+              <span class="text-sm text-ink-500 tabular-nums">
                 {section.money.unpriced} with no rate typed
               </span>
             )}
@@ -772,7 +786,7 @@ const sections = [
                 are not columns explain nothing — each block says what it is in
                 its own words instead.
               */}
-              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+              <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
                 <tr>
                   <th class="px-4 py-3 font-medium">Load</th>
                   <th class="px-4 py-3 font-medium">Customer</th>
@@ -791,10 +805,9 @@ const sections = [
                     {/* THE LOAD LEADS. It is the one thing on the row that is
                         never empty and the thing she is holding paperwork for. */}
                     <td class={`${cell} order-1`}>
-                      <a
-                        href={`/app/loads/${r.id}/assign`}
-                        class="font-medium tabular-nums hover:text-brand-600 hover:underline"
-                      >
+                      {/* `.link-row` is the shared 44px row link — the record
+                          name is the target, not the twelve characters in it. */}
+                      <a href={`/app/loads/${r.id}/assign`} class="link-row tabular-nums">
                         {r.label}
                       </a>
                       {/* THEIRS, printed under ours. The number on the rate
@@ -802,7 +815,7 @@ const sections = [
                           says on the phone, and a board that only shows our own
                           number makes her open every load to find the right one. */}
                       {r.brokerReference && r.brokerReference !== r.label && (
-                        <div class="text-xs text-ink-300 tabular-nums">
+                        <div class="text-xs text-ink-700 tabular-nums">
                           Broker ref {r.brokerReference}
                         </div>
                       )}
@@ -832,7 +845,7 @@ const sections = [
                             printing one as $0.00 is the kind of number that ends
                             up in a conversation with a broker. */}
                         {r.linehaulCents === null ? (
-                          <span class="text-xs text-ink-300 italic">No rate typed</span>
+                          <span class="text-xs text-ink-700 italic">No rate typed</span>
                         ) : (
                           <span class="text-sm font-semibold tabular-nums">
                             {formatCents(r.linehaulCents)}
@@ -850,7 +863,7 @@ const sections = [
                           {r.customer}
                         </>
                       ) : (
-                        <span class="text-ink-300">—</span>
+                        <span class="text-ink-500">—</span>
                       )}
                     </td>
                     <td class={`${cell} order-4`}>
@@ -864,7 +877,7 @@ const sections = [
                             {r.pickupWhere || '—'}
                           </div>
                           {r.pickupWhen && (
-                            <div class="text-xs text-ink-300 tabular-nums">{r.pickupWhen}</div>
+                            <div class="text-xs text-ink-700 tabular-nums">{r.pickupWhen}</div>
                           )}
                         </>
                       ) : (
@@ -873,7 +886,7 @@ const sections = [
                            nowhere to send the driver she is about to assign. */
                         <a
                           href={`/app/loads/${r.id}/stops`}
-                          class="text-ink-300 hover:text-brand-600 hover:underline"
+                          class="link inline-flex min-h-11 items-center"
                         >
                           No stops yet
                         </a>
@@ -893,11 +906,11 @@ const sections = [
                             {r.deliveryWhere || '—'}
                           </div>
                           {r.deliveryWhen && (
-                            <div class="text-xs text-ink-300 tabular-nums">{r.deliveryWhen}</div>
+                            <div class="text-xs text-ink-700 tabular-nums">{r.deliveryWhen}</div>
                           )}
                         </>
                       ) : (
-                        <span class="text-ink-300">—</span>
+                        <span class="text-ink-500">—</span>
                       )}
                     </td>
                     {/*
@@ -912,21 +925,22 @@ const sections = [
                         <>
                           <div class="font-medium">{r.driver}</div>
                           {r.coDriver && (
-                            <div class="text-xs text-ink-300">with {r.coDriver}</div>
+                            <div class="text-xs text-ink-700">with {r.coDriver}</div>
                           )}
-                          {/* A full-width block on a phone, the same badge from
-                              `sm` up. It is wider than the text because this is
-                              the line that must not be skimmed past, and making
-                              it bigger is the only lever a layout has — the
-                              colours are the deadline palette and are not
-                              borrowed for anything else. */}
+                          {/* Full width on a phone, the shared badge from `sm`
+                              up. It is wider than the text because this is the
+                              line that must not be skimmed past, and making it
+                              bigger is the only lever a layout has. The colours
+                              are the shared badge pairs — red-800 on red-100,
+                              amber-800 on amber-100 — so this line is the same
+                              red the rest of the app spends on "act now". */}
                           {r.blocked && (
-                            <span class="mt-1 block rounded-md bg-red-100 px-2 py-1 text-xs font-medium text-red-700 sm:inline-block sm:px-1.5 sm:py-0.5">
+                            <span class="badge badge-danger mt-1 flex w-full sm:inline-flex sm:w-auto">
                               Not qualified today
                             </span>
                           )}
                           {r.driverOffRoster && (
-                            <span class="mt-1 block rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-800 sm:inline-block sm:px-1.5 sm:py-0.5">
+                            <span class="badge badge-warning mt-1 flex w-full sm:inline-flex sm:w-auto">
                               Not on the active roster
                             </span>
                           )}
@@ -942,7 +956,7 @@ const sections = [
                           {r.tractor}
                         </>
                       ) : (
-                        <span class="text-ink-300">—</span>
+                        <span class="text-ink-500">—</span>
                       )}
                     </td>
                     <td class:list={[cell, 'order-8', !r.trailer && 'hidden sm:table-cell']}>
@@ -952,36 +966,26 @@ const sections = [
                           {r.trailer}
                         </>
                       ) : (
-                        <span class="text-ink-300">—</span>
+                        <span class="text-ink-500">—</span>
                       )}
                     </td>
                     {/* Straight under the load number on a phone: where the
                         truck is, in two words, before anything else. */}
                     <td class={`${cell} order-2`}>
-                      <span
-                        class:list={[
-                          'rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
-                          STATUS_PILL[r.status] ?? 'bg-ink-100 text-ink-500',
-                        ]}
-                      >
-                        {words(r.status)}
-                      </span>
                       {/* The exception sits ALONGSIDE the status, never
                           replacing it: a detained load is still at_shipper, and
-                          collapsing the two loses where the truck actually is. */}
-                      {r.exception && (
-                        <span
-                          class:list={[
-                            'ml-1 rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap',
-                            // Beside the status on a phone, under it from `sm`,
-                            // which is the line the desktop table already had.
-                            'sm:mt-1 sm:ml-0 sm:block sm:w-fit',
-                            EXCEPTION_PILL[r.exception] ?? 'bg-amber-100 text-amber-800',
-                          ]}
-                        >
-                          {words(r.exception)}
-                        </span>
-                      )}
+                          collapsing the two loses where the truck actually is.
+                          Both pills are the shared `.badge` construction with
+                          the colour the Loads list gives the same value, so the
+                          two screens cannot drift apart again. */}
+                      <div class="flex flex-wrap items-center gap-1">
+                        <span class={statusPillClass(r.status)}>{loadStatusLabel(r.status)}</span>
+                        {r.exception && (
+                          <span class={exceptionPillClass(r.exception)}>
+                            {exceptionLabel(r.exception)}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td
                       class={`${cell} order-9 mt-2 flex gap-2 sm:mt-0 sm:table-cell sm:py-3 sm:text-right sm:whitespace-nowrap`}

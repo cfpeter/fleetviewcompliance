@@ -33,6 +33,9 @@ import {
   type EligibilityIssue,
 } from '../../../../lib/dispatch/eligibility.ts'
 import { formText } from '../../../../lib/drivers.ts'
+// The load status in the sidebar is painted by the same function the Loads list
+// and the dispatch board call, so one status is one colour in all three places.
+import { loadStatusLabel, statusPillClass } from '../../../../lib/loads.ts'
 import type { DeadlineItem } from '../../../../lib/rules/index.ts'
 
 const supabase = Astro.locals.supabase!
@@ -643,12 +646,16 @@ const customerName = load.customer_id
   : null
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+// `.field-input` is the shared field from global.css. It carries the 44px floor,
+// the ink-500 border and the focus ring; the local copy this replaced was 40px
+// tall with a border-ink-100 nobody could see and an `outline-none` on it.
+const field = 'field-input mt-1'
 
+// The shared badge pairs, not a local red. `.badge-danger` is red-800 on
+// red-100, which is the red every other screen uses for "stop".
 const SEVERITY_PILL = {
-  block: 'bg-red-100 text-red-700',
-  warn: 'bg-amber-100 text-amber-800',
+  block: 'badge badge-danger',
+  warn: 'badge badge-warning',
 } as const
 
 // ---------------------------------------------------------------------------
@@ -673,7 +680,9 @@ type SlotState = 'block' | 'warn' | 'unknown' | 'clear'
 const SLOT_STATE: Record<SlotState, { dot: string; text: string; word: string }> = {
   block: { dot: 'bg-red-500', text: 'text-red-800', word: 'cannot go out' },
   warn: { dot: 'bg-amber-500', text: 'text-amber-900', word: 'warning' },
-  unknown: { dot: 'bg-ink-300', text: 'text-ink-500', word: 'no records' },
+  // ink-700: this word is printed at 12px in the slot list, and 12px is where
+  // the floor in global.css moves up from ink-500.
+  unknown: { dot: 'bg-ink-300', text: 'text-ink-700', word: 'no records' },
   clear: { dot: 'bg-emerald-500', text: 'text-emerald-800', word: 'clear' },
 }
 
@@ -771,7 +780,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
                   .map((i) => (
                     <p class="text-red-800">{i.message}</p>
                   ))}
-                <a href={s.href} class="mt-1 inline-block font-medium text-brand-600 hover:underline">
+                <a href={s.href} class="btn btn-tertiary btn-sm mt-1 -ml-4">
                   Open {s.name} and fix the date →
                 </a>
               </li>
@@ -805,7 +814,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
           activeDrivers.length === 0 ? (
             <p class="rounded-xl border border-dashed border-ink-100 p-6 text-center text-sm text-ink-500">
               There are no active drivers to assign.{' '}
-              <a href="/app/drivers/new" class="font-medium text-brand-600 hover:underline">
+              <a href="/app/drivers/new" class="link font-medium">
                 Add a driver
               </a>{' '}
               first.
@@ -813,7 +822,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
           ) : (
             <div class="grid gap-4 sm:grid-cols-2">
               <label class="block">
-                <span class="text-sm font-medium">
+                <span class="field-label">
                   Driver <span class="text-red-600">*</span>
                 </span>
                 <select name="driver" class={field}>
@@ -827,8 +836,8 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
               </label>
 
               <label class="block">
-                <span class="text-sm font-medium">
-                  Co-driver <span class="font-normal text-ink-300">(team runs only)</span>
+                <span class="field-label">
+                  Co-driver <span class="font-normal text-ink-500">(team runs only)</span>
                 </span>
                 <select name="co_driver" class={field}>
                   <option value="">— nobody —</option>
@@ -841,7 +850,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
               </label>
 
               <label class="block">
-                <span class="text-sm font-medium">Tractor</span>
+                <span class="field-label">Tractor</span>
                 <select name="tractor" class={field}>
                   <option value="">— none —</option>
                   {tractors.map((v) => (
@@ -853,8 +862,8 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
               </label>
 
               <label class="block">
-                <span class="text-sm font-medium">
-                  Trailer <span class="font-normal text-ink-300">(leave blank for power-only)</span>
+                <span class="field-label">
+                  Trailer <span class="font-normal text-ink-500">(leave blank for power-only)</span>
                 </span>
                 <select name="trailer" class={field}>
                   <option value="">— none —</option>
@@ -872,7 +881,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
         <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
           <button
             type="submit"
-            class="rounded-lg border border-ink-100 px-4 py-2.5 font-medium transition hover:bg-ink-50"
+            class="btn btn-secondary"
           >
             Check these
           </button>
@@ -901,7 +910,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
               many there are, and then says she still has to read them.
             */}
             <div class:list={['rounded-xl border p-4', SUMMARY_PANEL[summaryTone]]}>
-              <h2 class="text-xs tracking-wide text-ink-500 uppercase">What we checked</h2>
+              <h2 class="text-xs tracking-wide text-ink-700 uppercase">What we checked</h2>
 
               <p class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-base font-medium">
                 {summaryCounts.map((c) => (
@@ -927,7 +936,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
                       class:list={['size-2 shrink-0 rounded-full', SLOT_STATE[r.state].dot]}
                       aria-hidden="true"
                     />
-                    <span class="text-ink-500">{r.role}</span>
+                    <span class="text-ink-700">{r.role}</span>
                     <span class={SLOT_STATE[r.state].text}>{r.word}</span>
                   </li>
                 ))}
@@ -961,19 +970,21 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
                         : 'border-ink-100 bg-white',
                   ]}
                 >
-                  <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                    <span class="text-xs tracking-wide text-ink-500 uppercase">{s.role}</span>
-                    <a href={s.href} class="font-medium hover:text-brand-600 hover:underline">
+                  <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span class="text-xs tracking-wide text-ink-700 uppercase">{s.role}</span>
+                    {/* `.link-row` is the shared 44px row link, so the name of
+                        the person this card is about is a thumb target. */}
+                    <a href={s.href} class="link-row">
                       {s.name}
                     </a>
                     <span
                       class:list={[
-                        'ml-auto rounded-md px-2 py-0.5 text-xs font-medium',
+                        'ml-auto',
                         blocks.length > 0
                           ? SEVERITY_PILL.block
                           : warns.length > 0
                             ? SEVERITY_PILL.warn
-                            : 'bg-emerald-100 text-emerald-800',
+                            : 'badge badge-success',
                       ]}
                     >
                       {blocks.length > 0
@@ -990,7 +1001,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
                         <li class="flex gap-2">
                           <span
                             class:list={[
-                              'mt-0.5 shrink-0 rounded-md px-1.5 py-0.5 text-xs font-medium',
+                              'mt-0.5 shrink-0',
                               SEVERITY_PILL[i.severity],
                             ]}
                           >
@@ -1014,7 +1025,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
                     <p class="mt-3 text-sm text-ink-500">
                       We have no compliance rows for {s.name}. That is not the same as a clean
                       record. It usually means the record is not on the active roster.{' '}
-                      <a href={s.href} class="font-medium text-brand-600 hover:underline">
+                      <a href={s.href} class="link font-medium">
                         Check the record
                       </a>
                       .
@@ -1049,12 +1060,12 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
                 {assessment.warns.length === 1 ? ' warning' : ' warnings'} on this load. None of
                 them stops the truck. We save all of them with your name.
               </p>
-              <label class="flex items-start gap-2 text-sm">
+              <label class="check-row text-sm">
                 <input
                   type="checkbox"
                   name="acknowledge"
                   value="yes"
-                  class="mt-0.5 size-4 rounded border-ink-300"
+                  class="mt-0.5"
                 />
                 <span class="text-amber-900">
                   I read the warnings above. I am sending this load out anyway. My name is saved
@@ -1085,11 +1096,11 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
             name="intent"
             value="assign"
             disabled={assessment.blocked || !selection.driver}
-            class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-300 disabled:hover:bg-ink-100"
+            class="btn btn-primary"
           >
             {current ? 'Change the assignment' : 'Assign this load'}
           </button>
-          <a href="/app/dispatch" class="text-sm font-medium text-brand-600 hover:underline">
+          <a href="/app/dispatch" class="btn btn-tertiary">
             Back to dispatch
           </a>
           {
@@ -1106,7 +1117,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
 
     <div class="space-y-4">
       <div class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">On this load now</div>
+        <div class="text-xs tracking-wide text-ink-700 uppercase">On this load now</div>
         {
           current ? (
             <>
@@ -1134,7 +1145,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
                   type="submit"
                   name="intent"
                   value="release"
-                  class="rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
+                  class="btn btn-secondary btn-sm"
                 >
                   Take them off this load
                 </button>
@@ -1149,11 +1160,13 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
       </div>
 
       <div class={card}>
-        <div class="text-xs tracking-wide text-ink-500 uppercase">Load</div>
+        <div class="text-xs tracking-wide text-ink-700 uppercase">Load</div>
         <dl class="mt-2 divide-y divide-ink-100 text-sm">
           <div class="flex justify-between gap-4 py-2">
             <dt class="text-ink-500">Status</dt>
-            <dd class="text-right">{load.status.replace(/_/g, ' ')}</dd>
+            <dd class="text-right">
+              <span class={statusPillClass(load.status)}>{loadStatusLabel(load.status)}</span>
+            </dd>
           </div>
           {
             load.equipment_type && (
@@ -1180,10 +1193,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
             )
           }
         </dl>
-        <a
-          href={`/app/loads/${id}`}
-          class="mt-3 inline-block text-sm font-medium text-brand-600 hover:underline"
-        >
+        <a href={`/app/loads/${id}`} class="btn btn-tertiary btn-sm mt-3 -ml-4">
           Open the load →
         </a>
       </div>
