@@ -48,12 +48,29 @@ if (Astro.request.method === 'POST') {
   const intent = String(form.get('intent') ?? '')
 
   /**
+   * Was this form opened from /app/setup?
+   *
+   * If it was, a good save goes back there instead of to the new vehicle, so
+   * the owner filling in a seven-truck roster lands on the page with the
+   * counts and the next button on it. If it was NOT — and it usually is not,
+   * because the Trucks list links here too — nothing below changes at all.
+   *
+   * Compared against the one literal we ever send. The marker is a switch, not
+   * a destination: reading a path out of the form and redirecting to it would
+   * turn every "Add vehicle" button into an open redirect.
+   */
+  const fromSetup = String(form.get('from') ?? '') === 'setup'
+
+  /**
    * Back to the form with the message AND with what he typed.
    *
    * A 303 throws the request body away, so without this every rejected save —
    * one duplicate VIN, one mistyped year — costs the owner all nine fields
    * again. They ride in the query string, which is also what makes the error
    * page survive a refresh.
+   *
+   * The setup marker rides along for the same reason the fields do: a mistyped
+   * year must not quietly cost him the way back.
    */
   const reject = (message: string) => {
     const next = new URLSearchParams({ error: message })
@@ -61,6 +78,7 @@ if (Astro.request.method === 'POST') {
       const v = String(form.get(key) ?? '').trim()
       if (v) next.set(key, v)
     }
+    if (fromSetup) next.set('from', 'setup')
     return Astro.redirect(`/app/vehicles/new?${next.toString()}`, 303)
   }
 
@@ -141,7 +159,15 @@ if (Astro.request.method === 'POST') {
   //
   // Straight to the new record rather than back to the list: the dates are the
   // reason he is here, and they live on the next screen.
-  return Astro.redirect(`/app/vehicles/${data.id}?added=1`, 303)
+  //
+  // UNLESS he came from /app/setup, where the reason he is here is the count.
+  // A fleet of seven trucks is not typed in one sitting, and dropping him on
+  // truck one's detail page left him with no route back to the page that knows
+  // how many are still missing — so he had to retype the URL to add truck two.
+  return Astro.redirect(
+    fromSetup ? '/app/setup?added=truck' : `/app/vehicles/${data.id}?added=1`,
+    303,
+  )
 }
 
 // --- GET: render, prefilled from whatever a rejected save handed back --------
@@ -150,6 +176,10 @@ const params = Astro.url.searchParams
 const error = params.get('error')
 const prior = (key: string) => params.get(key) ?? ''
 const priorKind = prior('kind')
+// Read as a yes/no and re-emitted below as a literal, never echoed. A value
+// copied out of the query string and into a hidden field is a value anybody
+// can put in this form.
+const fromSetup = params.get('from') === 'setup'
 
 const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
@@ -160,6 +190,9 @@ const field =
     {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
 
     <form method="POST" class="rounded-xl border border-ink-100 bg-white p-5">
+      {/* The marker, carried in the body rather than left to the action URL, so
+          it survives however this form is submitted. */}
+      {fromSetup && <input type="hidden" name="from" value="setup" />}
       <fieldset>
         <legend class="text-sm font-medium">
           What is it? <span class="text-red-600">*</span>
@@ -328,8 +361,12 @@ const field =
         >
           Add vehicle
         </button>
-        <a href="/app/vehicles" class="text-sm font-medium text-brand-600 hover:underline">
-          Back to trucks
+        {/* The way out goes back where he came in. */}
+        <a
+          href={fromSetup ? '/app/setup' : '/app/vehicles'}
+          class="text-sm font-medium text-brand-600 hover:underline"
+        >
+          {fromSetup ? 'Back to setup' : 'Back to trucks'}
         </a>
       </div>
     </form>

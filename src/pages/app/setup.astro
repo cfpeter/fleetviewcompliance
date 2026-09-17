@@ -67,6 +67,13 @@ import {
   rosterProgress,
   safetyRating,
 } from '../../lib/onboarding.ts'
+import {
+  addedLine,
+  parseAdded,
+  rosterCount,
+  rosterLine,
+  rosterSettled,
+} from '../../lib/roster.ts'
 import { MCS150_RULE_CODE } from '../../lib/rules/federal-carrier.ts'
 import { site, telHref } from '../../lib/site.ts'
 
@@ -403,6 +410,15 @@ const params = Astro.url.searchParams
 const msg = notice(params.get('notice'))
 const dotParam = normalizeDot(params.get('dot') ?? '')
 const justCreated = params.get('created') === '1'
+/**
+ * What the add form just saved, when it was opened from here.
+ *
+ * /app/vehicles/new and /app/drivers/new send the owner back here — instead of
+ * to the record they just made — but only when they were opened from this page.
+ * See the `from=setup` marker on the two buttons below. An allow-list, because
+ * this is a query string: see `parseAdded`.
+ */
+const justAdded = parseAdded(params.get('added'))
 /** Explicit, so "send it somewhere else" can leave a live claim's code screen. */
 const wantsChannels = params.get('verify') === '1'
 
@@ -557,18 +573,11 @@ if (step === 'done' && carrierId) {
   target = fleetTarget(found)
 }
 
-const rosterLine = (p: RosterProgress, noun: string) => {
-  switch (p.state) {
-    case 'unknown':
-      return `The federal file does not list a ${noun} count for you. You have added ${p.added}.`
-    case 'partial':
-      return `FMCSA has you at ${p.target}. You have added ${p.added}. ${p.remaining} to go.`
-    case 'met':
-      return `FMCSA has you at ${p.target} and you have added ${p.added}. That matches.`
-    case 'over':
-      return `FMCSA has you at ${p.target}. You have added ${p.added}. Your last MCS-150 is out of date.`
-  }
-}
+// The big number, the sentence under it, and "is there anything left to do"
+// now live in src/lib/roster.ts — next to nothing else, so a test can pin them.
+// They lived here as a switch and a ternary, which is how the tile came to read
+// "7 of 1" for a carrier whose yard has outgrown his last MCS-150.
+const rosterDone = rosterSettled(trucks, drivers)
 
 const lastFiled = parseCensusDate(found?.mcs150_date)
 const fmt = (d: Date) =>
@@ -645,11 +654,18 @@ const READS = [
 // user who already has one. "Your fleet is set up" is right the first time and
 // odd the fiftieth, so the heading follows which visit this is.
 const manualHeading = chooseVariant === 'auto' ? 'Prove the number is yours' : 'A person has to check this one'
+// Three headings for one step, because this page is permanent. The first visit
+// is a welcome, the visit with work left is a job, and the visit after the
+// roster is full is neither — it is a page he opened to check a number, and
+// "Finish setting up your fleet" would tell him something is wrong when nothing
+// is.
 const title =
   step === 'done'
     ? justCreated
       ? 'Your fleet is set up'
-      : 'Finish setting up your fleet'
+      : rosterDone
+        ? 'Your fleet'
+        : 'Finish setting up your fleet'
     : step === 'queued'
       ? 'Your request is with a person'
       : step === 'code'
@@ -662,7 +678,9 @@ const title =
 
 const subtitle =
   step === 'done'
-    ? 'The part the federal file cannot fill in for you.'
+    ? rosterDone
+      ? 'Your trucks and drivers, and what FMCSA has on file.'
+      : 'The part the federal file cannot fill in for you.'
     : step === 'queued'
       ? `Manual review of USDOT ${dotParam}.`
       : step === 'code'
@@ -1191,6 +1209,18 @@ const tone =
             </p>
           )}
 
+          {/*
+            The receipt for the truck or driver he just added, on the page he
+            added it from. The counts in the two tiles below have already moved,
+            and the other button is one thumb away — which is the whole point of
+            sending him back here instead of to the record he just made.
+          */}
+          {justAdded && !justCreated && (
+            <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+              {addedLine(justAdded)}
+            </p>
+          )}
+
           <div class={card}>
             <p class="font-medium">The federal file holds counts, not records</p>
             {/*
@@ -1211,26 +1241,25 @@ const tone =
             <div class="mt-5 grid gap-4 sm:grid-cols-2">
               <div class="rounded-lg border border-ink-100 p-4">
                 <p class="text-xs tracking-wide text-ink-500 uppercase">Trucks</p>
-                <p class="mt-1 text-2xl font-semibold tabular-nums">
-                  {trucks.state === 'unknown'
-                    ? trucks.added
-                    : `${trucks.added} of ${trucks.target}`}
-                </p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums">{rosterCount(trucks)}</p>
                 <p class="mt-1 text-sm text-ink-500">{rosterLine(trucks, 'power-unit')}</p>
-                <a href="/app/vehicles/new" class={`${primary} mt-4 block text-center`}>
+                {/*
+                  `from=setup` is the whole return trip. It rides into the form,
+                  back out of a rejected save, and on a good save it is what
+                  tells /app/vehicles/new to send him here rather than to the new
+                  record. Without it that page behaves exactly as it always has,
+                  which is what the Trucks list depends on.
+                */}
+                <a href="/app/vehicles/new?from=setup" class={`${primary} mt-4 block text-center`}>
                   Add a truck
                 </a>
               </div>
 
               <div class="rounded-lg border border-ink-100 p-4">
                 <p class="text-xs tracking-wide text-ink-500 uppercase">Drivers</p>
-                <p class="mt-1 text-2xl font-semibold tabular-nums">
-                  {drivers.state === 'unknown'
-                    ? drivers.added
-                    : `${drivers.added} of ${drivers.target}`}
-                </p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums">{rosterCount(drivers)}</p>
                 <p class="mt-1 text-sm text-ink-500">{rosterLine(drivers, 'driver')}</p>
-                <a href="/app/drivers/new" class={`${primary} mt-4 block text-center`}>
+                <a href="/app/drivers/new?from=setup" class={`${primary} mt-4 block text-center`}>
                   Add a driver
                 </a>
               </div>
@@ -1244,14 +1273,21 @@ const tone =
             </p>
           </div>
 
+          {/* Nothing is being skipped once the roster is full, so the word goes. */}
           <p class="mt-5 text-center text-sm">
             <a href="/app" class="text-ink-500 hover:underline">
-              Skip for now — go to the dashboard
+              {rosterDone ? 'Go to the dashboard' : 'Skip for now — go to the dashboard'}
             </a>
           </p>
 
+          {/*
+            The address is printed because it is the honest answer. The dashboard
+            shows a button back to this page only while a truck list or a driver
+            list is empty — a nudge that never goes away is furniture — so once
+            both have something on them, the URL is how he gets back.
+          */}
           <p class="mt-2 text-center text-xs text-ink-300">
-            This page stays at /app/setup. Come back any time to see how the count is going.
+            You can open this page any time. The address is /app/setup.
           </p>
         </>
       )
