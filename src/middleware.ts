@@ -25,12 +25,20 @@ const API = /^\/api\//
  * up, and disables the endpoint — after which nothing in this application ever
  * learns that a customer paid, cancelled or lapsed.
  *
+ * A Supabase Send Email Hook call has no signed-in user either — it is Supabase
+ * asking US to send the confirmation email for somebody who, at signup, does not
+ * have an account yet. Behind the session guard it would get a 401 for every
+ * auth email forever, and the failure would look like "signup is broken" rather
+ * than like a route guard.
+ *
  * These carry their own check and refuse to run when it cannot be made. The
  * cron routes compare a shared secret in constant time; /api/stripe verifies an
- * HMAC signature over the raw body (src/lib/billing/stripe.ts). Neither
- * defaults to open when its secret is unset.
+ * HMAC signature over the raw body (src/lib/billing/stripe.ts); /api/auth
+ * verifies a standard-webhooks signature the same way
+ * (src/lib/auth/email-hook.ts). None of them defaults to open when its secret is
+ * unset.
  */
-const SELF_AUTHENTICATING = /^\/api\/(cron|stripe)\//
+const SELF_AUTHENTICATING = /^\/api\/(cron|stripe|auth)\//
 
 /**
  * Keep every non-production deployment out of search results.
