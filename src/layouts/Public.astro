@@ -157,31 +157,41 @@ const nav = [
       <div class="mx-auto grid max-w-6xl gap-8 px-4 py-12 sm:grid-cols-3 sm:px-6">
         <div>
           <p class="font-semibold tracking-tight">{BRAND}</p>
-          <p class="mt-2 max-w-xs text-sm text-ink-500">
+          {/* The whole footer sits on `bg-ink-50`, and on a tint the floor is
+              ink-700 at every size — ink-500 is measured against white and gets
+              no credit here. That is the rule for the three paragraphs below as
+              well; two of them are also 12px, where ink-700 is the floor anyway. */}
+          <p class="mt-2 max-w-xs text-sm text-ink-700">
             Deadline tracking, loads and trips for small US carriers who would rather be
             driving than filing.
           </p>
         </div>
         <div>
-          <p class="text-xs tracking-wide text-ink-500 uppercase">Product</p>
+          <p class="text-xs tracking-wide text-ink-700 uppercase">Product</p>
+          {/* `.link` on every one of these, here and in the Company column: blue
+              AND underlined at rest. They used to be plain ink-900 that turned
+              blue on hover — and on a phone there is no hover, so the whole
+              footer read as two lists of words with nothing to say that any of
+              them went anywhere. A link this audience can see is a link that
+              looks like one before it is touched. */}
           <ul class="mt-3 space-y-2 text-sm">
-            <li><a href="/features" class="hover:text-brand-600 hover:underline">Features</a></li>
-            <li><a href="/pricing" class="hover:text-brand-600 hover:underline">Pricing</a></li>
-            <li><a href="/check" class="hover:text-brand-600 hover:underline">Check your DOT number</a></li>
-            <li><a href="/login" class="hover:text-brand-600 hover:underline">Sign in</a></li>
+            <li><a href="/features" class="link">Features</a></li>
+            <li><a href="/pricing" class="link">Pricing</a></li>
+            <li><a href="/check" class="link">Check your DOT number</a></li>
+            <li><a href="/login" class="link">Sign in</a></li>
             <li>
-              <a href="/login?mode=signup" class="hover:text-brand-600 hover:underline">
+              <a href="/login?mode=signup" class="link">
                 Create an account
               </a>
             </li>
           </ul>
         </div>
         <div>
-          <p class="text-xs tracking-wide text-ink-500 uppercase">Company</p>
+          <p class="text-xs tracking-wide text-ink-700 uppercase">Company</p>
           <ul class="mt-3 space-y-2 text-sm">
-            <li><a href="/about" class="hover:text-brand-600 hover:underline">About</a></li>
-            <li><a href="/privacy" class="hover:text-brand-600 hover:underline">Privacy</a></li>
-            <li><a href="/terms" class="hover:text-brand-600 hover:underline">Terms</a></li>
+            <li><a href="/about" class="link">About</a></li>
+            <li><a href="/privacy" class="link">Privacy</a></li>
+            <li><a href="/terms" class="link">Terms</a></li>
           </ul>
         </div>
       </div>

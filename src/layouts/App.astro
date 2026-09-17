@@ -479,7 +479,13 @@ const accountCurrent = account.find((s) => active(s.href))
     <main id="main" class="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
       <div class="mb-6">
         <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
-        {subtitle && <p class="mt-1 text-sm text-ink-500">{subtitle}</p>}
+        {/* ink-700, not ink-500, and the reason is the body under it: the
+            signed-in shell is `bg-ink-50`, and `<main>` paints no background of
+            its own, so this line is on a TINT. ink-500 is 4.74:1 on white but
+            4.42:1 on ink-50 — under the threshold, on the one line that tells
+            the reader what the page he just opened is for. On a tint the floor
+            is ink-700 at every size. Nothing about the header moved. */}
+        {subtitle && <p class="mt-1 text-sm text-ink-700">{subtitle}</p>}
       </div>
       <slot />
     </main>

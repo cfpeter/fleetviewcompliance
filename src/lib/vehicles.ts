@@ -225,17 +225,45 @@ export function statusLabel(status: VehicleStatus): string {
   return VEHICLE_STATUSES.find((s) => s.value === status)?.label ?? status
 }
 
-/** Colours only; the caller supplies the pill shape. Matches docs/stack.md. */
+/**
+ * The whole pill — shape and colour — out of the shared badge classes in
+ * src/styles/global.css. The caller renders the WORD inside it; colour is never
+ * the only signal.
+ *
+ * This function used to hand back bare colour pairs and the callers drew their
+ * own pill around them, which is how a truck ended up a different shade of green
+ * from a driver who was equally active, and how `default` ended up at
+ * `text-ink-500` on `bg-ink-100` — 4.74:1 against WHITE, less than that on the
+ * tint it was actually printed on. `.badge-neutral` is ink-700 on ink-100 and is
+ * the pair that was checked.
+ *
+ * WHAT EACH STATUS MEANS, in the app's one colour vocabulary:
+ *
+ * `active` is success, the same green a driver who is working gets.
+ *
+ * `sold` and `inactive` are both NEUTRAL, and sold moved here from blue. Blue in
+ * this product means "read this" (`unsupported` in rules/index.ts) or "moving"
+ * (a load between booked and delivered); a truck that has left the fleet is
+ * neither. It is the vehicle of a driver marked `terminated`, and that is grey —
+ * the most ordinary event in a fleet, and no business of the colour that means
+ * urgency. The two words still tell them apart.
+ *
+ * `out_of_service` keeps red, and it is the one red in this file. It is not
+ * "unknown" and it is not an errand: the unit may not legally roll until it is
+ * cleared, which is the same "act now" that overdue means everywhere else. If a
+ * fleet turns out to use this column for "in the shop this week" instead, it
+ * belongs in amber and this comment is the place that has to change.
+ */
 export function statusPillClass(status: VehicleStatus): string {
   switch (status) {
     case 'active':
-      return 'bg-emerald-100 text-emerald-800'
+      return 'badge badge-success'
     case 'out_of_service':
-      return 'bg-red-100 text-red-700'
+      return 'badge badge-danger'
     case 'sold':
-      return 'bg-blue-100 text-blue-800'
+      return 'badge badge-neutral'
     default:
-      return 'bg-ink-100 text-ink-500'
+      return 'badge badge-neutral'
   }
 }
 

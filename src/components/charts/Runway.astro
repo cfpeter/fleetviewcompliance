@@ -105,7 +105,10 @@ const behind = runway.overdue + runway.undated
             return (
               <div class="flex h-full min-w-0 flex-1 flex-col justify-end">
                 {w.count > 0 && (
-                  <div class="mb-0.5 text-center text-[10px] font-medium text-ink-500 tabular-nums">
+                  /* ink-700: 10px type, and the floor at 12px and under is
+                     ink-700 on any surface. This is the per-week count, which is
+                     the only figure in the plot. */
+                  <div class="mb-0.5 text-center text-[10px] font-medium text-ink-700 tabular-nums">
                     {w.count}
                   </div>
                 )}
@@ -153,7 +156,7 @@ const behind = runway.overdue + runway.undated
                ellipses. The cells either side are always empty (a month
                boundary cannot fall in two consecutive weeks), so there is
                nothing for it to collide with. */
-            <div class="min-w-0 flex-1 text-[10px] whitespace-nowrap text-ink-500">
+            <div class="min-w-0 flex-1 text-[10px] whitespace-nowrap text-ink-700">
               {w.monthLabel}
             </div>
           ))
@@ -177,14 +180,22 @@ const behind = runway.overdue + runway.undated
     a key to what amber and green mean on the axis, and grey already means
     something else here — no date.
   */}
+  {/*
+    A count of zero used to drop the line to ink-500, and this list is 12px,
+    where ink-700 is the floor on any surface. The dimming is gone rather than
+    darkened: the line already opens with the digit 0, which says "none" better
+    than a shade does, and it says it to a reader with the contrast turned up and
+    to one who cannot separate two greys at all. Same call as the zero rows in
+    Ring.astro and Proportion.astro, which step back to ink-700 and no further.
+  */}
   <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-ink-700">
-    <li class:list={['flex items-center gap-1.5', runway.soon === 0 && 'text-ink-500']}>
+    <li class="flex items-center gap-1.5">
       <span class="h-2 w-2 shrink-0 rounded-full bg-amber-500" />
       <span class="tabular-nums">
         <span class="font-medium">{runway.soon}</span> due in the next {runway.soonDays} days
       </span>
     </li>
-    <li class:list={['flex items-center gap-1.5', runway.later === 0 && 'text-ink-500']}>
+    <li class="flex items-center gap-1.5">
       <span class="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
       <span class="tabular-nums">
         <span class="font-medium">{runway.later}</span> due after {runway.soonDays} days
@@ -217,7 +228,12 @@ const behind = runway.overdue + runway.undated
     }
     {
       runway.beyond > 0 && (
-        <span class="text-ink-300">
+        /* ink-500, not ink-300. This is a real sentence about real deadlines —
+           "4 more are further out" — and at 1.85:1 it was on the page and
+           unreadable. It is the same ink as the paragraph it sits in: a clause
+           that is quieter than the rest of the sentence is not a design, it is a
+           clause the reader skips. */
+        <span class="text-ink-500">
           {' '}
           {runway.beyond} more {runway.beyond === 1 ? 'is' : 'are'} further out.
         </span>

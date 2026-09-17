@@ -264,12 +264,42 @@ export function bucketValues<T>(
 
 // ------------------------------------------------------------------ formatting
 
-/**
- * Money short enough to sit on a column on a phone.
+/* THE MONEY RULE, for this file and for every page that draws a chart.
  *
- * Deliberately NOT used for any figure the owner might act on or reconcile —
- * '$12.4k' is an axis label and a chart annotation, never a line item. The
- * exact cents stay in the table under the chart.
+ * Any figure a person reads AS AN AMOUNT is written in full: thousands
+ * separators and two decimal places, `$1,432.00`. Use `formatCents` from
+ * src/lib/loads.ts — it is the one full-money formatter in the product, it
+ * builds the string by integer division so it can be compared against a rate
+ * confirmation digit by digit, and it renders an absent figure as '—' rather
+ * than as '$0.00'.
+ *
+ * A figure is read AS AN AMOUNT whenever the reader could act on it, repeat it
+ * on the phone, or check it against a cheque, an invoice or a settlement
+ * statement. That is nearly everything: a value printed on or above a bar, a
+ * total, a subtotal, a stat tile, a caption, a table cell, a per-driver or
+ * per-customer figure, the number in a sentence under a chart.
+ *
+ * `compactMoney` is the ONE exception and it is narrow: an AXIS TICK — the mark
+ * that says what full height on the plot is worth — MAY stay compact, and only
+ * where the exact figure also appears in words somewhere on the same visual
+ * (the column labels, the total line, the table directly under the chart). If a
+ * reader cannot find the real number without leaving the picture, the axis does
+ * not get to round either.
+ *
+ * WHY THE LINE IS DRAWN THERE. '$1.4k' is somewhere between $1,350 and $1,449 —
+ * a hundred-dollar band printed as if it were a number. An owner reading it as
+ * what a broker owes him, or as what he paid a driver, is reading a figure that
+ * is wrong by more than most of the disputes this product exists to settle. An
+ * axis tick is not that: nobody rings anybody about the height of a bar, and the
+ * tick's whole job is to say roughly how big the picture is.
+ */
+
+/**
+ * Money short enough to sit on a chart axis on a phone.
+ *
+ * AXIS TICKS ONLY. See THE MONEY RULE above: never a line item, never a total,
+ * never a value label, never a figure in a sentence. The exact cents live in
+ * `formatCents`.
  */
 export function compactMoney(cents: number): string {
   const sign = cents < 0 ? '-' : ''

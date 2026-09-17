@@ -44,7 +44,10 @@ const caveats = (Array.isArray(coverage) ? coverage : coverage ? [coverage] : []
   <figcaption class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
     <div>
       <h3 class="text-sm font-semibold tracking-tight">{title}</h3>
-      {subtitle && <p class="mt-0.5 text-xs text-ink-500">{subtitle}</p>}
+      {/* 12px, so ink-700. This line says WHAT the chart measures and over what
+          span — without it the shape above is a shape about nothing, so it is
+          not a place to save ink. */}
+      {subtitle && <p class="mt-0.5 text-xs text-ink-700">{subtitle}</p>}
     </div>
     {
       action && (

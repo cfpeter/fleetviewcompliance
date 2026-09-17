@@ -60,7 +60,10 @@ const { rows } = divergingRows(items.map((i) => i.value))
         centre line sits at the centre of the plot, which is 16px to the left of
         it, so each label points at the wrong half by a hair on every row below.
       */}
-      <div class="flex items-center gap-2 text-[10px] tracking-wide text-ink-500 uppercase">
+      {/* ink-700: 10px, uppercase and letter-spaced, which is the hardest text
+          on the chart to read before any colour is chosen. The floor at 12px and
+          under is ink-700. */}
+      <div class="flex items-center gap-2 text-[10px] tracking-wide text-ink-700 uppercase">
         <div class="w-16 shrink-0 sm:w-24" />
         <div class="flex min-w-0 flex-1 gap-2">
           <div class="flex-1 text-right text-emerald-800">← {negativeLabel}</div>
@@ -129,7 +132,9 @@ const { rows } = divergingRows(items.map((i) => i.value))
                   {item.display}
                 </div>
               </div>
-              {item.note && <div class="mt-0.5 pl-18 text-xs text-ink-500 sm:pl-26">{item.note}</div>}
+              {/* 12px, so ink-700. The note is what explains an odd row — it is
+                  read more often than the label above it, not less. */}
+              {item.note && <div class="mt-0.5 pl-18 text-xs text-ink-700 sm:pl-26">{item.note}</div>}
             </li>
           )
         })}

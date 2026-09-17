@@ -93,7 +93,8 @@ const loadWord = (n: number) => (n === 1 ? 'load' : 'loads')
                 </div>
               )}
 
-              {row.note && <div class="mt-1 text-xs text-ink-500">{row.note}</div>}
+              {/* 12px, so ink-700 — the floor at that size on any surface. */}
+              {row.note && <div class="mt-1 text-xs text-ink-700">{row.note}</div>}
               {/* Red, because it is the one line on this chart that means do
                   something today. Never colour alone: the words say it too. */}
               {row.alarm && <div class="mt-1 text-xs font-medium text-red-700">{row.alarm}</div>}

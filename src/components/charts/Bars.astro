@@ -119,13 +119,16 @@ const ceiling = max ?? ceilingFor(items.map((i) => i.value))
               </div>
             )}
 
-            {item.note && <div class="mt-1 text-xs text-ink-500">{item.note}</div>}
+            {/* 12px, so ink-700 — and this note also has to survive the
+                `bg-ink-50` tint a `current` row sits on, where the floor is
+                ink-700 at any size. */}
+            {item.note && <div class="mt-1 text-xs text-ink-700">{item.note}</div>}
           </li>
         )
       })}
 
       {hidden > 0 && (
-        <li class="pt-1 text-xs text-ink-500 tabular-nums">
+        <li class="pt-1 text-xs text-ink-700 tabular-nums">
           {moreHref ? (
             <a href={moreHref} class="font-medium text-brand-600 hover:underline">
               {hidden} more →

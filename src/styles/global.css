@@ -109,18 +109,18 @@
     scroll-padding-top: 5.5rem;
   }
 
-  html[data-shell='app'] {
+  html[data-shell="app"] {
     scroll-padding-top: 4.5rem;
   }
 
   @media (min-width: 48rem) {
-    html[data-shell='app'] {
+    html[data-shell="app"] {
       scroll-padding-top: 8rem;
     }
   }
 
   @media (min-width: 75rem) {
-    html[data-shell='app'] {
+    html[data-shell="app"] {
       scroll-padding-top: 5rem;
     }
   }
@@ -321,9 +321,15 @@
 
      Underlined at rest, always. A link that is only a different blue is a link
      a reader in a hurry does not see, and half this audience is reading a
-     second language on a phone in the sun. */
+     second language on a phone in the sun.
+
+     The underline takes its colour from the text, so hover deepens both
+     together. It was `decoration-brand-600/60` before, which drew the line at
+     60% and then LEFT IT THERE when the text went to brand-700 — a faded
+     underline under darker text, and faded is the one thing this line must not
+     be. Full strength, one colour, both states. */
   .link {
-    @apply text-brand-600 underline underline-offset-2 decoration-brand-600/60 hover:text-brand-700;
+    @apply text-brand-600 underline underline-offset-2 hover:text-brand-700;
   }
 
   /* The record name in a table row is the link, and it is the full row height
@@ -371,6 +377,13 @@
     }
   }
 
+  /* 44px for EVERYBODY, mouse included — no `(pointer: fine)` exception like the
+     one above. A filter row sits inside one page, not above every page, so the
+     height is paid once and never compounds into the sticky header. And a filter
+     is aimed at in a hurry: the reader is standing in a list of forty loads
+     looking for the four that are late, and a miss costs him the list he was
+     reading. The selected state is `.is-current` — the same tinted pill the nav
+     uses, on the element that already carries aria-selected or aria-pressed. */
   .filter-tab {
     @apply inline-flex min-h-11 items-center rounded-lg px-4 font-medium text-ink-700 hover:bg-ink-50 hover:text-ink-900;
   }

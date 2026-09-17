@@ -92,6 +92,8 @@ const at = (percent: number) => Number(((percent / 100) * C).toFixed(3))
         centreTone === 'clear' ? 'text-emerald-700' : 'text-ink-900',
       ]}>{centre}</span
     >
-    <span class="mt-1 text-[11px] leading-tight text-ink-500">{centreNote}</span>
+    {/* 11px, so ink-700. This is the line that says what the big number in the
+        middle counts; the number is meaningless without it. */}
+    <span class="mt-1 text-[11px] leading-tight text-ink-700">{centreNote}</span>
   </div>
 </div>
