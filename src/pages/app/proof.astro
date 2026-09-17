@@ -16,7 +16,9 @@
  * carry the token in a URL, which is the leak this was fixing — and the page
  * says in plain words that the link is shown one time.
  */
+import Figure from '../../components/charts/Figure.astro'
 import App from '../../layouts/App.astro'
+import { TONES } from '../../lib/charts/tones.ts'
 import { hashProofToken, newProofToken } from '../../lib/proof/token.ts'
 
 const supabase = Astro.locals.supabase!
@@ -117,8 +119,78 @@ const now = Date.now()
 const isLive = (l: { revoked_at: string | null; expires_at: string }) =>
   !l.revoked_at && new Date(l.expires_at).getTime() > now
 
-const live = (links ?? []).filter(isLive)
-const dead = (links ?? []).filter((l) => !isLive(l))
+type LinkRow = NonNullable<typeof links>[number]
+
+/**
+ * Working links, SOONEST TO STOP WORKING FIRST.
+ *
+ * Newest first was the order the query came back in, and it answers a question
+ * nobody asks. The owner's question about this list is "which one am I about to
+ * lose" — a broker who opens a dead link sees the same blank page as a stranger,
+ * and the owner finds out about it from the broker. Ordering by the end date
+ * puts that link at the top of the list on the day it matters.
+ *
+ * Only the WORKING list is re-ordered. The list below it is finished business
+ * and is ordered by when each one stopped, most recent first.
+ */
+const live = ([...(links ?? [])] as LinkRow[])
+  .filter(isLive)
+  .sort((a, b) => new Date(a.expires_at).getTime() - new Date(b.expires_at).getTime())
+
+const endedAt = (l: LinkRow) => new Date(l.revoked_at ?? l.expires_at).getTime()
+const dead = ([...(links ?? [])] as LinkRow[])
+  .filter((l) => !isLive(l))
+  .sort((a, b) => endedAt(b) - endedAt(a))
+
+const DAY = 86_400_000
+
+/**
+ * Days until it stops working.
+ *
+ * ROUNDED DOWN, and clamped at zero. Rounding down is the only direction that
+ * cannot promise time the owner does not have: three hours left reads "today",
+ * not "in 1 day". Rounding up would have printed "1 day" over a link that dies
+ * before lunch, and the whole reason this number is on the card is so he can
+ * send a fresh link before a broker finds a dead one.
+ *
+ * The clamp is a guard on the other side of zero. `live` already excludes
+ * anything past its date, so a negative can only come from a clock a few seconds
+ * out of step — but unguarded it would print "in -1 days" and draw the bar
+ * backwards.
+ */
+const daysLeft = (l: LinkRow) =>
+  Math.max(0, Math.floor((new Date(l.expires_at).getTime() - now) / DAY))
+
+const stopsIn = (l: LinkRow) => {
+  const d = daysLeft(l)
+  if (d <= 0) return 'Stops working today'
+  if (d === 1) return 'Stops working tomorrow'
+  return `Stops working in ${d} days`
+}
+
+/**
+ * How much of this link's own life is left, 0-100.
+ *
+ * Measured against the span the owner chose — created to expires — not against
+ * a fixed window, so a 7-day link and a 90-day link both start full and both
+ * empty at the same moment they stop working. The bar is the shape; the number
+ * of days is printed above it in words, because the bar alone cannot say whether
+ * a quarter of a bar is three days or three weeks.
+ *
+ * Deliberately NOT coloured red or amber. In this app those two colours mean an
+ * obligation is overdue or close to its date, and a link running out is neither
+ * — borrowing the colour here would spend it on something that is not a
+ * deadline, on the same screen as the deadlines.
+ */
+const lifeLeft = (l: LinkRow) => {
+  const start = new Date(l.created_at).getTime()
+  const end = new Date(l.expires_at).getTime()
+  const span = end - start
+  if (!Number.isFinite(span) || span <= 0) return 0
+  return Math.min(100, Math.max(0, ((end - now) / span) * 100))
+}
+
+const openedWord = (n: number) => (n === 1 ? 'time opened' : 'times opened')
 
 const field =
   'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2.5 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
@@ -146,13 +218,25 @@ const driverName = (id: string | null) => {
   {createdUrl && (
     <div class="mb-6 rounded-xl border border-emerald-300 bg-emerald-50 p-5">
       <p class="font-medium text-emerald-900">Your link is ready. Copy it now.</p>
+      {/*
+        A select-all click handler used to sit on this input. It was the only
+        script left on the page, and this app ships none — see the note at the
+        top of layouts/Public.astro. `autofocus` puts the cursor in the box
+        without running anything, and the line under it says what to do next in
+        words, which is also what a reader on a phone needs: a tap there opens a
+        cursor, not a selection, script or no script.
+      */}
       <input
         readonly
+        autofocus
         value={createdUrl}
-        onclick="this.select()"
+        aria-label="Your new proof link"
         class="mt-3 w-full rounded-lg border border-emerald-300 bg-white px-3 py-2 font-mono text-xs"
       />
       <p class="mt-3 text-sm text-emerald-900">
+        Press and hold the box, choose Select all, then Copy.
+      </p>
+      <p class="mt-2 text-sm text-emerald-900">
         We show this link one time. We do not keep a copy of it. If you lose it, make a new link.
       </p>
     </div>
@@ -215,55 +299,130 @@ const driverName = (id: string | null) => {
     </form>
 
     <div>
-      <h2 class="text-lg font-semibold tracking-tight">Working links</h2>
-      {live.length === 0 ? (
-        <p class="mt-3 rounded-xl border border-dashed border-ink-100 bg-white p-8 text-center text-sm text-ink-500">
-          No links are working right now. A link you create shows here.
-        </p>
-      ) : (
-        <ul class="mt-3 space-y-3">
-          {live.map((l) => (
-            <li class={card}>
-              <div class="flex flex-wrap items-baseline justify-between gap-2">
-                <span class="font-medium">
-                  {l.label || (l.scope === 'driver_file' ? driverName(l.subject_id) : 'Fleet summary')}
-                </span>
-                <span class="text-xs text-ink-500 tabular-nums">
-                  expires {when(l.expires_at)}
-                </span>
-              </div>
-              <p class="mt-1 text-xs text-ink-500">
-                {l.scope === 'driver_file' ? `Driver file · ${driverName(l.subject_id)}` : 'Fleet summary'}
-                {l.recipient && <> · for {l.recipient}</>}
-                <> · opened <span class="tabular-nums">{l.view_count}</span> times</>
-                {l.last_viewed_at && <> · last {when(l.last_viewed_at)}</>}
-              </p>
-              {/*
-                There used to be a selectable input with the address in it. It
-                cannot be here any more: the database holds sha256(token), so
-                the server cannot rebuild this link. Saying that plainly is the
-                honest version — a "Copy link" button that produced anything at
-                all would mean the token was still stored somewhere.
-              */}
-              <p class="mt-3 rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-500">
-                The link is not shown here. We show a link one time only, when you make it. If you
-                lost it, turn this one off and make a new link.
-              </p>
-              <form method="POST" class="mt-3">
-                <input type="hidden" name="id" value={l.id} />
-                <button
-                  type="submit"
-                  name="intent"
-                  value="revoke"
-                  class="text-sm text-red-600 hover:underline"
-                >
-                  Turn off this link
-                </button>
-              </form>
-            </li>
-          ))}
-        </ul>
-      )}
+      {/*
+        A card each, and the open count is the big number on it.
+
+        The owner makes a link because somebody asked him for one, and then the
+        thing he wants to know is whether they actually read it. That fact was
+        already on this page — it was the fourth item in a grey run-on line of
+        11px text, read by nobody. It is now the first thing on the card, in the
+        size the rest of the app gives a number that answers a question.
+
+        The countdown bar under it answers the other one. See `lifeLeft` for why
+        the bar is blue and not amber.
+      */}
+      <Figure
+        title={
+          live.length === 0
+            ? 'No links are working'
+            : `${live.length} ${live.length === 1 ? 'link is' : 'links are'} working`
+        }
+        subtitle={live.length === 0 ? undefined : 'The one that stops working first is at the top.'}
+        coverage={
+          live.length === 0
+            ? undefined
+            : 'We count every time the page is opened. The same person opening it twice counts twice, and we cannot tell you who opened it.'
+        }
+      >
+        {live.length === 0 ? (
+          <p class="rounded-xl border border-dashed border-ink-100 p-8 text-center text-sm text-ink-500">
+            No links are working right now. A link you make shows here.
+          </p>
+        ) : (
+          <ul class="space-y-3">
+            {live.map((l) => (
+              <li class="rounded-xl border border-ink-100 p-4">
+                <div class="flex items-start gap-4">
+                  {/*
+                    Grey when it is zero, and still printed. "Nobody opened it"
+                    is the answer he came for as often as "three people did", so
+                    the zero is never hidden — it is just not dressed up as a
+                    result.
+                  */}
+                  <div class="w-14 shrink-0 text-center">
+                    <div
+                      class:list={[
+                        'text-3xl leading-none font-semibold tabular-nums',
+                        l.view_count > 0 ? 'text-ink-900' : 'text-ink-300',
+                      ]}
+                    >
+                      {l.view_count}
+                    </div>
+                    <div class="mt-1 text-[11px] leading-tight text-ink-500">
+                      {openedWord(l.view_count)}
+                    </div>
+                  </div>
+
+                  <div class="min-w-0 flex-1">
+                    <p class="font-medium">
+                      {l.label ||
+                        (l.scope === 'driver_file' ? driverName(l.subject_id) : 'Fleet summary')}
+                    </p>
+                    <p class="mt-1 text-xs text-ink-500">
+                      {l.scope === 'driver_file'
+                        ? `Driver file · ${driverName(l.subject_id)}`
+                        : 'Fleet summary'}
+                      {l.recipient && <> · for {l.recipient}</>}
+                    </p>
+                    <p class="mt-0.5 text-xs text-ink-500 tabular-nums">
+                      {l.last_viewed_at ? (
+                        <>Last opened {when(l.last_viewed_at)}</>
+                      ) : (
+                        <>Nobody has opened it yet</>
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                {/* The countdown. Words above the bar, because the bar cannot
+                    say whether a quarter of it is three days or three weeks. */}
+                <div class="mt-3">
+                  <div class="flex flex-wrap items-baseline justify-between gap-x-3 text-xs">
+                    <span class="font-medium tabular-nums">{stopsIn(l)}</span>
+                    <span class="text-ink-500 tabular-nums">{when(l.expires_at)}</span>
+                  </div>
+                  <div
+                    class:list={['mt-1.5 h-2 overflow-hidden rounded-full', TONES.brand.track]}
+                    aria-hidden="true"
+                  >
+                    <div
+                      class:list={['h-full rounded-full', TONES.brand.bar]}
+                      style={`width:${lifeLeft(l)}%;min-width:2px`}
+                    />
+                  </div>
+                </div>
+
+                {/*
+                  There used to be a selectable input with the address in it. It
+                  cannot be here any more: the database holds sha256(token), so
+                  the server cannot rebuild this link. Saying that plainly is the
+                  honest version — a "Copy link" button that produced anything at
+                  all would mean the token was still stored somewhere.
+                */}
+                <p class="mt-3 rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-500">
+                  The link is not shown here. We show a link one time only, when you make it. If you
+                  lost it, turn this one off and make a new link.
+                </p>
+
+                {/* A bordered button, not a text link. It is the only control on
+                    the card and it is pressed with a thumb, so it gets a target
+                    a thumb can hit. */}
+                <form method="POST" class="mt-3">
+                  <input type="hidden" name="id" value={l.id} />
+                  <button
+                    type="submit"
+                    name="intent"
+                    value="revoke"
+                    class="rounded-lg border border-red-200 px-4 py-3 text-sm leading-tight font-medium text-red-700 transition hover:bg-red-50"
+                  >
+                    Turn off this link
+                  </button>
+                </form>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Figure>
 
       {dead.length > 0 && (
         <>
@@ -277,6 +436,8 @@ const driverName = (id: string | null) => {
                 <span class="text-ink-500">
                   {' '}— {l.revoked_at ? `turned off ${when(l.revoked_at)}` : `expired ${when(l.expires_at)}`}
                   {l.recipient && <> · was for {l.recipient}</>}
+                  {' '}· opened <span class="tabular-nums">{l.view_count}</span>{' '}
+                  {l.view_count === 1 ? 'time' : 'times'}
                 </span>
               </li>
             ))}

@@ -12,9 +12,21 @@
  * See supabase/migrations/0013_share_links.sql and 0014_share_content.sql, and
  * tests/share-scope.test.ts which proves the scoping as the real `anon` role.
  */
+import Donut from '../../components/charts/Donut.astro'
+import Figure from '../../components/charts/Figure.astro'
+import Ring from '../../components/charts/Ring.astro'
 import Public from '../../layouts/Public.astro'
+import { dqRing } from '../../lib/charts/dq-rings.ts'
+import {
+  attentionParts,
+  buildHealth,
+  donutSlices,
+  healthHeadline,
+  type HealthKey,
+} from '../../lib/charts/health.ts'
+import { TONES } from '../../lib/charts/tones.ts'
 import { lookupAuthority, lookupCarrier } from '../../lib/fmcsa.ts'
-import { assembleDqf, gaps, summarise, type ItemState } from '../../lib/proof/dqf.ts'
+import { assembleDqf, gaps, type ItemState } from '../../lib/proof/dqf.ts'
 import { evaluate, type EvaluationSubject } from '../../lib/rules/index.ts'
 import { anonClient } from '../../lib/supabase/server.ts'
 
@@ -36,7 +48,20 @@ if (!link) Astro.response.status = 404
 
 const observedAt = new Date()
 
-let carrier: { legal_name?: string; dba_name?: string; dot_number?: string } | undefined
+/**
+ * `phy_state` is READ HERE AND NEVER PRINTED.
+ *
+ * share_carrier has always returned it; this page has never shown it and still
+ * does not. It is pulled onto the type for one job: the rule engine's state gate
+ * (see nexusExcludes in src/lib/rules/index.ts) needs to know which state's
+ * rules can reach this carrier, and without it every California rule would be
+ * counted against a carrier in Texas — a ring full of grey arcs for obligations
+ * that are not theirs. src/lib/deadlines.ts feeds the owner's own dashboard from
+ * exactly this field, which is what makes the two agree.
+ */
+let carrier:
+  | { legal_name?: string; dba_name?: string; dot_number?: string; phy_state?: string }
+  | undefined
 let driver: { id: string; first_name: string; last_name: string; cdl_number?: string; cdl_state?: string; cdl_expires_on?: string } | undefined
 let counts: { active_drivers: number; power_units: number; trailers: number } | undefined
 let anchorRows: { subject_type: string; subject_id: string | null; anchor_key: string; occurred_on: string }[] = []
@@ -91,7 +116,6 @@ const anchorsFor = (type: string, id: string | null) => {
 }
 
 let dqfItems: ReturnType<typeof assembleDqf> = []
-let summary: ReturnType<typeof summarise> | undefined
 
 if (link?.scope === 'driver_file' && driver) {
   const a = anchorsFor('driver', driver.id)
@@ -107,8 +131,118 @@ if (link?.scope === 'driver_file' && driver) {
   }
   const items = evaluate([subject], observedAt).filter((i) => i.subjectId === driver!.id)
   dqfItems = assembleDqf({ items })
-  summary = summarise(dqfItems, observedAt)
 }
+
+/**
+ * The driver file drawn as a ring. Same eight items, same states, no new facts.
+ *
+ * `dqRing` takes `assembleDqf`'s own output and turns counts into arc lengths —
+ * it is not allowed to look at anything the printed binder below did not already
+ * decide, which is the only reason a shape is safe to put on this page. A ring
+ * reading 8/8 above a list showing a gap would be a false assurance printed on
+ * the exact document somebody asks for when they are checking up on you.
+ *
+ * It replaces the one-line summary that used to sit here. Two statements of the
+ * same eight numbers is one too many, and the ring's legend prints a split the
+ * line could not: "no date" separated out from "to fix", grey from red.
+ */
+const ring = dqfItems.length > 0 ? dqRing(dqfItems, observedAt) : undefined
+
+/**
+ * WHAT THE CARRIER FILES FOR ITSELF, in the four standings, for the ring a
+ * broker sees first.
+ *
+ * WHAT IT COUNTS AND WHAT IT CANNOT. `share_anchors` returns carrier-level
+ * anchors and nothing else for a carrier_summary token — that scope is in the
+ * database, in the function's WHERE clause, and it is the right scope. So this
+ * ring is the company's own filings: the biennial update, the annual
+ * registration, the retention clocks, the state permits. It is NOT the drivers
+ * and it is NOT the trucks, and a reader who takes it for the whole fleet has
+ * read it wrong. That sentence is attached to the figure, not left to a
+ * footnote, because a shape is taken in before any prose on the page is.
+ *
+ * WHY IT AGREES WITH THE OWNER'S OWN SCREEN. Same engine, same anchors, same
+ * `registrationState`, and no `lastDone` on either side — see
+ * src/lib/deadlines.ts. The one fact this page cannot have is
+ * `carrierOperation`, which share_carrier does not return; today no carrier rule
+ * can be ruled out by it (the two rules that read it answer 'unknown' rather
+ * than false for a non-interstate code, and 'unknown' is tracked), so the two
+ * screens count the same rows. If a rule is ever added that reads it, this ring
+ * will count a row the owner's dashboard drops, and it will count it as
+ * something for him to answer rather than as a pass.
+ *
+ * `buildHealth` decides the buckets; nothing here does. Grey is its own arc and
+ * its own number, it is never folded into green, and the count in the hole is
+ * red + grey + amber, which is the whole coloured part of the ring.
+ */
+const health =
+  link?.scope === 'carrier_summary'
+    ? buildHealth(
+        evaluate(
+          [
+            {
+              type: 'carrier',
+              id: link.carrier_id,
+              label: carrier?.legal_name ?? 'This carrier',
+              context: {
+                dotNumber: carrier?.dot_number ?? undefined,
+                registrationState: carrier?.phy_state ?? undefined,
+              },
+              anchors: anchorsFor('carrier', link.carrier_id),
+            } satisfies EvaluationSubject,
+          ],
+          observedAt,
+        ).map((i) => ({ standing: i.status.standing, daysUntil: i.daysUntil })),
+      )
+    : undefined
+
+/**
+ * The four counts beside the ring, which are the ring's legend.
+ *
+ * Plain text, never links: the reader has no account here and there is nothing
+ * to open. Same four colours, same order and same words as the owner's
+ * dashboard, so an owner and a broker looking at the same carrier are reading
+ * one vocabulary.
+ */
+const HEALTH_TILE: Record<HealthKey, { box: string; label: string; count: string }> = {
+  overdue: { box: 'border-red-200 bg-red-50/40', label: 'text-red-700', count: 'text-red-700' },
+  unknown: { box: 'border-ink-200 bg-ink-50', label: 'text-ink-500', count: 'text-ink-900' },
+  soon: { box: 'border-amber-200 bg-amber-50/40', label: 'text-amber-800', count: 'text-amber-800' },
+  ontrack: {
+    box: 'border-emerald-200 bg-emerald-50/40',
+    label: 'text-emerald-800',
+    count: 'text-emerald-800',
+  },
+}
+
+/**
+ * The addition, printed under the ring.
+ *
+ * The number in the hole is the one thing on this page a broker will quote back
+ * at the carrier down the phone, so it is never allowed to stand on its own. It
+ * is 4 + 12 + 5, in the same words and the same order as the four boxes beside
+ * it, and anybody can take it apart.
+ */
+const healthMath = (() => {
+  if (!health) return undefined
+  if (health.needsAttention === 0) return `All ${health.total} have a date and none has passed.`
+
+  const parts = attentionParts(health).map((p) => `${p.count} ${p.label.toLowerCase()}`)
+  // One part adds up to itself, and "12 missing a date = 12" reads as a mistake.
+  const sum = parts.length > 1 ? `${parts.join(' + ')} = ${health.needsAttention}` : parts[0]
+  return `${sum}, out of ${health.total} we track for this company.`
+})()
+
+const healthCoverage = !health
+  ? undefined
+  : [
+      'This is what the company files for itself. Every driver and every truck has separate dates. They are not counted here.',
+      'Grey means we hold no date for that item. Grey is not a pass.',
+      'These are dates the carrier gave us. Nobody here has looked at a document.',
+      health.unschedulable > 0
+        ? `${health.unschedulable} more duties have no fixed date anyone can work out. They are not in the count.`
+        : '',
+    ].filter(Boolean)
 
 const STATE_WORDS: Record<ItemState, string> = {
   present: 'On file',
@@ -120,6 +254,23 @@ const STATE_WORDS: Record<ItemState, string> = {
 
 const longDate = (d?: Date) =>
   d ? d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' }) : '—'
+
+/**
+ * The clock beside the date, in UTC.
+ *
+ * `observedAt` is the moment THIS request was served, so the timestamp is the
+ * page's own freshness and not a fact about the carrier: the page is built again
+ * from the database every time somebody opens it. That is the difference between
+ * this and the PDF a broker usually gets, and it is worth one line to say so.
+ * UTC because every date in the rule engine is a UTC midnight and two zones on
+ * one sheet is how a reader ends up a day out.
+ */
+const clockUtc = (d: Date) =>
+  d.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: 'UTC',
+  })
 
 const saferUrl = carrier?.dot_number
   ? `https://safer.fmcsa.dot.gov/query.asp?searchtype=ANY&query_type=queryCarrierSnapshot&query_param=USDOT&query_string=${encodeURIComponent(carrier.dot_number)}`
@@ -143,15 +294,19 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
         </div>
       ) : (
         <>
-          <div class="mb-5 flex flex-wrap gap-3" data-screen-only>
-            <button
-              type="button"
-              id="print"
-              class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-            >
-              Print / Save as PDF
-            </button>
-          </div>
+          {/*
+            There was a Print button here, and one inline script at the bottom of
+            the file to make it work. Both are gone. This is a page served to
+            strangers and it now runs no JavaScript at all — see the note at the
+            top of layouts/Public.astro, which is the rule the rest of the public
+            site already keeps. The print stylesheet below is untouched, so the
+            reader's own Print command still produces the same clean sheet; only
+            the button that called it has to go, because nothing but a script can
+            open that dialog.
+          */}
+          <p class="mb-5 text-sm text-ink-500" data-screen-only>
+            To keep a copy, use Print in your browser and choose Save as PDF.
+          </p>
 
           <article class="rounded-xl border border-ink-100 bg-white p-6 sm:p-8" id="sheet">
             <header class="border-b border-ink-100 pb-5">
@@ -166,10 +321,124 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
                 USDOT {carrier?.dot_number ?? '—'}
                 {driver && <span> · {driverName}</span>}
               </p>
+              {/*
+                The timestamp is the point of a link rather than a PDF, so it
+                says the time as well as the date and then says what that means
+                in one sentence. A PDF a broker was emailed in March is a
+                statement about March that still looks current in September; this
+                sheet is read out of the database at the moment it is opened, and
+                it is worth one line to say which of the two he is holding.
+              */}
               <p class="mt-4 text-sm font-medium tabular-nums">
-                Observed on {longDate(observedAt)}
+                Last updated {longDate(observedAt)} at {clockUtc(observedAt)} UTC
+              </p>
+              <p class="mt-1 text-xs text-ink-500">
+                This page is read from the carrier's records every time it is opened. It is not a
+                copy saved on a date.
               </p>
             </header>
+
+            {/*
+              THE PAGE OPENS WITH THE SHAPE.
+
+              A broker reading this has one question before he has any others,
+              and it is answered by a proportion rather than by a list: how much
+              of this is a problem. Everything below is the evidence for the
+              shape, and it is all still here — the figure carries one number and
+              the four boxes beside it carry the parts, so nothing on this page
+              is a number a reader cannot take apart.
+            */}
+            {health &&
+              (health.total === 0 ? (
+                <p class="mt-6 rounded-lg bg-ink-50 px-4 py-3 text-sm text-ink-500">
+                  This carrier has no dated company filings on record with us yet. Read that as
+                  "we hold nothing", not as "there is nothing to hold".
+                </p>
+              ) : (
+                <Figure
+                  title={healthHeadline(health)}
+                  subtitle={healthMath}
+                  coverage={healthCoverage}
+                  class="mt-6"
+                >
+                  {/*
+                    Stacked on a phone, side by side from `sm`. The dashboard
+                    puts this row beside its ring at every width and can afford
+                    to: this figure sits inside a bordered sheet inside the
+                    section's own padding, which takes about 120px off a 375px
+                    screen before anything is drawn. Four boxes sharing what is
+                    left put "Missing a date" on three lines. A full-width box
+                    per line costs vertical space on a page that is read once.
+                  */}
+                  <div
+                    class="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-6"
+                    data-block
+                  >
+                    <Donut
+                      slices={donutSlices(health)}
+                      centre={health.needsAttention}
+                      centreNote={`of ${health.total}`}
+                      centreTone={health.needsAttention === 0 ? 'clear' : 'attention'}
+                      class="self-center sm:self-auto"
+                    />
+
+                    <ul class="grid min-w-0 flex-1 gap-2 sm:grid-cols-2 sm:gap-3">
+                      {health.buckets.map((b) => (
+                        <li
+                          class:list={[
+                            'flex items-center gap-2 rounded-lg border px-2.5 py-2',
+                            HEALTH_TILE[b.key].box,
+                          ]}
+                        >
+                          <span
+                            class:list={[
+                              'min-w-8 shrink-0 text-right text-xl leading-none font-semibold tabular-nums sm:text-2xl',
+                              HEALTH_TILE[b.key].count,
+                            ]}
+                          >
+                            {b.count}
+                          </span>
+                          <span class="flex min-w-0 flex-1 items-center gap-1.5">
+                            <span
+                              class:list={['h-2 w-2 shrink-0 rounded-full', TONES[b.tone].swatch]}
+                              aria-hidden="true"
+                            />
+                            <span
+                              class:list={['block text-xs leading-tight', HEALTH_TILE[b.key].label]}
+                            >
+                              {b.label}
+                            </span>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </Figure>
+              ))}
+
+            {/*
+              The same opening for a driver file: the binder below drawn as one
+              shape, with its own four numbers printed beside it.
+            */}
+            {ring && (
+              <Figure
+                title={
+                  ring.attention === 0
+                    ? `All ${ring.total} items were on file`
+                    : `${ring.attention} of ${ring.total} items need attention`
+                }
+                subtitle="49 CFR 391.51(b) lists eight items. This is what the carrier holds for each one."
+                coverage={[
+                  'Grey means we hold no date for that item. Grey is not a pass.',
+                  'These are the records this carrier keeps. Nobody here has looked at a document.',
+                ]}
+                class="mt-6"
+              >
+                <div data-block>
+                  <Ring ring={ring} size={76} centre legend />
+                </div>
+              </Figure>
+            )}
 
             {/* Check us. The outward link is what makes this page worth reading. */}
             {saferUrl && (
@@ -251,11 +520,10 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
 
             {link.scope === 'driver_file' && (
               <>
-                <p class="mt-5 text-sm text-ink-500 tabular-nums">
-                  {summary?.present} of {summary?.total} items on file ·{' '}
-                  {summary?.expiring} expiring soon · {summary?.attention} needing attention
-                </p>
-
+                {/* The line that used to be here printed three of these numbers
+                    in a row of grey text. The ring above prints four of them,
+                    with "no date" pulled out of "needing attention" and given
+                    its own colour, and both come from `summarise`. */}
                 <section class="mt-6" data-block>
                   <h2 class="text-lg font-semibold tracking-tight">What needs attention</h2>
                   {outstanding.length === 0 ? (
@@ -300,9 +568,9 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
 
             <footer class="mt-8 border-t border-ink-100 pt-5 text-xs text-ink-500">
               <p>
-                This is a record of what this carrier holds and what was observed on the date
-                above. It is not a certification of compliance, and it is not a statement that any
-                document in it is genuine, current, or sufficient.
+                This is a record of what this carrier holds and what was observed at the time
+                shown above. It is not a certification of compliance, and it is not a statement
+                that any document in it is genuine, current, or sufficient.
               </p>
               <p class="mt-2">
                 FleetView Compliance is not affiliated with FMCSA, the DOT, or any government agency.
@@ -334,7 +602,3 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
     }
   }
 </style>
-
-<script>
-  document.getElementById('print')?.addEventListener('click', () => window.print())
-</script>
