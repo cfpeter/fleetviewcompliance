@@ -1,0 +1,97 @@
+---
+/**
+ * A ring, split by standing, with one number in the hole.
+ *
+ * This is the only chart in the app that draws a WHOLE rather than a quantity,
+ * and that is what it is for: the dashboard's question is not "how many are
+ * overdue" — the tiles beside it answer that, in bigger type — it is "how much
+ * of my fleet is a problem", which is a proportion and is invisible in a column
+ * of counts. Four overdue is a crisis in a fleet of nine and a Tuesday in a
+ * fleet of four hundred, and the ring is the only thing on the page that says
+ * which one he is in.
+ *
+ * SO IT CARRIES ONE NUMBER AND NO OTHERS. The per-bucket counts are printed
+ * once, on the tappable tiles this ring sits next to, and printing them again
+ * around the arcs would make two elements answer one question — with the arc
+ * labels, which cannot be tapped, sitting closer to the eye than the tiles,
+ * which can. The ring is the shape. The tiles are the numbers and the legend.
+ *
+ * No JavaScript, no library: four `<circle>`s sharing one circumference, each
+ * given a dash the length of its share and pushed round by an offset. The whole
+ * app ships zero client-side script and a donut is not the place to start.
+ *
+ * The `<svg>` is hidden from the accessibility tree and the centre number is
+ * real text on top of it. Announced, the arcs are four unnamed graphics; the
+ * number, the word under it and the tiles beside it are the actual content, and
+ * all three are text. Same treatment as the plot in `Runway`.
+ */
+import { DONUT_STROKE, type DonutSlice } from '../../lib/charts/health.ts'
+
+interface Props {
+  slices: readonly DonutSlice[]
+  /** The number in the hole. The caller must be able to show what it is made of. */
+  centre: number
+  /** Two or three words under it, e.g. 'of 43'. */
+  centreNote: string
+  /**
+   * `attention` colours the number red-ink; `clear` greens it. Colour is the
+   * SECOND signal here — the number and the note are the first — so a reader
+   * who cannot separate the two still loses nothing.
+   */
+  centreTone?: 'attention' | 'clear'
+  class?: string
+}
+
+const { slices, centre, centreNote, centreTone = 'attention', class: klass } = Astro.props
+
+// A 120-unit box scaled by the class below, so one component serves the phone
+// and the desktop without a second set of numbers to keep in step.
+const R = 52
+const WIDTH = 16
+const C = 2 * Math.PI * R
+const at = (percent: number) => Number(((percent / 100) * C).toFixed(3))
+---
+
+<div class:list={['relative shrink-0', klass]}>
+  <svg
+    viewBox="0 0 120 120"
+    class="block h-28 w-28 sm:h-36 sm:w-36"
+    aria-hidden="true"
+    focusable="false"
+  >
+    {/*
+      The track. It is the ring's own background and never a bucket: with the
+      arcs floored at MIN_VISIBLE_PERCENT the live slices always close the
+      circle, so any track showing through would be a rounding artefact, not a
+      fifth category. Drawn anyway so a carrier with nothing tracked yet still
+      gets a ring rather than an empty square.
+    */}
+    <circle cx="60" cy="60" r={R} fill="none" stroke-width={WIDTH} class="stroke-ink-100" />
+    <g transform="rotate(-90 60 60)">
+      {
+        slices.map((s) => (
+          <circle
+            cx="60"
+            cy="60"
+            r={R}
+            fill="none"
+            stroke-width={WIDTH}
+            stroke-dasharray={`${at(s.percent)} ${at(100 - s.percent)}`}
+            stroke-dashoffset={-at(s.offset)}
+            class:list={[DONUT_STROKE[s.tone]]}
+          />
+        ))
+      }
+    </g>
+  </svg>
+
+  <div class="absolute inset-0 flex flex-col items-center justify-center px-3 text-center">
+    <span
+      class:list={[
+        'text-2xl leading-none font-semibold tabular-nums sm:text-3xl',
+        centreTone === 'clear' ? 'text-emerald-700' : 'text-ink-900',
+      ]}>{centre}</span
+    >
+    <span class="mt-1 text-[11px] leading-tight text-ink-500">{centreNote}</span>
+  </div>
+</div>

@@ -1,0 +1,132 @@
+---
+/**
+ * One driver's qualification file, drawn as a ring.
+ *
+ * Server-rendered SVG and nothing else. No script, no library, no measurement
+ * at runtime: forty of these on a roster cost forty `<svg>` elements the
+ * browser paints once, which is the only way a list of forty drivers stays as
+ * fast as the list of forty drivers it replaces.
+ *
+ * The arithmetic is in src/lib/charts/dq-rings.ts, which takes its counts from
+ * the binder itself (src/lib/proof/dqf.ts). This file draws; it decides
+ * nothing.
+ *
+ * The ring is `aria-hidden` on purpose. It announces as nothing at all, and the
+ * words beside it — the fraction, the legend, the line under the name — are the
+ * real content. A screen reader gets the counts, not a shape.
+ */
+import {
+  type DqRing,
+  RING_CENTRE,
+  RING_RADIUS,
+  RING_TONES,
+  RING_TRACK,
+  RING_VIEWBOX,
+  ringArcs,
+  ringFraction,
+} from '../../lib/charts/dq-rings.ts'
+
+interface Props {
+  ring: DqRing
+  /** Pixels. The roster uses 34; a figure can afford 76. */
+  size?: number
+  /** Print `5/8` in the middle. Only legible from about 60px up. */
+  centre?: boolean
+  /**
+   * The four buckets, spelled out, zeros included.
+   *
+   * Zeros are dimmed rather than dropped so "no date" is named on the screen
+   * even when it is empty — it is the bucket an owner does not know exists
+   * until a driver falls into it.
+   */
+  legend?: boolean
+  class?: string
+}
+
+const { ring, size = 34, centre = false, legend = false, class: klass } = Astro.props
+
+const arcs = ringArcs(ring)
+// Thinner at roster size, so the hole stays a hole rather than closing into a
+// dot; heavier on a figure, where the colours have to carry across the card.
+const width = size >= 60 ? 4 : 5
+---
+
+<div class:list={['flex items-center gap-3', klass]}>
+  <svg
+    viewBox={`0 0 ${RING_VIEWBOX} ${RING_VIEWBOX}`}
+    width={size}
+    height={size}
+    class="shrink-0"
+    aria-hidden="true"
+    focusable="false"
+  >
+    {/* Rotated so the first arc starts at twelve o'clock, where the eye lands. */}
+    <g transform={`rotate(-90 ${RING_CENTRE} ${RING_CENTRE})`}>
+      {/*
+        The track is the denominator, and it is drawn even when there is
+        nothing to put on it. An empty ring reads as "we know nothing about
+        this file", which is exactly the case it is drawn for.
+      */}
+      <circle
+        cx={RING_CENTRE}
+        cy={RING_CENTRE}
+        r={RING_RADIUS}
+        fill="none"
+        stroke-width={width}
+        class={RING_TRACK}
+      />
+      {
+        arcs.map((a) => (
+          <circle
+            cx={RING_CENTRE}
+            cy={RING_CENTRE}
+            r={RING_RADIUS}
+            fill="none"
+            stroke-width={width}
+            stroke-dasharray={`${a.dash} ${a.gap}`}
+            stroke-dashoffset={a.offset}
+            class={RING_TONES[a.tone].stroke}
+          />
+        ))
+      }
+    </g>
+    {
+      centre && (
+        <text
+          x={RING_CENTRE}
+          y={RING_CENTRE}
+          text-anchor="middle"
+          dominant-baseline="central"
+          class="fill-ink-900 text-[9px] font-semibold tabular-nums"
+        >
+          {ringFraction(ring)}
+        </text>
+      )
+    }
+  </svg>
+
+  {
+    legend && (
+      <ul class="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+        {ring.slices.map((s) => (
+          <li
+            class:list={[
+              'flex items-center gap-1.5 whitespace-nowrap',
+              s.count === 0 && 'text-ink-300',
+            ]}
+          >
+            <span
+              class:list={[
+                'h-2 w-2 shrink-0 rounded-full',
+                s.count === 0 ? 'bg-ink-100' : RING_TONES[s.tone].swatch,
+              ]}
+            />
+            <span class="tabular-nums">
+              <span class="font-medium">{s.count}</span> {s.label}
+            </span>
+          </li>
+        ))}
+      </ul>
+    )
+  }
+</div>

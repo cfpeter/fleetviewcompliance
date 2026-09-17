@@ -1,0 +1,111 @@
+---
+/**
+ * The money on the board, split by where it is, in the order it travels.
+ *
+ * NOT A CLASSIC FUNNEL, and the difference matters. A sales funnel narrows
+ * because each stage is a subset of the one before it; here every dollar sits at
+ * exactly one stage and the stages are a partition, so the bars are shares of
+ * ONE total and they add up to it. Drawing them as nested tapering bands would
+ * claim money shrinks as it moves down the page. It does not shrink — it moves.
+ *
+ * So: ordered top to bottom, each bar scaled against the board total, each one
+ * printing its own exact figure, and a total line at the bottom that is visibly
+ * the sum of the bars above it. There is no score here to explain, because there
+ * is no score — the only number that is not a stage total is the total, and the
+ * arithmetic that makes it is the six rows directly above it.
+ *
+ * Widths come from `moneyFunnel` rather than being computed here. The rule in
+ * docs/charts.md is that derivations live in src/lib/charts so they can be
+ * tested, and "one load must not read as 100% of everything" is exactly the kind
+ * of claim that has to be pinned by a test rather than by eyeballing a page.
+ *
+ * `<ol>`, not `<ul>`: the order is the content. A screen reader reading these
+ * out of sequence would lose the whole point.
+ */
+import type { FunnelRow } from '../../lib/charts/funnel.ts'
+import { TONES, UNKNOWN_SLOT } from '../../lib/charts/tones.ts'
+
+interface Props {
+  rows: readonly FunnelRow[]
+  /** Exact integer cents, already formatted. The sum of the rows. */
+  totalDisplay: string
+  /** Loads behind the total. Printed so the total is never a bare number. */
+  totalLoads: number
+  emptyMessage?: string
+}
+
+const {
+  rows,
+  totalDisplay,
+  totalLoads,
+  emptyMessage = 'No load on the board has a rate on it yet, so there is nothing to draw here.',
+} = Astro.props
+
+// Nothing priced anywhere: six $0.00 bars and a $0.00 total is a wall of zeros
+// that says less than one sentence does, and it invites the reading that the
+// board is empty when it may be full of loads nobody has typed a rate on.
+const anyFigure = rows.some((r) => r.loads > 0)
+const loadWord = (n: number) => (n === 1 ? 'load' : 'loads')
+---
+
+{
+  !anyFigure ? (
+    <p class="py-6 text-center text-sm text-ink-500">{emptyMessage}</p>
+  ) : (
+    <div>
+      <ol class="space-y-3">
+        {rows.map((row) => {
+          const tone = TONES[row.tone]
+          return (
+            <li>
+              <div class="flex items-baseline justify-between gap-3 text-sm">
+                <span class="min-w-0 font-medium">{row.label}</span>
+                <span
+                  class:list={[
+                    'shrink-0 tabular-nums',
+                    row.percent === null ? 'text-ink-300 italic' : 'font-medium',
+                  ]}
+                >
+                  {row.display}
+                </span>
+              </div>
+
+              {row.percent === null ? (
+                /*
+                  A stage holding loads nobody has priced. No bar and no grey
+                  fill either: a filled grey bar still reads as a measured
+                  amount somewhere near the bottom of the range, and this is not
+                  a measurement at all. Grey is never counted as good and never
+                  hidden — it keeps its full-width slot in the order.
+                */
+                <div class:list={['mt-1.5 h-2.5 rounded-full', UNKNOWN_SLOT]} />
+              ) : (
+                <div class:list={['mt-1.5 h-2.5 overflow-hidden rounded-full', tone.track]}>
+                  {/* A genuinely empty stage draws nothing inside its track, and
+                      that is correct: $0.00 is a figure we have, and the track
+                      still shows the stage exists. */}
+                  {row.percent > 0 && (
+                    <div class:list={['h-full rounded-full', tone.bar]} style={`width:${row.percent}%`} />
+                  )}
+                </div>
+              )}
+
+              {row.note && <div class="mt-1 text-xs text-ink-500">{row.note}</div>}
+              {/* Red, because it is the one line on this chart that means do
+                  something today. Never colour alone: the words say it too. */}
+              {row.alarm && <div class="mt-1 text-xs font-medium text-red-700">{row.alarm}</div>}
+            </li>
+          )
+        })}
+      </ol>
+
+      {/* The arithmetic, sitting beside the number it produces. */}
+      <div class="mt-4 flex items-baseline justify-between gap-3 border-t border-ink-100 pt-3 text-sm">
+        <span class="text-ink-500">
+          All of it added up, on {totalLoads} {loadWord(totalLoads)} with a rate
+        </span>
+        <span class="shrink-0 font-semibold tabular-nums">{totalDisplay}</span>
+      </div>
+    </div>
+  )
+}
