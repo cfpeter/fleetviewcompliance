@@ -103,11 +103,27 @@ test('a rule that does not apply is counted nowhere at all', () => {
 // --- 2. a missing date is never a pass --------------------------------------
 
 test('a missing date never counts as on track', () => {
+  // The rule this test exists for, and it did not change: a date we do not have
+  // is NOT a pass. Grey is its own bucket, it is never folded into green, and
+  // `onTrack` stays at zero however many of them there are.
+  //
+  // What DID change is the centre number. It used to be overdue + missing +
+  // soon, which made the dashboard headline read "141 need attention" when 119
+  // of those were simply dates nobody had typed in yet — a number that frightens
+  // an owner about work he cannot do and a broker cannot interpret. The centre
+  // is now overdue + soon only, and the missing dates get their own sentence.
+  //
+  // So `needsAttention` is 0 here while `missing` is 30, and the two assertions
+  // below are what stop that becoming "everything is fine": the headline must
+  // still refuse to say nothing needs attention.
   const h = buildHealth(many(30, missing))
   assert.equal(count(h, 'unknown'), 30)
   assert.equal(count(h, 'ontrack'), 0)
   assert.equal(h.onTrack, 0)
-  assert.equal(h.needsAttention, 30)
+  assert.equal(h.needsAttention, 0)
+  assert.equal(h.missing, 30)
+  assert.notEqual(healthHeadline(h), 'Nothing needs attention')
+  assert.match(healthHeadline(h), /30/)
 })
 
 test('a missing date that still carries a computable next date is not on track', () => {
@@ -127,19 +143,25 @@ test('the grey bucket is drawn, never dropped', () => {
 
 // --- 3. the centre number means exactly what the screen says -----------------
 
-test('the centre number is everything that is not on track', () => {
+test('the centre number is what he can act on today', () => {
+  // Overdue plus due-soon. A missing date is real work, but it is work of a
+  // different kind — somebody has to go and find a piece of paper — and mixing
+  // the two made the headline a number nobody could act on or explain.
   const h = buildHealth([
     ...many(4, overdue),
     ...many(12, missing),
     ...many(5, soon),
     ...many(22, later),
   ])
-  assert.equal(h.needsAttention, 21)
-  assert.equal(h.needsAttention, h.total - h.onTrack)
-  assert.equal(h.needsAttention, count(h, 'overdue') + count(h, 'unknown') + count(h, 'soon'))
+  assert.equal(h.needsAttention, 9)
+  assert.equal(h.needsAttention, count(h, 'overdue') + count(h, 'soon'))
+  // Nothing has been lost on the way: the missing dates are still counted, still
+  // their own number, and every tracked item is still in exactly one bucket.
+  assert.equal(h.missing, 12)
+  assert.equal(h.needsAttention + h.missing + h.onTrack, h.total)
 })
 
-test('the centre number is always the total minus the green slice', () => {
+test('the three numbers always account for every tracked item', () => {
   for (let a = 0; a <= 3; a++) {
     for (let b = 0; b <= 3; b++) {
       for (let c = 0; c <= 3; c++) {
@@ -150,7 +172,15 @@ test('the centre number is always the total minus the green slice', () => {
             ...many(c, soon),
             ...many(d, later),
           ])
-          assert.equal(h.needsAttention, h.total - h.onTrack, `at ${a}/${b}/${c}/${d}`)
+          // The books close, at every mix. This is what stops a future edit
+          // quietly dropping the grey bucket out of the total to make the
+          // headline look better — the arithmetic under the ring would stop
+          // adding up, here, rather than on somebody's dashboard.
+          assert.equal(
+            h.needsAttention + h.missing + h.onTrack,
+            h.total,
+            `at ${a}/${b}/${c}/${d}`,
+          )
         }
       }
     }
@@ -170,8 +200,13 @@ test('the parts printed under the ring add up to the centre number', () => {
   const parts = attentionParts(h)
   assert.deepEqual(
     parts.map((p) => p.count),
-    [4, 12, 5],
+    [4, 5],
   )
+  // Grey is not in the addition any more, and it is still on the ring. Both
+  // halves matter: out of the sum so the number means something, on the chart
+  // so it cannot be forgotten.
+  assert.ok(!parts.some((p) => p.key === 'unknown'))
+  assert.equal(count(h, 'unknown'), 12)
   assert.equal(
     parts.reduce((n, p) => n + p.count, 0),
     h.needsAttention,
@@ -204,7 +239,9 @@ test('the headline states the answer and agrees with the number', () => {
   assert.equal(healthHeadline(buildHealth([])), 'Nothing tracked yet')
   assert.equal(healthHeadline(buildHealth(many(5, later))), 'Nothing needs attention')
   assert.equal(healthHeadline(buildHealth([overdue])), '1 needs attention')
-  assert.equal(healthHeadline(buildHealth([overdue, missing])), '2 need attention')
+  // One overdue and one missing date is ONE thing to act on, not two. The
+  // missing date is reported on its own line rather than inflating this number.
+  assert.equal(healthHeadline(buildHealth([overdue, missing])), '1 needs attention')
 })
 
 // --- 4. a real bucket is never an invisible arc ------------------------------

@@ -15,9 +15,26 @@
  * this product: a timeline of upcoming dates cannot plot an expired document or
  * one whose date nobody has entered, so drawn naively it shows the most exposed
  * carrier in the system the emptiest, calmest screen in the app.
+ *
+ * The health tests at the bottom pin the sixth, which shipped: a headline that
+ * counts the wrong things. The ring read "141 need attention" when 119 of the
+ * 141 were items nobody had typed a date for and 22 were actually late. Both
+ * halves of the fix are tested — the 119 is out of the headline, and the 119 is
+ * still on the chart, in the tiles, in the total and in a sentence of its own.
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import {
+  attentionParts,
+  buildHealth,
+  donutSlices,
+  type HealthInput,
+  healthHeadline,
+  healthMath,
+  missingLine,
+  openCount,
+  openParts,
+} from '../src/lib/charts/health.ts'
 import {
   buildRunway,
   isDueSoon,
@@ -606,4 +623,233 @@ test('the split window is a parameter, so the boundary can be pinned', () => {
   assert.equal(r.soon, 1)
   assert.equal(r.later, 1)
   assert.equal(r.weeks[0].count, 2, 'both are still drawn in week one')
+})
+
+// ------------------------------------ the health ring: what "needs attention" is
+//
+// The sixth way a chart lies, and the one this product shipped: a headline that
+// counts the wrong things.
+//
+// The ring's centre number read `overdue + unknown + soon`. On a real fleet that
+// is 141 — of which 119 are items where nobody has typed a date in yet and 22
+// are genuinely late or nearly late. "141 need attention" is not a blunter way
+// of saying 22, it is a different claim, and it was printed in the biggest type
+// on the owner's dashboard and on the page a broker opens.
+//
+// The fix is not to hide the 119. A missing date is not a pass, it never draws
+// as one, and it never leaves the chart. It stops being counted as a deadline in
+// trouble, because it is not one — and it gets its own count, its own arc and
+// its own sentence instead. Every test below pins one half of that: the 119 is
+// out of the headline, AND the 119 is still everywhere else.
+
+/** The fleet from the defect report: 9 + 13 late or nearly late, 119 blanks. */
+const fleetOf171: HealthInput[] = [
+  ...Array.from({ length: 9 }, () => ({ standing: 'overdue' as const })),
+  ...Array.from({ length: 119 }, () => ({ standing: 'unknown' as const })),
+  ...Array.from({ length: 13 }, () => ({ standing: 'current' as const, daysUntil: 10 })),
+  ...Array.from({ length: 30 }, () => ({ standing: 'current' as const, daysUntil: 300 })),
+]
+
+const bucket = (items: readonly HealthInput[], key: string) =>
+  buildHealth(items).buckets.find((b) => b.key === key)?.count ?? -1
+
+test('a missing date is not counted as needing attention', () => {
+  // THE DEFECT. 141 was overdue + unknown + soon. 22 is overdue + soon, which
+  // is what the spec asks for in as many words: "the number that needs
+  // attention, not the total".
+  const h = buildHealth(fleetOf171)
+  assert.equal(h.total, 171)
+  assert.equal(h.needsAttention, 22, 'the headline is overdue + due soon and nothing else')
+  assert.notEqual(h.needsAttention, 141)
+  assert.equal(h.needsAttention, bucket(fleetOf171, 'overdue') + bucket(fleetOf171, 'soon'))
+  // And the words on the screen follow the number.
+  assert.equal(healthHeadline(h), '22 need attention')
+  // The parts printed under the ring are the parts the number is made of, so
+  // the addition beside it can never come to something else.
+  assert.equal(
+    attentionParts(h).reduce((n, p) => n + p.count, 0),
+    h.needsAttention,
+  )
+  assert.ok(!attentionParts(h).some((p) => p.key === 'unknown'), 'grey is not a part of the sum')
+})
+
+test('a missing date is still on the ring, with its own count', () => {
+  // The other half, and the half a future edit is likely to undo: taking grey
+  // out of the headline must not take it off the chart. It keeps its arc, its
+  // number, and a field of its own so no screen has to dig for it.
+  const h = buildHealth(fleetOf171)
+  assert.equal(h.missing, 119)
+  assert.equal(bucket(fleetOf171, 'unknown'), 119)
+  assert.equal(h.onTrack, 30, 'and it was not quietly promoted into the green')
+
+  const grey = donutSlices(h).find((s) => s.key === 'unknown')
+  assert.ok(grey, 'the grey arc vanished from the ring')
+  assert.equal(grey.count, 119)
+  assert.ok(grey.percent > 0)
+
+  // Still one of the four tiles, still second in rank order, still beside red.
+  assert.deepEqual(
+    h.buckets.map((b) => b.key),
+    ['overdue', 'unknown', 'soon', 'ontrack'],
+  )
+
+  // And it is stated in words on both pages, in each reader's own language,
+  // with the same count in both.
+  const owner = missingLine(h, 'owner')
+  const visitor = missingLine(h, 'visitor')
+  assert.ok(owner?.includes('119'), owner ?? 'no line for the owner')
+  assert.ok(visitor?.includes('119'), visitor ?? 'no line for the broker')
+  assert.equal(missingLine(buildHealth([]), 'owner'), null, 'nothing missing, nothing said')
+})
+
+test('the four buckets still cover every tracked item', () => {
+  // The accounting the whole change rests on. Pulling grey out of the headline
+  // is only honest if grey is still inside the total, so this is asserted as an
+  // identity over every mix rather than on one fixture.
+  for (let a = 0; a <= 3; a++) {
+    for (let b = 0; b <= 3; b++) {
+      for (let c = 0; c <= 3; c++) {
+        for (let d = 0; d <= 3; d++) {
+          const items: HealthInput[] = [
+            ...Array.from({ length: a }, () => ({ standing: 'overdue' as const })),
+            ...Array.from({ length: b }, () => ({ standing: 'unknown' as const })),
+            ...Array.from({ length: c }, () => ({ standing: 'current' as const, daysUntil: 10 })),
+            ...Array.from({ length: d }, () => ({ standing: 'current' as const, daysUntil: 300 })),
+          ]
+          const h = buildHealth(items)
+          const where = `at ${a}/${b}/${c}/${d}`
+          assert.equal(h.total, a + b + c + d, `lost an item ${where}`)
+          assert.equal(
+            h.needsAttention + h.missing + h.onTrack,
+            h.total,
+            `books do not close ${where}`,
+          )
+          assert.equal(h.needsAttention, a + c, where)
+          assert.equal(h.missing, b, where)
+          // The ranking list counts everything not on track, grey included, so
+          // a driver with nothing but blanks is still somebody to open.
+          assert.equal(openCount(h), a + b + c, where)
+          assert.equal(
+            openParts(h).reduce((n, p) => n + p.count, 0),
+            openCount(h),
+            where,
+          )
+        }
+      }
+    }
+  }
+})
+
+test('the sentence under the ring adds up and leaves nothing out', () => {
+  // The no-unexplained-score rule, as arithmetic a reader can check. A broker
+  // quotes the centre number back down the phone; the sentence beside it has to
+  // show what it is made of AND show that the rest of the fleet is still
+  // accounted for, or the smaller number looks like the smaller number.
+  const h = buildHealth(fleetOf171)
+  const said = healthMath(h)
+
+  assert.ok(said.includes('9 overdue + 13 due in 45 days = 22 need attention'), said)
+  assert.ok(said.includes('119 have no date on file'), said)
+  assert.ok(said.includes('30 are on track'), said)
+  assert.ok(said.includes('22 + 119 + 30 = 171'), said)
+  assert.equal(h.needsAttention + h.missing + h.onTrack, h.total)
+
+  // One string, one function. The dashboard and the public proof page print
+  // this same sentence, so the owner and the broker cannot be handed two
+  // different accounts of one carrier.
+  assert.equal(healthMath(buildHealth(fleetOf171)), said)
+})
+
+test('a carrier with nothing but missing dates is never told nothing needs attention', () => {
+  /**
+   * THE BOUNDARY CASE THAT MADE THE OLD ARITHMETIC TEMPTING, and the one this
+   * change has to get right to be allowed at all.
+   *
+   * On his first week an owner has nothing overdue and nothing due soon —
+   * because nobody has typed a date in yet — so the centre number is 0 and every
+   * arc on his ring is grey. "Nothing needs attention" over 119 blanks is the
+   * most reassuring sentence in the app shown to the carrier who has told us the
+   * least, which is the exact failure `buildRunway` and this module both exist
+   * to prevent. So the headline says what is actually true instead.
+   */
+  const fresh = Array.from({ length: 119 }, () => ({ standing: 'unknown' as const }))
+  const h = buildHealth(fresh)
+
+  assert.equal(h.needsAttention, 0)
+  assert.equal(h.missing, 119)
+  assert.equal(h.onTrack, 0, 'a blank is never on track')
+  assert.equal(h.total, 119)
+  assert.notEqual(healthHeadline(h), 'Nothing needs attention')
+  assert.equal(healthHeadline(h), '119 dates are missing')
+
+  // The ring is a full circle of grey, not an empty one and not a green one.
+  const slices = donutSlices(h)
+  assert.deepEqual(
+    slices.map((s) => s.key),
+    ['unknown'],
+  )
+  assert.equal(slices[0].percent, 100)
+
+  // And the sentence says so without claiming an addition it does not have.
+  const said = healthMath(h)
+  assert.ok(said.includes('119 have no date on file'), said)
+  assert.ok(said.includes('That is every one of the 119 we track.'), said)
+
+  // One item, and the words still read as English.
+  const one = buildHealth([{ standing: 'unknown' }])
+  assert.equal(healthHeadline(one), '1 date is missing')
+})
+
+test('a carrier with no missing dates counts exactly overdue plus due soon', () => {
+  // The other boundary: with nothing grey, the new number and the old number
+  // agree, which is what makes this a narrowing of the headline rather than a
+  // new definition of it.
+  const items: HealthInput[] = [
+    ...Array.from({ length: 4 }, () => ({ standing: 'overdue' as const })),
+    ...Array.from({ length: 5 }, () => ({ standing: 'current' as const, daysUntil: 10 })),
+    ...Array.from({ length: 22 }, () => ({ standing: 'current' as const, daysUntil: 300 })),
+  ]
+  const h = buildHealth(items)
+  assert.equal(h.missing, 0)
+  assert.equal(h.needsAttention, 9)
+  assert.equal(h.needsAttention, h.total - h.onTrack, 'with no grey, the two readings are one')
+  assert.equal(openCount(h), h.needsAttention)
+  assert.equal(healthHeadline(h), '9 need attention')
+  assert.equal(missingLine(h, 'owner'), null)
+  assert.ok(!healthMath(h).includes('no date on file'), healthMath(h))
+
+  // Nothing wrong at all is still allowed to say so — but only when there is
+  // also nothing missing, which is the clause above this one.
+  const clean = buildHealth(
+    Array.from({ length: 5 }, () => ({ standing: 'current' as const, daysUntil: 300 })),
+  )
+  assert.equal(healthHeadline(clean), 'Nothing needs attention')
+  assert.equal(healthHeadline(buildHealth([])), 'Nothing tracked yet')
+})
+
+test('the headline window is closed at both ends, so a finished item is not "due soon"', () => {
+  // The bug that has shipped three times here, now guarding the number the whole
+  // dashboard is built around. A pre-employment query run the week a driver was
+  // hired reports something like -2040 days and is `current`; `days <= 45` alone
+  // is true for that, and twenty finished items would inflate the headline.
+  assert.equal(buildHealth([{ standing: 'current', daysUntil: -2040 }]).needsAttention, 0)
+  assert.equal(buildHealth([{ standing: 'current', daysUntil: -1 }]).needsAttention, 0)
+  assert.equal(buildHealth([{ standing: 'current', daysUntil: 0 }]).needsAttention, 1)
+  assert.equal(buildHealth([{ standing: 'current', daysUntil: SOON_DAYS }]).needsAttention, 1)
+  assert.equal(buildHealth([{ standing: 'current', daysUntil: SOON_DAYS + 1 }]).needsAttention, 0)
+  // Same window the runway splits on. If these ever disagree, a column is
+  // painted amber next to a headline that does not count it.
+  for (const days of [-2040, -1, 0, 1, SOON_DAYS, SOON_DAYS + 1]) {
+    assert.equal(
+      buildHealth([{ standing: 'current', daysUntil: days }]).needsAttention === 1,
+      isDueSoon(days),
+      `the ring and the runway disagree at ${days} days`,
+    )
+  }
+  // A `current` item with no next date is a one-time obligation already
+  // finished. Not unknown, not a gap, and not a call on his attention.
+  const done = buildHealth([{ standing: 'current' }])
+  assert.equal(done.needsAttention, 0)
+  assert.equal(done.missing, 0)
+  assert.equal(done.onTrack, 1)
 })

@@ -18,11 +18,12 @@ import Ring from '../../components/charts/Ring.astro'
 import Public from '../../layouts/Public.astro'
 import { dqRing } from '../../lib/charts/dq-rings.ts'
 import {
-  attentionParts,
   buildHealth,
   donutSlices,
   healthHeadline,
+  healthMath,
   type HealthKey,
+  missingLine,
 } from '../../lib/charts/health.ts'
 import { TONES } from '../../lib/charts/tones.ts'
 import { lookupAuthority, lookupCarrier } from '../../lib/fmcsa.ts'
@@ -206,7 +207,7 @@ const health =
  */
 const HEALTH_TILE: Record<HealthKey, { box: string; label: string; count: string }> = {
   overdue: { box: 'border-red-200 bg-red-50/40', label: 'text-red-700', count: 'text-red-700' },
-  unknown: { box: 'border-ink-200 bg-ink-50', label: 'text-ink-500', count: 'text-ink-900' },
+  unknown: { box: 'border-ink-200 bg-ink-50', label: 'text-ink-700', count: 'text-ink-900' },
   soon: { box: 'border-amber-200 bg-amber-50/40', label: 'text-amber-800', count: 'text-amber-800' },
   ontrack: {
     box: 'border-emerald-200 bg-emerald-50/40',
@@ -220,24 +221,35 @@ const HEALTH_TILE: Record<HealthKey, { box: string; label: string; count: string
  *
  * The number in the hole is the one thing on this page a broker will quote back
  * at the carrier down the phone, so it is never allowed to stand on its own. It
- * is 4 + 12 + 5, in the same words and the same order as the four boxes beside
- * it, and anybody can take it apart.
+ * is 4 overdue + 5 due in 45 days = 9, in the same words and the same order as
+ * the four boxes beside it, and then the missing dates and the on-track items
+ * are added back on to reach the total — so a reader can see that the number is
+ * smaller than the coloured part of the ring, and why, rather than working it
+ * out later and deciding this page shades the truth.
+ *
+ * It is `healthMath` from src/lib/charts/health.ts, the SAME function and the
+ * same words the carrier's own dashboard prints. A broker on the phone and an
+ * owner at his desk are reading one sentence about one carrier.
  */
-const healthMath = (() => {
-  if (!health) return undefined
-  if (health.needsAttention === 0) return `All ${health.total} have a date and none has passed.`
+const healthArithmetic = health ? healthMath(health) : undefined
 
-  const parts = attentionParts(health).map((p) => `${p.count} ${p.label.toLowerCase()}`)
-  // One part adds up to itself, and "12 missing a date = 12" reads as a mistake.
-  const sum = parts.length > 1 ? `${parts.join(' + ')} = ${health.needsAttention}` : parts[0]
-  return `${sum}, out of ${health.total} we track for this company.`
-})()
+/**
+ * The grey count in plain words, under the ring and above the arithmetic.
+ *
+ * A missing date is NOT counted in the number in the hole — it is not a
+ * deadline in trouble, it is a date nobody has given us — and the whole risk of
+ * taking it out of that number is that it becomes quiet. So it is said here, in
+ * a sentence, in the one wording a broker cannot misread: not on file is not
+ * the same as OK. The grey box beside the ring carries the same count, and the
+ * caveat under the figure says it a third time.
+ */
+const healthMissing = health ? missingLine(health, 'visitor') : null
 
 const healthCoverage = !health
   ? undefined
   : [
       'This is what the company files for itself. Every driver and every truck has separate dates. They are not counted here.',
-      'Grey means we hold no date for that item. Grey is not a pass.',
+      'Grey means we hold no date for that item. Grey is not a pass, and grey is not counted as needing attention. It is counted on its own.',
       'These are dates the carrier gave us. Nobody here has looked at a document.',
       health.unschedulable > 0
         ? `${health.unschedulable} more duties have no fixed date anyone can work out. They are not in the count.`
@@ -332,7 +344,7 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
               <p class="mt-4 text-sm font-medium tabular-nums">
                 Last updated {longDate(observedAt)} at {clockUtc(observedAt)} UTC
               </p>
-              <p class="mt-1 text-xs text-ink-500">
+              <p class="mt-1 text-xs text-ink-700">
                 This page is read from the carrier's records every time it is opened. It is not a
                 copy saved on a date.
               </p>
@@ -350,14 +362,14 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
             */}
             {health &&
               (health.total === 0 ? (
-                <p class="mt-6 rounded-lg bg-ink-50 px-4 py-3 text-sm text-ink-500">
+                <p class="mt-6 rounded-lg bg-ink-50 px-4 py-3 text-sm text-ink-700">
                   This carrier has no dated company filings on record with us yet. Read that as
                   "we hold nothing", not as "there is nothing to hold".
                 </p>
               ) : (
                 <Figure
                   title={healthHeadline(health)}
-                  subtitle={healthMath}
+                  subtitle={`Out of ${health.total} we track for this company.`}
                   coverage={healthCoverage}
                   class="mt-6"
                 >
@@ -378,7 +390,13 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
                       slices={donutSlices(health)}
                       centre={health.needsAttention}
                       centreNote={`of ${health.total}`}
-                      centreTone={health.needsAttention === 0 ? 'clear' : 'attention'}
+                      centreTone={
+                        /* Green ONLY when nothing at all is outstanding. A zero
+                           in the hole over a ring of grey arcs would read as a
+                           clean bill of health on the one page this carrier is
+                           judged by, at the largest type size on it. */
+                        health.needsAttention === 0 && health.missing === 0 ? 'clear' : 'attention'
+                      }
                       class="self-center sm:self-auto"
                     />
 
@@ -413,6 +431,19 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
                       ))}
                     </ul>
                   </div>
+
+                  {/*
+                    The grey count in words, then the addition. Same two
+                    sentences, same order, same wording as the carrier's own
+                    dashboard — one built by `missingLine`, one by `healthMath`,
+                    both in src/lib/charts/health.ts.
+                  */}
+                  {healthMissing && (
+                    <p class="mt-4 rounded-lg border border-ink-200 bg-ink-50 px-4 py-3 text-sm tabular-nums text-ink-700">
+                      {healthMissing}
+                    </p>
+                  )}
+                  <p class="mt-3 text-sm tabular-nums text-ink-700">{healthArithmetic}</p>
                 </Figure>
               ))}
 
@@ -440,19 +471,24 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
               </Figure>
             )}
 
-            {/* Check us. The outward link is what makes this page worth reading. */}
+            {/* Check us. The outward link is what makes this page worth reading.
+
+                It is a control, so it gets a control's target rather than
+                being a run of underlined words inside a sentence: on its own
+                line, 44px tall, and the sentence above it says why to press
+                it. */}
             {saferUrl && (
-              <p class="mt-5 rounded-lg bg-brand-500/[0.06] px-4 py-3 text-sm">
-                Do not take our word for any of this.{' '}
+              <div class="mt-5 rounded-lg bg-brand-500/[0.06] px-4 py-3 text-sm">
+                <p>Do not take our word for any of this.</p>
                 <a
                   href={saferUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="font-medium text-brand-700 underline"
+                  class="link mt-1 inline-flex min-h-11 items-center font-medium"
                 >
                   Look this carrier up on FMCSA's public SAFER record →
                 </a>
-              </p>
+              </div>
             )}
 
             {link.scope === 'carrier_summary' && (
@@ -460,19 +496,19 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
                 <h2 class="text-lg font-semibold tracking-tight">Fleet</h2>
                 <dl class="mt-3 grid gap-4 sm:grid-cols-3">
                   <div class="rounded-xl border border-ink-100 p-4">
-                    <dt class="text-xs tracking-wide text-ink-500 uppercase">Drivers</dt>
+                    <dt class="text-xs tracking-wide text-ink-700 uppercase">Drivers</dt>
                     <dd class="mt-1 text-2xl font-semibold tabular-nums">
                       {counts?.active_drivers ?? '—'}
                     </dd>
                   </div>
                   <div class="rounded-xl border border-ink-100 p-4">
-                    <dt class="text-xs tracking-wide text-ink-500 uppercase">Power units</dt>
+                    <dt class="text-xs tracking-wide text-ink-700 uppercase">Power units</dt>
                     <dd class="mt-1 text-2xl font-semibold tabular-nums">
                       {counts?.power_units ?? '—'}
                     </dd>
                   </div>
                   <div class="rounded-xl border border-ink-100 p-4">
-                    <dt class="text-xs tracking-wide text-ink-500 uppercase">Trailers</dt>
+                    <dt class="text-xs tracking-wide text-ink-700 uppercase">Trailers</dt>
                     <dd class="mt-1 text-2xl font-semibold tabular-nums">
                       {counts?.trailers ?? '—'}
                     </dd>
@@ -487,13 +523,13 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
                     {authority.rows.map((r) => (
                       <li class="flex flex-wrap items-center gap-2 rounded-lg border border-ink-100 px-4 py-3">
                         <span class="font-medium tabular-nums">{r.docket_number}</span>
-                        <span class="text-ink-500">{r.op_auth_type}</span>
+                        <span class="text-ink-700">{r.op_auth_type}</span>
+                        {/* The app's one badge construction, so this reads like
+                            every other status word in the product. */}
                         <span
                           class:list={[
-                            'rounded-md px-2 py-0.5 text-xs font-medium',
-                            r.op_auth_status === 'Active'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-amber-100 text-amber-800',
+                            'badge',
+                            r.op_auth_status === 'Active' ? 'badge-success' : 'badge-warning',
                           ]}
                         >
                           {r.op_auth_status}
@@ -502,7 +538,7 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
                     ))}
                   </ul>
                 ) : authority?.state === 'empty' ? (
-                  <p class="mt-3 rounded-lg bg-ink-50 px-4 py-3 text-sm text-ink-500">
+                  <p class="mt-3 rounded-lg bg-ink-50 px-4 py-3 text-sm text-ink-700">
                     No authority record came back for this USDOT number.{' '}
                     <strong>That is not the same as having none</strong> — the federal authority
                     file does not cover every carrier, and an intrastate-only carrier never needed
@@ -539,7 +575,7 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
                           <span class="font-medium">
                             {i.paragraph} {i.title}
                           </span>
-                          <span class="ml-2 text-ink-500">— {STATE_WORDS[i.state]}</span>
+                          <span class="ml-2 text-ink-700">— {STATE_WORDS[i.state]}</span>
                         </li>
                       ))}
                     </ol>
@@ -558,7 +594,7 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
                         </span>
                         <span class="flex-1 font-medium">{i.title}</span>
                         <span class="text-sm text-ink-500">{STATE_WORDS[i.state]}</span>
-                        <div class="w-full text-xs text-ink-500">{i.citation}</div>
+                        <div class="w-full text-xs text-ink-700">{i.citation}</div>
                       </div>
                     ))}
                   </div>
@@ -566,7 +602,7 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
               </>
             )}
 
-            <footer class="mt-8 border-t border-ink-100 pt-5 text-xs text-ink-500">
+            <footer class="mt-8 border-t border-ink-100 pt-5 text-xs text-ink-700">
               <p>
                 This is a record of what this carrier holds and what was observed at the time
                 shown above. It is not a certification of compliance, and it is not a statement

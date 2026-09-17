@@ -21,19 +21,45 @@
  * the most reassuring picture in the app shown to the most exposed carrier on
  * it. Same trap `buildRunway` exists to avoid, one screen further up.
  *
- * WHAT "NEEDS ATTENTION" MEANS, defined once, here, and printed in the middle
- * of the ring: everything that is NOT on track. Overdue plus missing a date
- * plus due soon. Green is the only bucket with nothing for him to do, so it is
- * the only one the number leaves out — and drawing it that way means the
- * coloured part of the ring and the number in the hole are the same fact. If
- * the centre counted only red and grey, the amber arc would be painted as a
- * problem and excluded from the problem count, and the shape would be arguing
- * with the number it is wrapped around.
+ * RANK IS NOT THE HEADLINE. Grey sitting second in that list is about where a
+ * row is SORTED and how loudly it is drawn — it is not an instruction to add it
+ * into the number in the middle of the ring. The next paragraph is that number,
+ * and the two are different questions.
  *
- * It is a COUNT, not a score. The three parts sit beside it on the screen as
- * their own tappable numbers, and the sentence under the ring prints the
- * addition, because a number an owner cannot take apart is a number he cannot
- * defend to a broker who quotes it back at him.
+ * WHAT "NEEDS ATTENTION" MEANS, defined once, here, and printed in the middle
+ * of the ring: OVERDUE PLUS DUE SOON. Those two and nothing else — a date that
+ * has passed, and a date that is about to. Both are things he can pick up the
+ * phone about this morning.
+ *
+ * A MISSING DATE IS NOT IN THAT NUMBER, and the size of the difference is the
+ * whole reason. A real fleet on this app reads 141 grey, red and amber rows, of
+ * which 119 are grey — items where nobody has typed a date in yet — and 22 are
+ * genuinely late or nearly late. "141 need attention" is not a harder version
+ * of the truth, it is a different claim: it says 141 documents are in trouble
+ * when 22 are, and it says it in the biggest type on the owner's dashboard and
+ * on the page a broker opens. An owner who reads it and finds 119 of them are
+ * blanks learns that this number is theatre, and then he does not read the 22
+ * either.
+ *
+ * AND GREY IS NOT SOFTENED, HIDDEN, OR FOLDED INTO GREEN. It keeps its own arc,
+ * its own count, its own tile, and it is carried on `Health.missing` so every
+ * screen can say it in words. A missing date is not a pass and it never draws
+ * as one — a fleet whose dates nobody has entered must never render as a clean
+ * green circle, which is the most reassuring picture in the app shown to the
+ * most exposed carrier on it. It simply stops being counted as a deadline in
+ * trouble, because it is not one. It is a question we have not asked him yet.
+ *
+ * So the ring has two statements under it, not one:
+ *
+ *   `healthMath`    the addition behind the centre number, and the running
+ *                   total that puts needs-attention, missing and on-track back
+ *                   together at `total`, so nothing is quietly dropped
+ *   `missingLine`   the grey count in plain words, next to the headline
+ *
+ * The centre number is a COUNT, not a score. The parts sit beside it on the
+ * screen as their own numbers and the sentence under it prints the addition,
+ * because a number an owner cannot take apart is a number he cannot defend to a
+ * broker who quotes it back at him.
  */
 import type { Standing } from '../rules/compute.ts'
 import { SOON_DAYS } from '../rules/index.ts'
@@ -71,9 +97,30 @@ export interface Health {
   buckets: readonly HealthBucket[]
   /** The four buckets added up. Never the whole list — see `unschedulable`. */
   total: number
-  /** Not on track: overdue + missing a date + due soon. The number in the hole. */
+  /**
+   * Overdue + due soon. The number in the hole, and nothing else goes in it.
+   *
+   * A date nobody has typed in yet is NOT a deadline in trouble, so it is not
+   * here — it is on `missing`, which every screen showing this number also has
+   * to show. See the note at the top of the file.
+   */
   needsAttention: number
+  /**
+   * No date on file. Grey.
+   *
+   * Its own field for the same reason it is its own arc: it is never added into
+   * `needsAttention`, never added into `onTrack`, and never left off a screen.
+   * `needsAttention + missing + onTrack === total`, always, and `healthMath`
+   * prints exactly that addition.
+   */
+  missing: number
   onTrack: number
+  /**
+   * The window `soon` was measured against, carried so a component can print
+   * "45 days" without importing the rules engine. Same field, same reason, as
+   * `Runway.soonDays`.
+   */
+  soonDays: number
   /**
    * Real duties with no schedule anyone can compute — the 'Check yourself'
    * rows. NOT a bucket and NOT counted in `total`: they are not overdue, they
@@ -141,27 +188,141 @@ export function buildHealth(items: readonly HealthInput[], soonDays = SOON_DAYS)
   return {
     buckets,
     total: overdue + unknown + soon + ontrack,
-    needsAttention: overdue + unknown + soon,
+    // Overdue + due soon. NOT `unknown` — see the note at the top of the file.
+    // The one change most likely to be undone by a future edit that reads the
+    // ring and thinks the centre number should be the coloured part of it.
+    needsAttention: overdue + soon,
+    missing: unknown,
     onTrack: ontrack,
+    soonDays,
     unschedulable,
   }
 }
 
-/** The parts the centre number is made of, empty ones dropped. */
+/** The two buckets the centre number is made of, empty ones dropped. */
 export function attentionParts(health: Health): readonly HealthBucket[] {
+  return health.buckets.filter((b) => (b.key === 'overdue' || b.key === 'soon') && b.count > 0)
+}
+
+/**
+ * Everything that is not on track: overdue, missing a date, due soon.
+ *
+ * NOT the centre number, and it must never be printed as one. This is for the
+ * lists that rank records by how much work they carry — "who do I call first" —
+ * where a driver with nine blank dates and nothing overdue is absolutely
+ * somebody to open, and dropping him because his nine are grey would hide the
+ * exact rows the grey arc exists to keep visible.
+ */
+export function openParts(health: Health): readonly HealthBucket[] {
   return health.buckets.filter((b) => b.key !== 'ontrack' && b.count > 0)
+}
+
+/** `openParts` added up: everything with something still to do about it. */
+export function openCount(health: Health): number {
+  return health.total - health.onTrack
 }
 
 /**
  * The figure's title: the answer, not the name of the chart.
  *
- * "21 need attention" is a thing an owner can act on before he has finished
+ * "22 need attention" is a thing an owner can act on before he has finished
  * reading it. "Deadline distribution" is a thing he has to decode first.
+ *
+ * THE ONE CASE THAT IS NOT ALLOWED TO SAY "NOTHING NEEDS ATTENTION": a carrier
+ * on his first week has nothing overdue and nothing due soon, because nobody
+ * has typed a date in yet, so `needsAttention` is 0 and every one of his items
+ * is grey. "Nothing needs attention" over 119 blanks is the most reassuring
+ * sentence in the app shown to the carrier who has told us the least. So when
+ * the only thing standing is missing dates, the headline says that instead.
  */
 export function healthHeadline(health: Health): string {
   if (health.total === 0) return 'Nothing tracked yet'
-  if (health.needsAttention === 0) return 'Nothing needs attention'
-  return `${health.needsAttention} need${health.needsAttention === 1 ? 's' : ''} attention`
+  if (health.needsAttention > 0) {
+    return `${health.needsAttention} need${health.needsAttention === 1 ? 's' : ''} attention`
+  }
+  if (health.missing > 0) {
+    return `${health.missing} date${health.missing === 1 ? ' is' : 's are'} missing`
+  }
+  return 'Nothing needs attention'
+}
+
+/**
+ * The grey count, in words, beside the headline.
+ *
+ * The tile already prints the number and the arc already draws it. This is the
+ * sentence, because a number in a box is a thing an owner scans past and a
+ * sentence is a thing he reads — and the one reading this has to produce is "we
+ * are missing dates FROM ME", not "some items are grey".
+ *
+ * Two audiences, one fact. The owner is the person who can fix it, so he is
+ * told what to do about it. The broker cannot fix anything and is not being
+ * asked to; he is told what the grey does NOT mean, which is the only thing he
+ * could get wrong. Neither wording softens it and neither one is optional: this
+ * line is rendered wherever `missing > 0`, on both pages.
+ */
+export function missingLine(health: Health, reader: 'owner' | 'visitor'): string | null {
+  const n = health.missing
+  if (n === 0) return null
+  const dates = n === 1 ? 'date' : 'dates'
+  return reader === 'owner'
+    ? `We are missing ${n} ${dates} from you. Until we have ${n === 1 ? 'it' : 'them'}, we cannot tell you if ${n === 1 ? 'that item is' : 'those items are'} OK.`
+    : `${n} ${dates} ${n === 1 ? 'is' : 'are'} not on file. Not on file is not the same as OK.`
+}
+
+/**
+ * The arithmetic under the ring, as one sentence, for BOTH pages.
+ *
+ * One function rather than two pieces of markup, because the owner's dashboard
+ * and the broker's page print the same number and a broker quotes it back down
+ * the phone. Two hand-written versions of this sentence is how the two screens
+ * come to disagree about the same carrier on the same afternoon.
+ *
+ * It does two jobs. It shows what the centre number is made of — a score is a
+ * number you cannot take apart, and this product does not print scores. And it
+ * closes the books: the last clause adds needs-attention, missing and on-track
+ * back up to `total`, so a reader can see that nothing was quietly left out of
+ * the picture. That clause is why `missing` can be lifted out of the headline
+ * without disappearing from the page.
+ */
+export function healthMath(health: Health): string {
+  if (health.total === 0) return 'Nothing is tracked yet.'
+
+  const { needsAttention, missing, onTrack, total, soonDays } = health
+  const parts = attentionParts(health)
+  const said: string[] = []
+
+  if (parts.length > 1) {
+    said.push(
+      `${parts.map((p) => `${p.count} ${p.label.toLowerCase()}`).join(' + ')} = ${needsAttention} need attention.`,
+    )
+  } else if (parts.length === 1) {
+    // One part adds up to itself, and "9 overdue = 9" reads as a mistake.
+    said.push(
+      `${needsAttention} need${needsAttention === 1 ? 's' : ''} attention, and ${needsAttention === 1 ? 'it is' : 'they are all'} ${parts[0].label.toLowerCase()}.`,
+    )
+  } else {
+    said.push(`Nothing is overdue and nothing is due in the next ${soonDays} days.`)
+  }
+
+  if (missing > 0) {
+    said.push(
+      `${missing} ${missing === 1 ? 'has' : 'have'} no date on file. We cannot say ${missing === 1 ? 'it is' : 'they are'} OK.`,
+    )
+  }
+  if (onTrack > 0) {
+    said.push(`${onTrack} ${onTrack === 1 ? 'is' : 'are'} on track.`)
+  }
+
+  // The books, closed. Printed as an addition whenever there is one to print,
+  // so the reader checks it rather than trusting it.
+  const tally = [needsAttention, missing, onTrack].filter((n) => n > 0)
+  said.push(
+    tally.length > 1
+      ? `${tally.join(' + ')} = ${total} items we track.`
+      : `That is every one of the ${total} we track.`,
+  )
+
+  return said.join(' ')
 }
 
 // ----------------------------------------------------------------- the ring

@@ -24,12 +24,15 @@ import Figure from '../../components/charts/Figure.astro'
 import Runway from '../../components/charts/Runway.astro'
 import App from '../../layouts/App.astro'
 import {
-  attentionParts,
   buildHealth,
   donutSlices,
   healthHeadline,
+  healthMath,
   type HealthInput,
   type HealthKey,
+  missingLine,
+  openCount,
+  openParts,
 } from '../../lib/charts/health.ts'
 import { buildRunway, weekRangeLabel } from '../../lib/charts/runway.ts'
 import { TONES } from '../../lib/charts/tones.ts'
@@ -394,7 +397,9 @@ const TILE_STYLE: Record<string, { box: string; labelClass: string; countClass: 
   // row it filters to. Never green, never blank: a missing date is not a pass.
   unknown: {
     box: 'border-ink-200 bg-ink-50',
-    labelClass: 'text-ink-500',
+    // ink-700, not ink-500. The label is 12px and it sits on a tint, and both
+    // of those put it under the floor in src/styles/global.css.
+    labelClass: 'text-ink-700',
     countClass: 'text-ink-900',
   },
   soon: {
@@ -422,8 +427,22 @@ const tiles = health.buckets.map((b) => ({
 // phone and there is no room left beside them for the ring; as rows the whole
 // block — ring and all four numbers — fits in about 190px, which is less than
 // the old tiles took on their own.
-const tileBase = 'flex items-center gap-2 rounded-lg border px-2.5 py-2 transition'
-const tileOn = 'border-ink-900 shadow-sm ring-2 ring-ink-900'
+//
+// `min-h-11` is the 44px thumb floor. Three of these four are filters and they
+// are tapped standing next to a truck.
+const tileBase = 'flex min-h-11 items-center gap-2 rounded-lg border px-2.5 py-2 transition'
+/**
+ * The selected filter, as the app's one selected metaphor: a filled tinted
+ * pill, the same `.is-current` the nav and every other filter row uses.
+ *
+ * It replaces a dark 2px ring, which was a second vocabulary for "this one is
+ * on" and read as an error outline on a bad screen in daylight. The pill
+ * replaces the tile's own bucket tint rather than sitting on top of it — two
+ * fills cannot share one box — and nothing is lost by that: the swatch, the
+ * coloured count, the word and the "Showing" line under it all stay, so the
+ * tile still says which arc it belongs to four ways over.
+ */
+const tileOn = 'is-current'
 
 /** The ring is a chart, so it obeys the chart rule: never on a filtered view. */
 const showRing = view === 'all' && health.total > 0
@@ -442,16 +461,33 @@ const showRing = view === 'all' && health.total > 0
 const showGhostRing = view === 'all' && health.total === 0
 const ringDrawn = showRing || showGhostRing
 
-// The sentence under the ring, and it is the reason the centre number is
-// allowed to exist. "21 need attention" with nothing beside it is a score, and
-// a score is a thing a broker quotes back at a carrier who then cannot take it
-// apart. This prints the addition: 4 + 12 + 5 = 21, in the same order and the
-// same words as the tiles above it.
-const parts = attentionParts(health)
+/**
+ * The sentence under the ring, and it is the reason the centre number is
+ * allowed to exist. "22 need attention" with nothing beside it is a score, and
+ * a score is a thing a broker quotes back at a carrier who then cannot take it
+ * apart. `healthMath` prints the addition — and then adds the missing dates and
+ * the on-track items back on to reach the total, so the number in the hole
+ * being smaller than the coloured part of the ring is stated rather than left
+ * for him to notice.
+ *
+ * Built in src/lib/charts/health.ts, not here, and the proof page prints the
+ * SAME string. Two hand-written versions of this sentence is how the owner's
+ * screen and the broker's screen come to disagree about one carrier.
+ */
+const healthArithmetic = healthMath(health)
+
+/**
+ * The grey line: the one an owner has to read as "we are missing 119 dates from
+ * you". It sits directly under the ring and above the arithmetic, in its own
+ * box, because the count used to be inside the headline and is not any more —
+ * and a number that leaves the headline has to land somewhere louder than a
+ * tile, or it has quietly been softened.
+ */
+const healthMissing = ringDrawn ? missingLine(health, 'owner') : null
 
 const healthSubtitle = !showRing
   ? undefined
-  : health.needsAttention === 0
+  : health.total === health.onTrack
     ? `All ${health.total} we track have a date and are still ahead of you.`
     : `Out of ${health.total} we track. Tap a box to see the list.`
 
@@ -621,11 +657,20 @@ const needsRows = [...needsBy.values()]
     const count = (key: HealthKey) => rowHealth.buckets.find((b) => b.key === key)?.count ?? 0
     return {
       ...row,
-      // The same three buckets the ring's sentence prints, in the same order
-      // and the same words, so the breakdown beside the number is the number
-      // taken apart rather than a second opinion about it.
-      parts: attentionParts(rowHealth),
-      attention: rowHealth.needsAttention,
+      /**
+       * `openParts`, NOT `attentionParts`, and the difference is the whole
+       * point of this list. The ring's centre number is overdue plus due soon;
+       * this list answers a different question — who do I open first — and a
+       * driver with nine blank dates and nothing overdue is top of it. Ranked
+       * on `attentionParts` he would score zero and drop off the page
+       * entirely, which is the grey bucket being hidden by the back door.
+       *
+       * Same three buckets, same order and same words as the tiles above, so
+       * the breakdown beside the number is the number taken apart rather than
+       * a second opinion about it.
+       */
+      parts: openParts(rowHealth),
+      attention: openCount(rowHealth),
       overdue: count('overdue'),
       missing: count('unknown'),
       soon: count('soon'),
@@ -647,7 +692,10 @@ const needsRows = [...needsBy.values()]
 
 const needsTop = needsRows.slice(0, NEEDS_CAP)
 const needsRest = needsRows.length - needsTop.length
-const companyNeeds = buildHealth(companyInputs).needsAttention
+// Counted the same way the rows above are — everything not on track, grey
+// included — so the "and your company has N of its own" line is measured on the
+// same ruler as the list it is attached to.
+const companyNeeds = openCount(buildHealth(companyInputs))
 
 /** A ranking across the whole fleet, so it obeys the chart rule: resting view only. */
 const showNeeds = view === 'all' && needsTop.length > 0
@@ -717,8 +765,10 @@ if (view === 'unknown' && focus && savedCount && savedCount > 0 && isBatchStamp(
   }
 }
 
+// `min-h-11`: an input is a tap target too, and at py-2 this box was 42px on
+// the one screen in the app that is nothing but boxes to tap.
 const dateField =
-  'mt-1 w-full max-w-xs rounded-lg border border-ink-100 bg-white px-3 py-2 text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+  'mt-1 min-h-11 w-full max-w-xs rounded-lg border border-ink-100 bg-white px-3 py-2 text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
 
 /**
  * ONE HEADING SCALE, TWO STEPS.
@@ -763,7 +813,7 @@ const nudge =
   truckCount.count === null || driverCount.count === null
     ? null
     : setupNudge(truckCount.count, driverCount.count)
-const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50'
+const backOut = 'btn btn-secondary'
 ---
 
 <App
@@ -785,7 +835,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
         </div>
         <a
           href="/app/setup"
-          class="mt-3 block rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-medium text-white transition hover:bg-brand-700 sm:mt-0 sm:shrink-0"
+          class="btn btn-primary mt-3 w-full sm:mt-0 sm:w-auto sm:shrink-0"
         >
           Go to setup
         </a>
@@ -821,7 +871,15 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
             slices={donutSlices(health)}
             centre={health.needsAttention}
             centreNote={showGhostRing ? 'nothing tracked' : `of ${health.total}`}
-            centreTone={showRing && health.needsAttention === 0 ? 'clear' : 'attention'}
+            centreTone={
+              /* Green ONLY when there is genuinely nothing outstanding. A zero
+                 in the hole over 119 grey arcs is still a zero he has to read
+                 correctly, and greening it would make "no date on file" look
+                 like a pass at the largest type size on the page. */
+              showRing && health.needsAttention === 0 && health.missing === 0
+                ? 'clear'
+                : 'attention'
+            }
           />
         )
       }
@@ -888,12 +946,15 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                   */}
                   <span
                     class:list={[
-                      'mt-0.5 block text-[10px] leading-tight',
+                      // 11px, not 10px, and ink-700 rather than ink-300: this
+                      // is the line that says which filter is on, and it was
+                      // set at 1.85:1 on a tile read in daylight.
+                      'mt-0.5 block text-[11px] leading-tight',
                       t.view === null
-                        ? 'text-emerald-700'
+                        ? 'text-emerald-800'
                         : on
-                          ? 'font-medium text-ink-900'
-                          : 'text-ink-300',
+                          ? 'font-semibold text-brand-700'
+                          : 'text-ink-700',
                     ]}
                   >
                     {t.view === null ? 'Nothing to do' : on ? 'Showing' : 'Show these'}
@@ -912,7 +973,13 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                 href={dashboardHref(t.view)}
                 aria-current={on ? 'page' : undefined}
                 aria-label={label}
-                class:list={[tileBase, t.box, on ? tileOn : 'hover:shadow-sm']}
+                class:list={[
+                  tileBase,
+                  // The bucket tint OR the selected pill, never both: one box
+                  // cannot carry two fills, and a utility background would win
+                  // over the component class anyway.
+                  on ? [tileOn, 'border-brand-600'] : [t.box, 'hover:shadow-sm'],
+                ]}
               >
                 {body}
               </a>
@@ -923,42 +990,45 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
     </div>
 
     {/*
-      The sentence that states the finding, and the arithmetic behind the number
-      in the middle of the ring. It is not a summary of the chart — it IS the
-      chart, for a reader who cannot see colour, is holding the phone in the sun,
-      or is being read the page aloud. And it is what stops the centre number
-      being a score: he can see what it is made of without tapping anything.
+      ================================================== the dates we are owed ===
+
+      THE GREY COUNT, IN ITS OWN BOX, IN WORDS.
+
+      It used to be inside the headline — "141 need attention", of which 119
+      were items nobody had typed a date for. Taking it out of that number is
+      the fix; leaving it as a tile and an arc would have been the softening.
+      So it gets a line of its own, immediately under the ring, saying what it
+      actually is: dates we are waiting on from him.
+
+      Ink on a grey tint, which is the colour of the arc and of the tile and of
+      the 'Not sure' pill on the rows it leads to. Never green, never amber:
+      this is not good news and it is not a clock running down. It is a
+      question, and the link is where he answers it.
     */}
     {
-      showRing && (
-        <p class="mt-3 text-sm text-ink-500">
-          {parts.length > 1 ? (
-            <span class="tabular-nums">
-              {parts.map((p, i) => (
-                <>
-                  {i > 0 && ' + '}
-                  {p.count} {p.label.toLowerCase()}
-                </>
-              ))}
-              {' = '}
-              <span class="font-medium text-ink-900">{health.needsAttention}</span>.
-            </span>
-          ) : parts.length === 1 ? (
-            <span class="tabular-nums">
-              All {health.needsAttention} are {parts[0].label.toLowerCase()}.
-            </span>
-          ) : (
-            <span>Nothing is overdue, missing a date, or due in the next {SOON_DAYS} days.</span>
-          )}
-          {health.onTrack > 0 && parts.length > 0 && (
-            <span class="tabular-nums">
-              {' '}
-              The other {health.onTrack} {health.onTrack === 1 ? 'is' : 'are'} on track.
-            </span>
-          )}
+      healthMissing && (
+        <p class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-ink-200 bg-ink-50 px-4 py-3 text-sm text-ink-700">
+          <span class="min-w-0 flex-1 tabular-nums">{healthMissing}</span>
+          <a href="/app?show=unknown" class="link inline-flex min-h-11 shrink-0 items-center font-medium">
+            Fill these in →
+          </a>
         </p>
       )
     }
+
+    {/*
+      The arithmetic behind the number in the middle of the ring, and then the
+      running total that puts it back together with the grey and the green to
+      reach everything we track. It is not a summary of the chart — it IS the
+      chart, for a reader who cannot see colour, is holding the phone in the
+      sun, or is being read the page aloud. And it is what stops the centre
+      number being a score: he can see what it is made of, and he can see that
+      nothing was left out, without tapping anything.
+
+      One string, built in src/lib/charts/health.ts, printed identically on the
+      page a broker opens.
+    */}
+    {showRing && <p class="mt-3 text-sm tabular-nums text-ink-700">{healthArithmetic}</p>}
   </Figure>
 
   {
@@ -968,7 +1038,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
             on the tile alone because this line is what he reads after the page
             moves under him — the tiles are above his thumb, this is under it. */}
         <span>Showing only <span class="font-medium text-ink-900">{viewNoun(view)}</span>. {shownCount} of {trackedCount} items.</span>
-        <a href="/app" class="font-medium text-brand-600 hover:underline">Show everything</a>
+        <a href="/app" class="link inline-flex min-h-11 items-center font-medium">Show everything</a>
       </p>
     )
   }
@@ -1048,7 +1118,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                   </span>
                   <span class="min-w-0 flex-1">
                     <span class="block truncate font-medium">{r.label}</span>
-                    <span class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-500 tabular-nums">
+                    <span class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-700 tabular-nums">
                       <span>{r.noun}</span>
                       {r.parts.map((p) => (
                         <span class="flex items-center gap-1">
@@ -1079,7 +1149,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
 
         {/* What the five rows leave out, said out loud rather than trimmed
             away quietly. Same rule as the row cap on the sections below. */}
-        {needsMore && <p class="mt-3 text-xs text-ink-500 tabular-nums">{needsMore}</p>}
+        {needsMore && <p class="mt-3 text-xs text-ink-700 tabular-nums">{needsMore}</p>}
       </Figure>
     )
   }
@@ -1098,7 +1168,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
         </p>
         <a
           href="/app/drivers/new"
-          class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+          class="btn btn-primary mt-4"
         >
           Add a driver →
         </a>
@@ -1118,7 +1188,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
       <div class="mt-4 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
         <p class="font-medium">{emptyFiltered.title}</p>
         <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">{emptyFiltered.body}</p>
-        <a href="/app" class:list={['mt-4 inline-block', backOut]}>
+        <a href="/app" class:list={['mt-4', backOut]}>
           Show everything
         </a>
       </div>
@@ -1191,7 +1261,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                       type="submit"
                       name="intent"
                       value="withdraw_date"
-                      class="rounded-lg border border-ink-100 bg-white px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50"
+                      class="btn btn-secondary btn-sm"
                     >
                       Withdraw
                     </button>
@@ -1230,7 +1300,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                 >
                   <span class="min-w-0 flex-1">
                     <span class="block truncate font-medium">{subject.label}</span>
-                    <span class="mt-0.5 block text-xs text-ink-500 tabular-nums">
+                    <span class="mt-0.5 block text-xs text-ink-700 tabular-nums">
                       {subject.noun} · {subject.questionCount}{' '}
                       {subject.questionCount === 1 ? 'date' : 'dates'} missing
                     </span>
@@ -1254,7 +1324,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
         {editor.unrecordable > 0 && (
           /* Said out loud rather than quietly dropped. A row he can see on the
              dashboard and cannot find here is a list he stops believing. */
-          <p class="mt-5 text-xs text-ink-500 tabular-nums">
+          <p class="mt-5 text-xs text-ink-700 tabular-nums">
             {editor.unrecordable} more are about people or places we cannot save a date for yet,
             so they are not on this screen.
           </p>
@@ -1280,13 +1350,13 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
 
         <div class="mt-3 rounded-xl border border-ink-100 bg-white">
           <div class="flex items-center gap-3 border-b border-ink-100 px-5 py-3">
-            <span class="min-w-0 flex-1 text-xs text-ink-500 tabular-nums">
+            <span class="min-w-0 flex-1 text-xs text-ink-700 tabular-nums">
               {focus.rowCount} {focus.rowCount === 1 ? 'row' : 'rows'} on the dashboard, from{' '}
               {focus.questionCount} {focus.questionCount === 1 ? 'date' : 'dates'}
             </span>
             <a
               href="/app?show=unknown"
-              class="shrink-0 rounded-lg border border-ink-100 px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50"
+              class="btn btn-secondary btn-sm shrink-0"
             >
               Back to all {editor.subjectCount}
             </a>
@@ -1316,14 +1386,14 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                    right one. `dot_number` is not a date at all. */
                 <div class="rounded-lg border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3">
                   <p class="text-sm font-medium">{q.label}</p>
-                  <p class="mt-0.5 text-xs text-ink-500">
+                  <p class="mt-0.5 text-xs text-ink-700">
                     This date lives on {q.elsewhere?.where ?? 'another screen'}, not here. We keep
                     one answer for it, not two.
                   </p>
                   {q.elsewhere?.href && (
                     <a
                       href={q.elsewhere.href}
-                      class="mt-2 inline-block rounded-lg border border-ink-100 bg-white px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50"
+                      class="btn btn-secondary btn-sm mt-2"
                     >
                       Open it →
                     </a>
@@ -1332,7 +1402,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
               )}
 
               {q.writable && (
-                <p class="mt-1.5 text-xs text-ink-500">
+                <p class="mt-1.5 text-xs text-ink-700">
                   <strong class="font-medium text-ink-700">
                     {q.kind === 'last_done' ? 'Last done.' : 'Expires.'}
                   </strong>{' '}
@@ -1343,7 +1413,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
               {/* Which rows this one date takes off the dashboard. Never hidden:
                   a row he saw on the list and cannot find here is a list he
                   stops believing. */}
-              <p class="mt-1 text-xs text-ink-300">
+              <p class="mt-1 text-xs text-ink-700">
                 {q.settles.length > 1 && `This date answers ${q.settles.length} rules: `}
                 {q.settles.map((r, n) => (
                   <>
@@ -1352,7 +1422,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                       href={r.sourceUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      class="hover:text-brand-600 hover:underline"
+                      class="link inline-flex min-h-11 items-center"
                     >
                       {r.title === q.label ? r.citation : r.title}
                     </a>
@@ -1373,7 +1443,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                  expects, so the summary says the count and never hides a filled
                  box silently. */
               <details class="border-t border-ink-100 pt-4">
-                <summary class="cursor-pointer text-sm font-medium text-ink-500 select-none">
+                <summary class="flex min-h-11 cursor-pointer items-center text-sm font-medium text-ink-700 underline underline-offset-2 select-none">
                   {focus.onlyIfItApplies.length} more that only apply in some cases
                 </summary>
                 <div class="mt-4 space-y-5">
@@ -1400,14 +1470,14 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                    right one. `dot_number` is not a date at all. */
                 <div class="rounded-lg border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3">
                   <p class="text-sm font-medium">{q.label}</p>
-                  <p class="mt-0.5 text-xs text-ink-500">
+                  <p class="mt-0.5 text-xs text-ink-700">
                     This date lives on {q.elsewhere?.where ?? 'another screen'}, not here. We keep
                     one answer for it, not two.
                   </p>
                   {q.elsewhere?.href && (
                     <a
                       href={q.elsewhere.href}
-                      class="mt-2 inline-block rounded-lg border border-ink-100 bg-white px-3 py-1.5 text-sm font-medium transition hover:bg-ink-50"
+                      class="btn btn-secondary btn-sm mt-2"
                     >
                       Open it →
                     </a>
@@ -1416,7 +1486,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
               )}
 
               {q.writable && (
-                <p class="mt-1.5 text-xs text-ink-500">
+                <p class="mt-1.5 text-xs text-ink-700">
                   <strong class="font-medium text-ink-700">
                     {q.kind === 'last_done' ? 'Last done.' : 'Expires.'}
                   </strong>{' '}
@@ -1427,7 +1497,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
               {/* Which rows this one date takes off the dashboard. Never hidden:
                   a row he saw on the list and cannot find here is a list he
                   stops believing. */}
-              <p class="mt-1 text-xs text-ink-300">
+              <p class="mt-1 text-xs text-ink-700">
                 {q.settles.length > 1 && `This date answers ${q.settles.length} rules: `}
                 {q.settles.map((r, n) => (
                   <>
@@ -1436,7 +1506,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                       href={r.sourceUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      class="hover:text-brand-600 hover:underline"
+                      class="link inline-flex min-h-11 items-center"
                     >
                       {r.title === q.label ? r.citation : r.title}
                     </a>
@@ -1460,7 +1530,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
             type="submit"
             name="intent"
             value="save_unknown_dates"
-            class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
+            class="btn btn-primary"
           >
             Save these dates
           </button>
@@ -1495,7 +1565,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                 {/* The bridge. This table is for reading; the editor behind this
                     link is for answering, and without a way across, the reading
                     view is the only one he ever finds. */}
-                <a href="/app?show=unknown" class="font-medium text-brand-600 hover:underline">
+                <a href="/app?show=unknown" class="link inline-flex min-h-11 items-center font-medium">
                   Fill these in →
                 </a>
               </p>
@@ -1512,7 +1582,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                  leave a line explaining a badge that is not on screen. */
               <p class="mt-1 text-sm text-ink-500">
                 {REMINDER_ORIGIN_NOTE}{' '}
-                <a href="/app/reminders" class="font-medium text-brand-600 hover:underline">
+                <a href="/app/reminders" class="link inline-flex min-h-11 items-center font-medium">
                   My reminders →
                 </a>
               </p>
@@ -1525,7 +1595,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                   are not columns explain nothing — each block says what it is in
                   its own words instead.
                 */}
-                <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+                <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
                   <tr>
                     <th class="px-4 py-3 font-medium">What</th>
                     <th class="px-4 py-3 font-medium">Who or what</th>
@@ -1545,7 +1615,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                         <td class={cell}>
                           <div class="font-medium">{i.rule.title}</div>
                           {i.status.standing === 'unknown' && i.status.needs && (
-                            <div class="mt-0.5 text-xs text-ink-300">
+                            <div class="mt-0.5 text-xs text-ink-700">
                               We need: {i.status.needs.join(', ').replaceAll('_', ' ')}
                             </div>
                           )}
@@ -1554,14 +1624,14 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                           {i.subjectId ? (
                             <a
                               href={subjectHref(i.subjectType, i.subjectId)}
-                              class="font-medium hover:text-brand-600 hover:underline"
+                              class="link-row"
                             >
                               {i.subjectLabel}
                             </a>
                           ) : (
                             <span>{i.subjectLabel}</span>
                           )}
-                          <span class="text-xs text-ink-300 sm:block">
+                          <span class="text-xs text-ink-700 sm:block">
                             <span class="sm:hidden"> · </span>
                             {i.subjectType.replaceAll('_', ' ')}
                           </span>
@@ -1574,12 +1644,12 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                               `current` row gets one. See `dueLine`. */}
                           <span class="ml-2 tabular-nums sm:mt-1 sm:ml-0 sm:block">{dueLine(i)}</span>
                         </td>
-                        <td class={`${cell} mt-1.5 text-xs text-ink-500 sm:mt-0`}>
+                        <td class={`${cell} mt-1.5 text-xs text-ink-700 sm:mt-0`}>
                           <a
                             href={i.rule.sourceUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="hover:text-brand-600 hover:underline"
+                            class="link inline-flex min-h-11 items-center"
                           >
                             {i.rule.citation}
                           </a>
@@ -1626,14 +1696,14 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                         <td class={cell}>
                           <div class="font-medium">{r.title}</div>
                           {r.note && (
-                            <div class="mt-0.5 max-w-sm text-xs text-ink-500">{r.note}</div>
+                            <div class="mt-0.5 max-w-sm text-xs text-ink-700">{r.note}</div>
                           )}
                         </td>
                         <td class={`${cell} mt-1 sm:mt-0`}>
                           {r.subject.href ? (
                             <a
                               href={r.subject.href}
-                              class="font-medium hover:text-brand-600 hover:underline"
+                              class="link-row"
                             >
                               {r.subject.label}
                             </a>
@@ -1642,7 +1712,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                           )}
                           {/* The words the nav uses — "Trucks", "Drivers" — not
                               the column names. */}
-                          <span class="text-xs text-ink-300 sm:block">
+                          <span class="text-xs text-ink-700 sm:block">
                             <span class="sm:hidden"> · </span>
                             {r.subject.kind === 'carrier'
                               ? 'your company'
@@ -1694,7 +1764,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
               <p class="mt-3 text-sm">
                 <a
                   href={s.shown.more.href}
-                  class="font-medium text-brand-600 hover:underline"
+                  class="link inline-flex min-h-11 items-center font-medium"
                 >
                   {s.shown.more.label}
                 </a>
@@ -1732,8 +1802,8 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
           {manual.map((i) => (
             <li class="rounded-lg border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3 text-sm">
               <span class="font-medium">{i.rule.title}</span>
-              <span class="text-ink-500"> · {i.subjectLabel}</span>
-              {i.status.reason && <div class="mt-0.5 text-xs text-ink-500">{i.status.reason}</div>}
+              <span class="text-ink-700"> · {i.subjectLabel}</span>
+              {i.status.reason && <div class="mt-0.5 text-xs text-ink-700">{i.status.reason}</div>}
             </li>
           ))}
         </ul>
@@ -1762,7 +1832,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
               ? `${reminderLater.length} of your own reminders are further out.`
               : 'Your own reminders are in the list above.'}
         </span>
-        <a href="/app/reminders" class="font-medium text-brand-600 hover:underline">
+        <a href="/app/reminders" class="link inline-flex min-h-11 items-center font-medium">
           My reminders →
         </a>
       </p>
