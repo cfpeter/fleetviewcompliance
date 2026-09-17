@@ -8,6 +8,11 @@
  */
 import Bars from '../../../components/charts/Bars.astro'
 import Figure from '../../../components/charts/Figure.astro'
+import {
+  daysWord,
+  receivablesAging,
+  receivablesByCustomer,
+} from '../../../lib/charts/receivables.ts'
 import { type RevenueLoad, topCustomers } from '../../../lib/charts/revenue.ts'
 import App from '../../../layouts/App.astro'
 import { searchFilter } from '../../../lib/customers.ts'
@@ -80,7 +85,12 @@ const [first, { count: totalCount }, revenueResult] = await Promise.all([
   supabase.from('customers').select('*', { count: 'exact', head: true }),
   unfiltered
     ? supabase.from('loads').select(
-        'customer_id, status, exception, linehaul_cents, fuel_surcharge_cents, accessorials_cents',
+        // `billing` and `created_at` ride along for the receivables bands below.
+        // One query, two findings: the ranking reads the money columns and the
+        // aging reads the billing state and the day the load was entered. A
+        // second request for the same rows would be a second population to keep
+        // in step, and the two charts would eventually disagree.
+        'customer_id, status, exception, billing, linehaul_cents, fuel_surcharge_cents, accessorials_cents, created_at',
         // The exact count, so the ranking can tell whether PostgREST's row cap
         // ate anything. A capped response makes every bar shorter than it
         // should be and, worse, shifts the concentration share — with nothing
@@ -189,6 +199,57 @@ const rankingCoverage = ranking
   : undefined
 
 /**
+ * WHAT YOU ARE OWED, AND HOW STALE IT IS.
+ *
+ * The book says who they are and what they promised. The ranking above says
+ * who the work comes from. Neither says the thing an owner loses sleep over —
+ * how much is out, and how long it has been out — because that is a sum across
+ * every load, cut by age, and it exists nowhere else in this product.
+ *
+ * Drawn from the SAME rows as the ranking, so the two cannot disagree, and on
+ * the resting view only, for the same reason the ranking is: a receivables
+ * total drawn from a search result is not a truncated answer, it is a wrong one.
+ *
+ * THE CLOCK STARTS THE DAY THE LOAD WAS ENTERED, NOT THE DAY THE INVOICE WENT
+ * OUT, because 0009_loads.sql records no invoice date at all. That makes every
+ * band OLDER than the invoice behind it, and the figure says so on screen —
+ * see the coverage line and the sentence under the bars. An owner who reads
+ * "more than 90 days" here and repeats it to a broker whose invoice went out
+ * three weeks ago has been handed an argument he loses.
+ */
+const revenueLoads =
+  revenueResult && !revenueResult.error
+    ? ((revenueResult.data ?? []) as unknown as RevenueLoad[])
+    : null
+const now = new Date()
+const aging = revenueLoads ? receivablesAging(revenueLoads, now) : null
+const owed = revenueLoads ? receivablesByCustomer(revenueLoads, rows, now) : null
+
+// Only the ones past the chase line, most money first. The rest of the book is
+// out on ordinary terms and does not need naming.
+const chaseRows =
+  aging && owed
+    ? owed.rows.filter((r) => (r.oldestDays ?? 0) > aging.chaseAfterDays).slice(0, 5)
+    : []
+
+const agingCoverage = aging
+  ? [
+      'Counted from the day the load was entered, not the day the invoice went out. Nothing on a load records when it was invoiced or when the money arrived, so every figure here is older than the invoice behind it.',
+      'Only loads marked invoiced, with the factor, or funded. Anything you have not invoiced yet is not on these bars.',
+      aging.unpricedLoads > 0 &&
+        `${aging.unpricedLoads} ${loadWord(aging.unpricedLoads)} still out carry no rate yet, so the amounts are lower than the real figures. A load with no rate is not a $0 load.`,
+      aging.undatedLoads > 0 &&
+        `${aging.undatedLoads} ${loadWord(aging.undatedLoads)} still out have no readable date and are in no band.`,
+      owed && owed.unattributedLoads > 0 &&
+        `${formatCents(owed.unattributedCents)} across ${owed.unattributedLoads} ${loadWord(owed.unattributedLoads)} has no customer on it, so it is on the bars but in nobody's name below.`,
+      missing > 0 &&
+        `${missing} ${loadWord(missing)} did not fit in one request and are on no bar here.`,
+    ]
+      .filter(Boolean)
+      .join(' ')
+  : undefined
+
+/**
  * ON A PHONE THE ROWS ARE NOT ROWS.
  *
  * The book is 52rem wide and the window on a 375px phone is about 341px, so
@@ -224,10 +285,16 @@ const concentration =
 <App title="Customers" subtitle="The brokers and shippers you haul for, and how they pay.">
   {notice && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{notice}</p>}
 
+  {/*
+    The search box wears .field-input from global.css: the visible border
+    (ink-500, not the old invisible ink-100), 16px type so iOS does not zoom the
+    page on a tap, and the one global :focus-visible ring. The utilities on it
+    only change the shape and make room for the icon.
+  */}
   <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
     <form method="GET" class="relative flex-1">
       <svg
-        class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-300"
+        class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-500"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
@@ -243,15 +310,12 @@ const concentration =
         value={q}
         placeholder="Search by company name or MC number…"
         aria-label="Search customers"
-        class="w-full rounded-xl border border-ink-100 bg-white py-3 pr-4 pl-10 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+        class="field-input rounded-xl py-3 pr-4 pl-10"
       />
     </form>
-    <a
-      href="/app/customers/new"
-      class="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-center font-medium text-white transition hover:bg-brand-700"
-    >
-      Add a customer
-    </a>
+    {/* A link, because it goes somewhere. It wears the Primary button because
+        it is the one action on this screen. */}
+    <a href="/app/customers/new" class="btn btn-primary shrink-0">Add a customer</a>
   </div>
 
   {
@@ -323,11 +387,8 @@ const concentration =
             Add the brokers and shippers you book with. A company name is enough to start. The MC
             number and their payment terms can follow the first rate confirmation.
           </p>
-          <a
-            href="/app/customers/new"
-            class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
-          >
-            Add a customer →
+          <a href="/app/customers/new" class="btn btn-primary btn-sm mt-4">
+            Add a customer <span aria-hidden="true">→</span>
           </a>
         </div>
       ) : (
@@ -337,12 +398,7 @@ const concentration =
             You have <span class="tabular-nums">{totalCount}</span> customers on file. None of them
             match “{q}” by name or MC number.
           </p>
-          <a
-            href="/app/customers"
-            class="mt-4 inline-block rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium transition hover:bg-ink-50"
-          >
-            Show everyone
-          </a>
+          <a href="/app/customers" class="btn btn-secondary btn-sm mt-4">Show everyone</a>
         </div>
       )
     ) : (
@@ -375,13 +431,13 @@ const concentration =
                    this row anybody scans a book of forty brokers for, and it is
                    the link to the rest. */
                 <tr class="flex flex-col py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                  {/* .link-row is 44px tall, so the name is a thumb target the
+                      whole height of the row rather than a 20px line of text.
+                      The <tr> itself is deliberately NOT a link: wrapping a row
+                      breaks the table navigation a screen-reader user moves
+                      through the book with. */}
                   <td class={`${cell} order-1`}>
-                    <a
-                      href={`/app/customers/${c.id}`}
-                      class="font-medium hover:text-brand-600 hover:underline"
-                    >
-                      {c.name}
-                    </a>
+                    <a href={`/app/customers/${c.id}`} class="link-row">{c.name}</a>
                   </td>
                   {/* Last on a phone. An MC number is typed into a lookup, not
                       scanned down a book of forty brokers. */}
@@ -390,19 +446,19 @@ const concentration =
                     {c.mc_number ? (
                       <span class="tabular-nums">{c.mc_number}</span>
                     ) : (
-                      <span class="text-ink-300">—</span>
+                      <span class="text-ink-500">—</span>
                     )}
                   </td>
                   <td class={`${cell} order-3 mt-1 sm:mt-0`}>
                     <span class={said}>Contact </span>
-                    {c.contact_name ?? <span class="text-ink-300">—</span>}
+                    {c.contact_name ?? <span class="text-ink-500">—</span>}
                   </td>
                   {/* SECOND ON A PHONE, with the person to ask for right under
                       it. This is the reason the book is opened standing up. */}
                   <td class={`${cell} order-2 mt-1 whitespace-nowrap tabular-nums sm:mt-0`}>
                     {/* Stored as E.164, read as a person reads it. */}
                     <span class={said}>Phone </span>
-                    {c.phone ? formatPhone(c.phone) : <span class="text-ink-300">—</span>}
+                    {c.phone ? formatPhone(c.phone) : <span class="text-ink-500">—</span>}
                   </td>
                   {/* Fourth: the money question, and the one an owner asks
                       before he takes the next load from them. */}
@@ -417,20 +473,20 @@ const concentration =
                     }
                     <span class={said}>{c.days_to_pay === null ? 'Days to pay ' : 'Pays in '}</span>
                     {c.days_to_pay === null ? (
-                      <span class="text-ink-300">—</span>
+                      <span class="text-ink-500">—</span>
                     ) : (
                       <>
                         {c.days_to_pay}
-                        <span class="text-ink-300"> days</span>
+                        <span class="text-ink-500"> days</span>
                       </>
                     )}
                   </td>
                   <td class={`${cell} order-5 mt-1 tabular-nums sm:mt-0 sm:text-right`}>
                     <span class={said}>Loads </span>
                     {loadCountOf(c) === null ? (
-                      <span class="text-ink-300">—</span>
+                      <span class="text-ink-500">—</span>
                     ) : loadCountOf(c) === 0 ? (
-                      <span class="text-ink-300">0</span>
+                      <span class="text-ink-500">0</span>
                     ) : (
                       loadCountOf(c)
                     )}
@@ -441,6 +497,141 @@ const concentration =
           </table>
         </div>
       </>
+    )
+  }
+
+  {/*
+    BELOW THE BOOK, not above it.
+
+    This page is a work surface: it is opened standing up, to ring a broker
+    about a load or a cheque, and the doctrine in docs/charts.md is measured
+    rather than preferred — charts above the rows on /app/loads put the first
+    row 1,146px down a phone. The ranking already sits on top because it re-sorts
+    the book into an answer the book cannot give. This one is a second answer, so
+    it waits its turn.
+  */}
+  {
+    /* Only when something is actually out. Four $0.00 bands on a carrier whose
+       first load has not been invoiced yet is furniture, and the loads screen
+       is where "nothing is invoiced" belongs. */
+    aging && aging.waitingLoads + aging.disputedLoads > 0 && (
+      <div class="mt-8">
+        <Figure
+          title="What you are owed, and how long it has sat"
+          subtitle="Loads you have invoiced and not been paid for, by how old the load is"
+          coverage={aging.waitingLoads > 0 ? agingCoverage : undefined}
+        >
+          <Bars
+            items={
+              aging.waitingLoads === 0
+                ? []
+                : aging.bands.map((b) => ({
+                    label: b.label,
+                    value: b.value,
+                    // Exact cents, never compact money. This is the figure an
+                    // owner reads down the phone to a broker.
+                    display: b.display,
+                    note:
+                      b.loads === 0
+                        ? 'Nothing this old'
+                        : `${b.loads} ${loadWord(b.loads)}${b.unpricedLoads > 0 ? `, ${b.unpricedLoads} with no rate yet` : ''}`,
+                    tone: b.tone,
+                  }))
+            }
+            emptyMessage="Nothing is invoiced and waiting right now. Loads you have not invoiced yet are not counted here."
+          />
+
+          {aging.waitingLoads > 0 && (
+            /* The finding, written out. A long bar is a shape, and a shape is
+               not a number — and roughly one man in twelve cannot separate the
+               red band from the amber one. */
+            <div class="mt-4 space-y-1.5 border-t border-ink-100 pt-3 text-sm text-ink-700">
+              <p>
+                <span class="font-semibold tabular-nums">{formatCents(aging.totalCents)}</span> is
+                invoiced and not paid, across {aging.countedLoads}{' '}
+                {loadWord(aging.countedLoads)}
+                {aging.oldestDays !== null && (
+                  <>
+                    . The oldest load on it was entered{' '}
+                    <span class="tabular-nums">{daysWord(aging.oldestDays)}</span> ago
+                  </>
+                )}
+                .
+              </p>
+              {(aging.chaseLoads > 0 || aging.chaseUnpricedLoads > 0) && (
+                <p class="font-medium text-red-700">
+                  {aging.chaseLoads > 0 && (
+                    <>
+                      <span class="tabular-nums">{formatCents(aging.chaseCents)}</span> of it has
+                      been out more than{' '}
+                      <span class="tabular-nums">{daysWord(aging.chaseAfterDays)}</span>, on{' '}
+                      {aging.chaseLoads} {loadWord(aging.chaseLoads)}.{' '}
+                    </>
+                  )}
+                  {aging.chaseUnpricedLoads > 0 && (
+                    <>
+                      {aging.chaseUnpricedLoads} more {loadWord(aging.chaseUnpricedLoads)} past that
+                      line carry no rate, so {aging.chaseUnpricedLoads === 1 ? 'it is' : 'they are'}{' '}
+                      in no figure here.{' '}
+                    </>
+                  )}
+                  Ring them today.
+                </p>
+              )}
+              {aging.disputedLoads > 0 && (
+                <p class="font-medium text-red-700">
+                  Separately, {aging.disputedLoads} {loadWord(aging.disputedLoads)} are short paid
+                  or in dispute: <span class="tabular-nums">{formatCents(aging.disputedCents)}</span>
+                  . Those are not on the bars above, because waiting will not fix them.
+                </p>
+              )}
+              {aging.unpricedLoads > 0 && (
+                <p class="text-ink-700">
+                  {aging.unpricedLoads} {loadWord(aging.unpricedLoads)} still out have no rate typed
+                  on {aging.unpricedLoads === 1 ? 'it' : 'them'}. Until{' '}
+                  {aging.unpricedLoads === 1 ? 'it has' : 'they have'} one, nobody can say what{' '}
+                  {aging.unpricedLoads === 1 ? 'it is' : 'they are'} worth — so{' '}
+                  {aging.unpricedLoads === 1 ? 'it is' : 'they are'} counted in the band and not in
+                  the money.
+                </p>
+              )}
+            </div>
+          )}
+
+          {chaseRows.length > 0 && (
+            /* WHOSE money it is. A band is a mix of brokers, so the bars cannot
+               answer "who do I ring" — this can, and it is the same population
+               cut the other way. */
+            <div class="mt-4 border-t border-ink-100 pt-3">
+              <h4 class="text-xs tracking-wide text-ink-500 uppercase">
+                Out longest — ring these first
+              </h4>
+              <ul class="mt-2 divide-y divide-ink-100 text-sm">
+                {chaseRows.map((r) => (
+                  <li class="flex flex-wrap items-center justify-between gap-x-4 py-1">
+                    <a href={`/app/customers/${r.id}`} class="link-row">
+                      {r.name}
+                    </a>
+                    <span class="tabular-nums">
+                      <span class="font-medium">{formatCents(r.cents)}</span>
+                      <span class="text-ink-500">
+                        {' '}
+                        · oldest {r.oldestDays === null ? 'not known' : daysWord(r.oldestDays)}
+                        {' · '}
+                        {r.daysToPay === null
+                          ? 'terms not recorded'
+                          : r.daysToPay === 0
+                            ? 'pays on delivery'
+                            : `agreed ${daysWord(r.daysToPay)}`}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </Figure>
+      </div>
     )
   }
 </App>

@@ -10,12 +10,15 @@
  * checked. Every branch of it is written to keep one sentence off the screen:
  * "we could not check" must never be rendered as "they look fine".
  */
+import Bars from '../../../components/charts/Bars.astro'
 import Columns from '../../../components/charts/Columns.astro'
 import Figure from '../../../components/charts/Figure.astro'
 import Proportion from '../../../components/charts/Proportion.astro'
 import App from '../../../layouts/App.astro'
+import { daysWord, receivablesAging } from '../../../lib/charts/receivables.ts'
 import { type RevenueLoad, billingMix, revenueByMonth, sliceOf } from '../../../lib/charts/revenue.ts'
 import { ceilingFor, compactMoney } from '../../../lib/charts/scale.ts'
+import { UNKNOWN_SLOT } from '../../../lib/charts/tones.ts'
 import {
   type CustomerLoadRow,
   type CustomerRow,
@@ -235,8 +238,15 @@ const loadsFailed = Boolean(loadsResult.error)
  */
 const history = (historyResult.data ?? []) as unknown as RevenueLoad[]
 const historyFailed = Boolean(historyResult.error)
-const months = historyFailed || history.length === 0 ? null : revenueByMonth(history, new Date())
+// One instant, shared by every derivation on the page. Two calls to new Date()
+// can straddle midnight in the yard, and then the revenue axis and the aging
+// bands are answering as of two different days.
+const now = new Date()
+const months = historyFailed || history.length === 0 ? null : revenueByMonth(history, now)
 const mix = historyFailed || history.length === 0 ? null : billingMix(history)
+// What of theirs is invoiced and still out, by how old the load is. Same rows
+// as the two charts above it, so this page cannot disagree with itself.
+const aging = historyFailed ? null : receivablesAging(history, now)
 
 const loadWord = (n: number) => (n === 1 ? 'load' : 'loads')
 
@@ -303,6 +313,42 @@ const mixCoverage = mix
       .join(' ')
   : undefined
 
+/**
+ * HOW FAST THEY PAY: WHAT WE PROMISED TO SHOW, AND WHAT WE CAN ACTUALLY SHOW.
+ *
+ * The question on this page is "can I trust their terms". The honest answer is
+ * that half of it cannot be computed from this database at all: 0009_loads.sql
+ * records no invoice date and no payment date, so there is no day-the-money-
+ * arrived to subtract a day-the-invoice-went-out from. An average days-to-pay
+ * drawn from anything else here would be a number this app made up, on the
+ * screen an owner uses to decide whether to take their next load — and he would
+ * repeat it to them down the phone.
+ *
+ * So the actual half renders as the dashed gap this app draws for every figure
+ * it does not have, with the words for it beside the box. What IS knowable is
+ * drawn instead: how much of theirs is invoiced and still out, and how long the
+ * loads behind it have been on the books. That is the closest true answer, and
+ * it is labelled as exactly what it is.
+ *
+ * To make the promised-against-actual comparison real, a migration has to store
+ * the day each load was invoiced and the day the money landed. Until then this
+ * page says so out loud rather than drawing a confident bar.
+ */
+const agingCoverage = aging
+  ? [
+      'Counted from the day the load was entered, not the day the invoice went out. Nothing on a load records when it was invoiced, so every band is older than the invoice behind it.',
+      'Only loads marked invoiced, with the factor, or funded. Anything you have not invoiced yet is not on these bars.',
+      aging.unpricedLoads > 0 &&
+        `${aging.unpricedLoads} ${loadWord(aging.unpricedLoads)} still out carry no rate yet, so the amounts are lower than the real figures.`,
+      aging.undatedLoads > 0 &&
+        `${aging.undatedLoads} ${loadWord(aging.undatedLoads)} still out have no readable date and are in no band.`,
+      missing > 0 &&
+        `${missing} older ${loadWord(missing)} did not fit in one request and are on no bar here.`,
+    ]
+      .filter(Boolean)
+      .join(' ')
+  : undefined
+
 const readySlice = mix ? sliceOf(mix, 'ready') : undefined
 const awaitingSlice = mix ? sliceOf(mix, 'awaiting') : undefined
 const problemSlice = mix ? sliceOf(mix, 'problem') : undefined
@@ -353,8 +399,17 @@ const subtitle = customer.mc_number
 const phoneUndialable = formatPhone(customer.phone) !== '' && toE164(customer.phone) === null
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+/**
+ * ONE FIELD CONSTRUCTION, AND IT LIVES IN global.css.
+ *
+ * `.field-input` carries the visible ink-500 border — the old ink-100 was
+ * 1.18:1 against white, a border nobody could see — 16px type so iOS does not
+ * zoom the page when a thumb lands in a box, and the focus border colour. The
+ * focus RING is the single `:focus-visible` rule in global.css, so there is no
+ * per-field ring written here and none to get wrong: the `ring-brand-500/20`
+ * this page used to carry was 1.33:1 and failed WCAG 2.2 outright.
+ */
+const field = 'field-input mt-1'
 
 /**
  * ONE HEADING SCALE, THREE STEPS, THE SAME ON EVERY SCREEN IN THIS APP.
@@ -430,13 +485,13 @@ const said = 'text-ink-500 sm:hidden'
       <h2 class="text-lg font-semibold tracking-tight">Customer record</h2>
 
       <label class="block">
-        <span class="text-sm font-medium">Company name <span class="text-red-600">*</span></span>
+        <span class="field-label">Company name <span class="text-red-600">*</span></span>
         <input type="text" name="name" value={customer.name} required class={field} />
       </label>
 
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">MC number</span>
+          <span class="field-label">MC number</span>
           <input
             type="text"
             name="mc_number"
@@ -446,7 +501,7 @@ const said = 'text-ink-500 sm:hidden'
           />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">USDOT number</span>
+          <span class="field-label">USDOT number</span>
           <input
             type="text"
             name="dot_number"
@@ -463,11 +518,11 @@ const said = 'text-ink-500 sm:hidden'
 
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">Contact name</span>
+          <span class="field-label">Contact name</span>
           <input type="text" name="contact_name" value={customer.contact_name ?? ''} class={field} />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">Phone</span>
+          <span class="field-label">Phone</span>
           {/*
             Read as a person reads it, stored as E.164. The two are deliberately
             different: E.164 is what makes two spellings of one number compare
@@ -483,8 +538,9 @@ const said = 'text-ink-500 sm:hidden'
           />
           {
             phoneUndialable && (
-              <span class="mt-1.5 inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
-                We cannot dial or text this number as it is written. We saved it anyway.
+              <span class="badge badge-warning mt-1.5">
+                <span aria-hidden="true">⚠</span> We cannot dial or text this number as it is
+                written. We saved it anyway.
               </span>
             )
           }
@@ -493,11 +549,11 @@ const said = 'text-ink-500 sm:hidden'
 
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
-          <span class="text-sm font-medium">Email</span>
+          <span class="field-label">Email</span>
           <input type="email" name="email" value={customer.email ?? ''} class={field} />
         </label>
         <label class="block">
-          <span class="text-sm font-medium">Billing email</span>
+          <span class="field-label">Billing email</span>
           <input
             type="email"
             name="billing_email"
@@ -511,12 +567,12 @@ const said = 'text-ink-500 sm:hidden'
       </div>
 
       <label class="block">
-        <span class="text-sm font-medium">Billing address</span>
+        <span class="field-label">Billing address</span>
         <textarea name="billing_address" rows="3" class={field}>{customer.billing_address ?? ''}</textarea>
       </label>
 
       <label class="block">
-        <span class="text-sm font-medium">Days to pay</span>
+        <span class="field-label">Days to pay</span>
         <input
           type="text"
           name="days_to_pay"
@@ -532,47 +588,79 @@ const said = 'text-ink-500 sm:hidden'
       </label>
 
       <label class="block">
-        <span class="text-sm font-medium">Notes</span>
+        <span class="field-label">Notes</span>
         <textarea name="notes" rows="4" class={field}>{customer.notes ?? ''}</textarea>
       </label>
 
       <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-        <button
-          type="submit"
-          name="intent"
-          value="save_customer"
-          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-        >
+        <button type="submit" name="intent" value="save_customer" class="btn btn-primary">
           Save customer
         </button>
-        <a href="/app/customers" class="text-sm font-medium text-brand-600 hover:underline">
-          Back to customers
+        {/* A link goes places; a button does things. This one navigates, so it
+            is a link — wearing the tertiary 44px pattern rather than a 20px
+            line of text, and the arrow is decoration the reader is not read. */}
+        <a href="/app/customers" class="btn btn-tertiary">
+          <span aria-hidden="true">←</span> Back to customers
         </a>
       </div>
     </form>
 
     <div class="space-y-4">
+      {/*
+        PROMISED AGAINST ACTUAL, with the actual half drawn as the absence it is.
+
+        The pair is the whole point of the card. A single "30" reads as a fact
+        about this broker's behaviour; it is a fact about a sentence on a rate
+        confirmation. The second box is where the measured figure would go, and
+        it is empty because nothing in this database records the day an invoice
+        went out or the day the money arrived — so it renders as the dashed slot
+        this app draws for every figure it does not have, never as a 0 and never
+        as a guess.
+      */}
       <div class={card}>
-        <h3 class="text-xs tracking-wide text-ink-500 uppercase">Days to pay</h3>
-        {
-          customer.days_to_pay === null ? (
-            <>
-              <div class="mt-1 text-3xl font-semibold text-ink-300 tabular-nums">—</div>
-              <p class="mt-2 text-sm text-ink-500">
-                Not recorded. This does not mean they pay fast. It means nobody has asked them
-                yet. Settle it before the second load.
-              </p>
-            </>
-          ) : (
-            <>
-              <div class="mt-1 text-3xl font-semibold tabular-nums">{customer.days_to_pay}</div>
-              <p class="mt-2 text-sm text-ink-500">
-                Agreed terms, in days from a clean invoice. The loads below will show you what
-                really happens.
-              </p>
-            </>
-          )
-        }
+        <h3 class="text-xs tracking-wide text-ink-500 uppercase">How fast they pay</h3>
+
+        <div class="mt-3">
+          <div class="text-sm font-medium text-ink-700">What they promised</div>
+          {
+            customer.days_to_pay === null ? (
+              <>
+                <div class="mt-0.5 text-3xl font-semibold text-ink-500 tabular-nums">—</div>
+                <p class="mt-1 text-sm text-ink-500">
+                  Not recorded. This does not mean they pay fast. It means nobody has asked them
+                  yet. Settle it before the second load.
+                </p>
+              </>
+            ) : (
+              <>
+                <div class="mt-0.5 text-3xl font-semibold tabular-nums">
+                  {customer.days_to_pay}
+                  <span class="ml-1 text-base font-normal text-ink-500">
+                    {customer.days_to_pay === 1 ? 'day' : 'days'}
+                  </span>
+                </div>
+                <p class="mt-1 text-sm text-ink-500">
+                  {customer.days_to_pay === 0
+                    ? 'Payment on delivery, as agreed.'
+                    : 'Agreed terms, in days from a clean invoice.'}
+                </p>
+              </>
+            )
+          }
+        </div>
+
+        <div class="mt-4 border-t border-ink-100 pt-3">
+          <div class="text-sm font-medium text-ink-700">What they really take</div>
+          {/* The dashed slot, same treatment every unknown gets on every chart
+              in this app. Announced as text, not as a shape. */}
+          <div class:list={['mt-1.5 h-8 rounded-lg', UNKNOWN_SLOT]} aria-hidden="true"></div>
+          <p class="mt-1.5 text-sm text-ink-700">
+            Not known. FleetView does not store the day you sent an invoice or the day the money
+            landed, so it cannot work out how long they really take. Do not quote a number at them
+            from this screen — there is not one here.
+          </p>
+        </div>
+
         <p class="mt-3 border-t border-ink-100 pt-3 text-xs text-ink-500">
           Added <span class="tabular-nums">{formatStamp(customer.created_at)}</span>
         </p>
@@ -599,7 +687,7 @@ const said = 'text-ink-500 sm:hidden'
           <div class={card}>
             <div class="flex flex-wrap items-baseline justify-between gap-2">
               <h3 class="text-xs tracking-wide text-ink-500 uppercase">Operating authority</h3>
-              <span class="text-xs text-ink-300">Public FMCSA record</span>
+              <span class="text-xs text-ink-500">Public FMCSA record</span>
             </div>
 
             {federal.state === 'mc_only' && (
@@ -618,10 +706,7 @@ const said = 'text-ink-500 sm:hidden'
                       <span class="font-medium tabular-nums">{a.docket_number ?? '—'}</span>
                       {a.op_auth_type && <span class="text-ink-500">{a.op_auth_type}</span>}
                       <span
-                        class:list={[
-                          'rounded-md px-2 py-0.5 text-xs font-medium',
-                          authorityPillClass(a.op_auth_status),
-                        ]}
+                        class:list={authorityPillClass(a.op_auth_status)}
                       >
                         {a.op_auth_status ?? 'Unknown'}
                       </span>
@@ -691,7 +776,7 @@ const said = 'text-ink-500 sm:hidden'
         )
       }
 
-      <p class="px-1 text-xs text-ink-300">
+      <p class="px-1 text-xs text-ink-500">
         Federal data is retrieved live from the FMCSA public files. FleetView Compliance is not
         affiliated with FMCSA, the DOT, or any government agency.
       </p>
@@ -780,6 +865,86 @@ const said = 'text-ink-500 sm:hidden'
     )
   }
 
+  {/*
+    THE AGE OF WHAT IS STILL OUT.
+
+    The bar above says WHERE their money is. This says HOW LONG it has been
+    there, which is the question "do they pay on time" rearranged into one this
+    database can actually answer. Only rendered when something is out: four
+    $0.00 bands on a broker who owes nothing is a wall of zeros that says less
+    than the card in the rail already does.
+  */}
+  {
+    aging && aging.waitingLoads + aging.disputedLoads > 0 && (
+      <div class="mt-4">
+        <Figure
+          title="What they owe you, and how long it has sat"
+          subtitle="Their loads you have invoiced and not been paid for, by how old the load is"
+          coverage={agingCoverage}
+        >
+          <Bars
+            items={aging.bands.map((b) => ({
+              label: b.label,
+              value: b.value,
+              display: b.display,
+              note:
+                b.loads === 0
+                  ? 'Nothing this old'
+                  : `${b.loads} ${loadWord(b.loads)}${b.unpricedLoads > 0 ? `, ${b.unpricedLoads} with no rate yet` : ''}`,
+              tone: b.tone,
+            }))}
+            emptyMessage="Nothing of theirs is invoiced and waiting."
+          />
+
+          <div class="mt-4 space-y-1.5 border-t border-ink-100 pt-3 text-sm text-ink-700">
+            {aging.waitingLoads > 0 ? (
+              <p>
+                <span class="font-semibold tabular-nums">{formatCents(aging.totalCents)}</span> of
+                theirs is invoiced and not paid, across {aging.countedLoads}{' '}
+                {loadWord(aging.countedLoads)}
+                {aging.oldestDays !== null && (
+                  <>
+                    . The oldest one was entered{' '}
+                    <span class="tabular-nums">{daysWord(aging.oldestDays)}</span> ago
+                  </>
+                )}
+                . {termsLine}
+              </p>
+            ) : (
+              <p>Nothing of theirs is invoiced and waiting. {termsLine}</p>
+            )}
+            {(aging.chaseLoads > 0 || aging.chaseUnpricedLoads > 0) && (
+              <p class="font-medium text-red-700">
+                {aging.chaseLoads > 0 && (
+                  <>
+                    <span class="tabular-nums">{formatCents(aging.chaseCents)}</span> has been out
+                    more than <span class="tabular-nums">{daysWord(aging.chaseAfterDays)}</span>, on{' '}
+                    {aging.chaseLoads} {loadWord(aging.chaseLoads)}.{' '}
+                  </>
+                )}
+                {aging.chaseUnpricedLoads > 0 && (
+                  <>
+                    {aging.chaseUnpricedLoads} more {loadWord(aging.chaseUnpricedLoads)} past that
+                    line carry no rate, so {aging.chaseUnpricedLoads === 1 ? 'it is' : 'they are'} in
+                    no figure here.{' '}
+                  </>
+                )}
+                Ring them today.
+              </p>
+            )}
+            {aging.disputedLoads > 0 && (
+              <p class="font-medium text-red-700">
+                Separately, {aging.disputedLoads} {loadWord(aging.disputedLoads)} are short paid or
+                in dispute: <span class="tabular-nums">{formatCents(aging.disputedCents)}</span>.
+                Those are not on the bars above, because waiting will not fix them.
+              </p>
+            )}
+          </div>
+        </Figure>
+      </div>
+    )
+  }
+
   <div class="mt-8">
     <h2 class="text-lg font-semibold tracking-tight">Recent loads</h2>
     <p class="mt-1 max-w-3xl text-sm text-ink-500">
@@ -825,14 +990,11 @@ const said = 'text-ink-500 sm:hidden'
                    quotes down the phone and what this table is looked up by. */
                 <tr class="flex flex-col py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
                   <td class={`${cell} order-1`}>
-                    <a
-                      href={`/app/loads/${l.id}`}
-                      class="font-medium hover:text-brand-600 hover:underline"
-                    >
+                    <a href={`/app/loads/${l.id}`} class="link-row">
                       {loadLabel(l)}
                     </a>
                     {l.broker_reference && l.load_number && (
-                      <div class="text-xs text-ink-300 tabular-nums">
+                      <div class="text-xs text-ink-500 tabular-nums">
                         Their ref {l.broker_reference}
                       </div>
                     )}
@@ -848,10 +1010,7 @@ const said = 'text-ink-500 sm:hidden'
                   {/* Fourth on a phone. Where the truck is has its own screen. */}
                   <td class={`${cell} order-4 mt-1.5 sm:mt-0`}>
                     <span
-                      class:list={[
-                        'rounded-md px-2 py-0.5 text-xs font-medium',
-                        statusPillClass(l.status),
-                      ]}
+                      class={statusPillClass(l.status)}
                     >
                       {loadStatusLabel(l.status)}
                     </span>
@@ -862,10 +1021,7 @@ const said = 'text-ink-500 sm:hidden'
                     }
                     {l.exception && (
                       <span
-                        class:list={[
-                          'ml-1.5 rounded-md px-2 py-0.5 text-xs font-medium',
-                          exceptionPillClass(l.exception),
-                        ]}
+                        class:list={['ml-1.5', exceptionPillClass(l.exception)]}
                       >
                         {exceptionLabel(l.exception)}
                       </span>
@@ -877,10 +1033,7 @@ const said = 'text-ink-500 sm:hidden'
                       not to do. */}
                   <td class={`${cell} order-3 mt-1.5 sm:mt-0`}>
                     <span
-                      class:list={[
-                        'rounded-md px-2 py-0.5 text-xs font-medium',
-                        billingPillClass(l.billing),
-                      ]}
+                      class={billingPillClass(l.billing)}
                     >
                       {billingStatusLabel(l.billing)}
                     </span>

@@ -351,13 +351,16 @@ export async function federalCheck(
 export function authorityPillClass(status: string | undefined): string {
   switch ((status ?? '').trim().toLowerCase()) {
     case 'active':
-      return 'bg-emerald-100 text-emerald-800'
+      return 'badge badge-success'
     case 'inactive':
     case 'revoked':
     case 'withdrawn':
-      return 'bg-red-100 text-red-700'
+      // red-700 before this; the locked danger pair is red-800 on red-100.
+      return 'badge badge-danger'
     default:
-      return 'bg-amber-100 text-amber-800'
+      // Anything we cannot read is amber, not green. An authority status we do
+      // not recognise is not an authority we have checked.
+      return 'badge badge-warning'
   }
 }
 

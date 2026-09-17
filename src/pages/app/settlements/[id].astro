@@ -26,6 +26,8 @@
  * POST would not merely duplicate a row — a second "mark paid" on a settlement
  * that has since been revised, or a second advance line, is money.
  */
+import Bars from '../../../components/charts/Bars.astro'
+import Figure from '../../../components/charts/Figure.astro'
 import App from '../../../layouts/App.astro'
 import { formatDate, fullName, todayInCalifornia } from '../../../lib/drivers.ts'
 import { formatCents, loadLabel, parseMoneyToCents, textOrNull } from '../../../lib/loads.ts'
@@ -703,6 +705,81 @@ const byCategory = SETTLEMENT_CATEGORIES.map((c) => ({
           : totals.deductionsCents,
 })).filter((c) => c.lines.length > 0)
 
+/**
+ * WHERE THIS PAY CAME FROM, AND WHAT CAME OFF IT.
+ *
+ * WHY THIS IS BARS AND NOT A DONUT. A ring draws parts of a whole, and these
+ * are not parts of one whole: linehaul and detention are money ADDED, escrow and
+ * an advance are money TAKEN OFF, and putting them on one ring would claim they
+ * sum to something. They do not — added and taken-off sum to the net, which is
+ * the number in the totals block, not an arc. The ring in this app also carries
+ * one plain integer in its hole and no money formatting at all, and a paycheque
+ * figure printed as `175000` is not a figure anybody can check against a cheque.
+ * So: horizontal bars, each printing its own exact amount with its own sign, the
+ * way every other money chart in this app prints its numbers.
+ *
+ * THE BAR'S LENGTH IS THE MAGNITUDE AND THE SIGN IS PRINTED. A deduction is
+ * stored NEGATIVE — 0016_settlements.sql has a CHECK constraint that makes sure
+ * of it — and nothing here flips it: `Math.abs` decides how long a bar is drawn,
+ * and `formatCents` prints the stored figure, minus sign and all. That is the
+ * difference between drawing a length and changing a number.
+ *
+ * DEDUCTIONS ARE RED AND THEIR REASON IS ON THE ROW. "$250 came off" is the
+ * sentence a driver comes back about, and the answer to it must not be four
+ * screens down a line list. The reason typed on the line rides on the bar.
+ */
+const takenOff = (c: SettlementCategory) => c === 'advance' || c === 'deduction'
+const CATEGORY_ORDER = SETTLEMENT_CATEGORIES.map((c) => c.value)
+
+interface KindTotal {
+  kind: string
+  category: SettlementCategory
+  /** Integer cents, signed exactly as stored. */
+  cents: number
+  lines: number
+  /** What somebody typed on the line. The reason, in their words. */
+  reasons: string[]
+}
+
+const byKind: KindTotal[] = (() => {
+  const map = new Map<string, KindTotal>()
+  for (const l of lines) {
+    const entry = map.get(l.kind) ?? {
+      kind: l.kind,
+      category: l.category,
+      cents: 0,
+      lines: 0,
+      reasons: [],
+    }
+    entry.cents += l.amount_cents
+    entry.lines += 1
+    if (l.description) entry.reasons.push(l.description)
+    map.set(l.kind, entry)
+  }
+  // Earnings, then reimbursements, then advances, then deductions — the order
+  // the statement itself prints them in, so the chart and the paper read the
+  // same way down the page. Biggest first inside each.
+  return [...map.values()].sort(
+    (a, b) =>
+      CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category) ||
+      Math.abs(b.cents) - Math.abs(a.cents),
+  )
+})()
+
+// Integer addition, straight off `settlementTotals`. Nothing is re-summed here:
+// the four subtotals are already derived in one tested place, and a second
+// addition of the same lines is a second answer waiting to disagree.
+const grossCents = totals.earningsCents + totals.reimbursementsCents
+/** Negative or zero. Advances and deductions, exactly as they are stored. */
+const offCents = totals.advancesCents + totals.deductionsCents
+/**
+ * How much of the gross did not reach him, as a whole percent.
+ *
+ * Printed only beside the two figures it is made of. A share on its own is a
+ * score, and a score nobody can check is a number an owner gets argued out of.
+ */
+const offShare = grossCents > 0 && offCents < 0 ? Math.round((-offCents / grossCents) * 100) : null
+
 /** The terms that settle an argument, per line, straight off the line itself. */
 function lineTerms(l: LineRow): string {
   if (l.method === 'per_mile') {
@@ -751,12 +828,23 @@ const notice = params.has('created')
 
 const today = todayInCalifornia()
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
-const primary =
-  'rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700'
-const secondary =
-  'rounded-lg border border-ink-100 px-4 py-2.5 font-medium transition hover:bg-ink-50'
+/**
+ * THE FIELD AND THE TWO BUTTONS NOW LIVE IN global.css.
+ *
+ * `.field-input` carries the visible ink-500 border — the old ink-100 was
+ * 1.18:1 against white, a border nobody could see — and 16px type so iOS does
+ * not zoom the page when a thumb lands in a box. The focus RING is the single
+ * `:focus-visible` rule in that file: no per-field ring is written here and
+ * none can be got wrong. The `ring-brand-500/20` this page used to carry was
+ * 1.33:1 and failed WCAG 2.2 outright.
+ *
+ * Every button on this page is 44px tall, including the ones in the line table
+ * — in a dense table the type may drop to 14px (`.btn-sm`) but the target
+ * never does. Pad, do not shrink.
+ */
+const field = 'field-input mt-1'
+const primary = 'btn btn-primary'
+const secondary = 'btn btn-secondary'
 
 const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(settlement.period_end)}`
 ---
@@ -787,8 +875,8 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
       settlement.superseded_at && replacedBy && (
         <p class="mb-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
           Replaced by revision <span class="tabular-nums">{replacedBy.revision}</span>.{' '}
-          <a href={`/app/settlements/${replacedBy.id}`} class="font-medium underline">
-            Open it →
+          <a href={`/app/settlements/${replacedBy.id}`} class="link">
+            Open it <span aria-hidden="true">→</span>
           </a>{' '}
           This one is kept exactly as it was paid.
         </p>
@@ -799,20 +887,17 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
         <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
           This is revision <span class="tabular-nums">{settlement.revision}</span>, correcting an
           earlier statement.{' '}
-          <a href={`/app/settlements/${settlement.supersedes_id}`} class="font-medium underline">
-            See what it replaces →
+          <a href={`/app/settlements/${settlement.supersedes_id}`} class="link">
+            See what it replaces <span aria-hidden="true">→</span>
           </a>
         </p>
       )
     }
 
     <div class="mb-6 flex flex-wrap items-center gap-3">
-      <span
-        class:list={[
-          'rounded-md px-2.5 py-1 text-sm font-medium',
-          settlementStatusPillClass(settlement.status),
-        ]}
-      >
+      {/* settlementStatusPillClass hands back the shared `badge badge-*` pair,
+          so there is no padding to repeat here. */}
+      <span class={settlementStatusPillClass(settlement.status)}>
         {settlementStatusLabel(settlement.status)}
       </span>
       {
@@ -824,22 +909,116 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
         )
       }
       <span class="flex-1"></span>
+      {/* The only script on this page hangs off this id. See the note beside
+          it at the foot of the file: it opens the browser's own print dialog,
+          and the statement prints correctly from Ctrl+P without it. */}
       <button type="button" id="print" class={secondary}>Print / Save as PDF</button>
-      <a href="/app/settlements" class="text-sm font-medium text-brand-600 hover:underline">
-        All settlements
+      <a href="/app/settlements" class="link-back ml-0">
+        <span aria-hidden="true">←</span> All settlements
       </a>
       {
         driver && (
-          <a
-            href={`/app/drivers/${driver.id}/pay`}
-            class="text-sm font-medium text-brand-600 hover:underline"
-          >
-            Pay agreements for this driver →
+          <a href={`/app/drivers/${driver.id}/pay`} class="btn btn-tertiary">
+            Pay agreements for this driver <span aria-hidden="true">→</span>
           </a>
         )
       }
     </div>
   </div>
+
+  {/* ------------------------------------------------------- where the pay went
+
+    ABOVE THE STATEMENT, AND SCREEN ONLY.
+
+    Above, because the question it answers — "what came off, and why" — must not
+    be four screens down a line list. A driver rings about one number, the
+    deduction, and on a phone the line that explains it was below the fold on a
+    document that runs to two.
+
+    Screen only, because the print rules at the foot of this file strip every
+    tinted background so a mono laser does not turn colour into grey mush: the
+    bars would print as empty boxes. The statement the driver is handed keeps
+    exactly the lines and the subtotals it always had.
+  */}
+  {
+    lines.length > 0 && (
+      <div class="mb-6" data-screen-only>
+        <Figure
+          title="Where this pay went"
+          subtitle="Every line on this statement, added up by what kind it is"
+          coverage={
+            locked
+              ? undefined
+              : 'This settlement is still open, so these figures move as you add lines.'
+          }
+        >
+          <Bars
+            items={byKind.map((k) => {
+              const off = takenOff(k.category)
+              const parts = [
+                k.lines > 1 ? `${k.lines} lines` : null,
+                k.reasons.length > 0 ? k.reasons.join(' · ') : null,
+              ].filter(Boolean)
+              return {
+                label: lineKindLabel(k.kind),
+                // The LENGTH is the magnitude; the number printed beside it
+                // keeps the sign it is stored with. Nothing is flipped.
+                value: Math.abs(k.cents),
+                display: formatCents(k.cents),
+                note: parts.length > 0 ? parts.join(' · ') : undefined,
+                // Red on everything taken off the net, and the words say it
+                // too — the minus sign, the reason, and the line under the
+                // chart. Colour is never on its own here.
+                tone: off ? 'overdue' : 'brand',
+              }
+            })}
+          />
+
+          <dl class="mt-4 space-y-1.5 border-t border-ink-100 pt-3 text-sm">
+            <div class="flex justify-between gap-6">
+              <dt class="text-ink-700">Added — earnings and reimbursements</dt>
+              <dd class="font-medium tabular-nums">{formatCents(grossCents)}</dd>
+            </div>
+            <div class="flex justify-between gap-6">
+              <dt class="text-red-700">Taken off — advances and deductions</dt>
+              <dd class="font-medium text-red-700 tabular-nums">{formatCents(offCents)}</dd>
+            </div>
+            <div class="flex justify-between gap-6 border-t border-ink-100 pt-1.5 text-base font-semibold">
+              <dt>Net — what the lines come to</dt>
+              <dd class="tabular-nums">{formatCents(totals.netCents)}</dd>
+            </div>
+          </dl>
+
+          {offShare !== null && (
+            /* The share never travels without the two figures it is made of.
+               A bare "20% came off" is a score, and a score nobody can check
+               is a number somebody gets argued out of. */
+            <p class="mt-3 text-sm text-ink-700">
+              <span class="font-medium tabular-nums">{formatCents(-offCents)}</span> of{' '}
+              <span class="tabular-nums">{formatCents(grossCents)}</span> did not reach him — that
+              is <span class="tabular-nums">{offShare}%</span> of what this statement added.
+              {byKind.filter((k) => takenOff(k.category)).length > 0 && (
+                <>
+                  {' '}
+                  What came off:{' '}
+                  {byKind
+                    .filter((k) => takenOff(k.category))
+                    .map((k) => `${lineKindLabel(k.kind)} ${formatCents(-k.cents)}`)
+                    .join(', ')}
+                  .
+                </>
+              )}
+            </p>
+          )}
+          {offCents === 0 && (
+            <p class="mt-3 text-sm text-ink-700">
+              Nothing was taken off this statement. No advance, no escrow, no deduction.
+            </p>
+          )}
+        </Figure>
+      </div>
+    )
+  }
 
   {/* ---------------------------------------------------------------- the statement */}
   <article class="rounded-xl border border-ink-100 bg-white p-6 sm:p-8" id="statement">
@@ -884,10 +1063,32 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
       ) : (
         <div class="mt-6 space-y-6">
           {byCategory.map((group) => (
+            /* A GROUP THAT COMES OFF THE NET IS RED, AND SAYS SO IN WORDS.
+               The colour is the second signal: "taken off the net" is printed
+               beside the heading, every amount in the group carries its minus
+               sign, and the reason typed on each line is the line's own title.
+               On a mono printer the tint goes and all of that survives. */
             <section data-block>
-              <div class="flex items-baseline justify-between gap-4 border-b border-ink-100 pb-2">
-                <h3 class="font-medium tracking-tight">{group.label}</h3>
-                <span class="font-semibold tabular-nums">{formatCents(group.subtotal)}</span>
+              <div class="flex flex-wrap items-baseline justify-between gap-x-4 border-b border-ink-100 pb-2">
+                <h3
+                  class:list={[
+                    'font-medium tracking-tight',
+                    takenOff(group.value) && 'text-red-700',
+                  ]}
+                >
+                  {group.label}
+                  {takenOff(group.value) && (
+                    <span class="ml-2 text-xs font-normal text-red-700">taken off the net</span>
+                  )}
+                </h3>
+                <span
+                  class:list={[
+                    'font-semibold tabular-nums',
+                    takenOff(group.value) && 'text-red-700',
+                  ]}
+                >
+                  {formatCents(group.subtotal)}
+                </span>
               </div>
               <table class="w-full text-sm">
                 <tbody class="divide-y divide-ink-100">
@@ -903,21 +1104,29 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                               percentage was of. Copied here when the line was
                               made, so a later edit to the agreement cannot
                               change what this statement says it paid. */}
-                          {lineTerms(l) && <span class="text-ink-300"> · {lineTerms(l)}</span>}
+                          {lineTerms(l) && <span class="text-ink-500"> · {lineTerms(l)}</span>}
                         </div>
                       </td>
-                      <td class="w-32 py-2.5 text-right align-top font-medium tabular-nums">
+                      <td
+                        class:list={[
+                          'w-32 py-2.5 text-right align-top font-medium tabular-nums',
+                          takenOff(l.category) && 'text-red-700',
+                        ]}
+                      >
                         {formatCents(l.amount_cents)}
                       </td>
                       <td class="w-24 py-2.5 pl-2 text-right align-top" data-screen-only>
                         {!locked && (
                           <form method="POST" class="inline">
                             <input type="hidden" name="line_id" value={l.id} />
+                            {/* 44px, even in a dense table: the type drops to
+                                14px, the target does not. -mr-3 pulls the
+                                padding box back so the column still lines up. */}
                             <button
                               type="submit"
                               name="intent"
                               value="remove_line"
-                              class="text-xs text-red-600 hover:underline"
+                              class="btn btn-sm btn-danger-text -mr-3"
                             >
                               Remove
                             </button>
@@ -1016,11 +1225,8 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                   Add one. Every settlement from its start date will use it.
                 </p>
                 {driver && (
-                  <a
-                    href={`/app/drivers/${driver.id}/pay`}
-                    class="mt-4 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
-                  >
-                    Set up this driver's pay →
+                  <a href={`/app/drivers/${driver.id}/pay`} class="btn btn-primary btn-sm mt-4">
+                    Set up this driver's pay <span aria-hidden="true">→</span>
                   </a>
                 )}
               </div>
@@ -1035,9 +1241,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                         <div class="min-w-0 flex-1">
                           <div class="flex flex-wrap items-center gap-2">
                             <span class="font-medium">{row.label}</span>
-                            <span class="rounded-md bg-ink-100 px-2 py-0.5 text-xs font-medium text-ink-500">
-                              {payMethodLabel(row.method)}
-                            </span>
+                            <span class="badge badge-neutral">{payMethodLabel(row.method)}</span>
                             <span class="font-semibold tabular-nums">{rateSummary(ag)}</span>
                           </div>
                           {termsSummary(ag) && (
@@ -1052,7 +1256,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
 
                         {row.method === 'percentage' ? (
                           <label class="block w-full sm:w-72">
-                            <span class="text-sm font-medium">Which load</span>
+                            <span class="field-label">Which load</span>
                             <select name="load_id" required class={field} disabled={Boolean(gap)}>
                               <option value="">— choose —</option>
                               {driverLoads.map((l) => (
@@ -1064,7 +1268,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                           </label>
                         ) : (
                           <label class="block w-full sm:w-44">
-                            <span class="text-sm font-medium">
+                            <span class="field-label">
                               {row.method === 'per_mile'
                                 ? 'Miles'
                                 : row.method === 'hourly'
@@ -1082,12 +1286,16 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                           </label>
                         )}
 
+                        {/* .btn carries the disabled treatment — opacity-60 and
+                            not-allowed — so there is no per-button disabled
+                            palette to keep in step. The native `disabled`
+                            attribute is what takes it out of the tab order. */}
                         <button
                           type="submit"
                           name="intent"
                           value="apply_agreement"
                           disabled={Boolean(gap)}
-                          class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-300 disabled:hover:bg-ink-100"
+                          class={primary}
                         >
                           Add line
                         </button>
@@ -1111,7 +1319,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
             <form method="POST" class={`mt-4 ${card}`}>
               <div class="grid gap-4 sm:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_minmax(0,10rem)_auto] sm:items-end">
                 <label class="block">
-                  <span class="text-sm font-medium">What kind <span class="text-red-600">*</span></span>
+                  <span class="field-label">What kind <span class="text-red-600">*</span></span>
                   {/* One select, grouped. The CATEGORY is looked up from the kind
                       on the server and is never submitted — a form that posted
                       both could file an escrow deduction as an earning, which
@@ -1129,8 +1337,8 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                 </label>
 
                 <label class="block">
-                  <span class="text-sm font-medium">
-                    Description <span class="font-normal text-ink-300">(optional)</span>
+                  <span class="field-label">
+                    Description <span class="font-normal text-ink-500">(optional)</span>
                   </span>
                   <input
                     type="text"
@@ -1141,18 +1349,23 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                 </label>
 
                 <label class="block">
-                  <span class="text-sm font-medium">
-                    Amount <span class="font-normal text-ink-300">(no minus sign)</span>{' '}
+                  <span class="field-label">
+                    Amount <span class="font-normal text-ink-500">(no minus sign)</span>{' '}
                     <span class="text-red-600">*</span>
                   </span>
-                  <div class="mt-1 flex items-center rounded-lg border border-ink-100 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20">
-                    <span class="pl-3 text-ink-300">$</span>
+                  {/* .field-affix is the bordered box; the input inside it
+                      gives up its own outline and the box borrows the focus
+                      ring, because the box is what the reader sees as the
+                      field. This is the one place `outline: none` is allowed in
+                      this app, and global.css puts the ring back two lines up. */}
+                  <div class="field-affix mt-1">
+                    <span class="pl-3 text-ink-500">$</span>
                     <input
                       name="amount"
                       required
                       inputmode="decimal"
                       placeholder="250.00"
-                      class="w-full bg-transparent px-2 py-2 text-base tabular-nums outline-none"
+                      class="field-affix-input pl-2 tabular-nums"
                     />
                   </div>
                 </label>
@@ -1164,8 +1377,8 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
 
               {driverLoads.length > 0 && (
                 <label class="mt-4 block sm:max-w-sm">
-                  <span class="text-sm font-medium">
-                    Against a load <span class="font-normal text-ink-300">(optional)</span>
+                  <span class="field-label">
+                    Against a load <span class="font-normal text-ink-500">(optional)</span>
                   </span>
                   <select name="load_id" class={field}>
                     <option value="">Not tied to one load</option>
@@ -1218,12 +1431,10 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                   </form>
                 )}
                 <form method="POST">
-                  <button
-                    type="submit"
-                    name="intent"
-                    value="void"
-                    class="rounded-lg border border-red-200 px-4 py-2.5 font-medium text-red-700 transition hover:bg-red-50"
-                  >
+                  {/* Voiding locks the statement for good, so it is the danger
+                      variant — as text rather than solid, because it sits
+                      inline beside Approve rather than in a danger zone. */}
+                  <button type="submit" name="intent" value="void" class="btn btn-danger-text">
                     Void
                   </button>
                 </form>
@@ -1232,7 +1443,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
               <form method="POST" class="mt-5 border-t border-ink-100 pt-4">
                 <div class="grid gap-4 sm:grid-cols-2">
                   <label class="block">
-                    <span class="text-sm font-medium">Paid on <span class="text-red-600">*</span></span>
+                    <span class="field-label">Paid on <span class="text-red-600">*</span></span>
                     <input
                       type="date"
                       name="paid_on"
@@ -1242,8 +1453,8 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                     />
                   </label>
                   <label class="block">
-                    <span class="text-sm font-medium">
-                      Reference <span class="font-normal text-ink-300">(optional)</span>
+                    <span class="field-label">
+                      Reference <span class="font-normal text-ink-500">(optional)</span>
                     </span>
                     <input
                       type="text"

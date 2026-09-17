@@ -125,18 +125,26 @@ interface LineRow {
   amount_cents: number
 }
 
-interface SettlementRow {
+/**
+ * The four columns a stage total is made of. A settlement row satisfies it, so
+ * the strip can be fed either the list already on screen or the smaller query
+ * the filtered view makes for it.
+ */
+interface StageRow {
+  status: string
+  superseded_at: string | null
+  net_cents: number | null
+  /** Embedded so a draft's total is the truth rather than a stored guess. */
+  settlement_lines: LineRow[] | null
+}
+
+interface SettlementRow extends StageRow {
   id: string
   driver_id: string
   period_start: string
   period_end: string
-  status: string
   revision: number
-  superseded_at: string | null
-  net_cents: number | null
   paid_on: string | null
-  /** Embedded so a draft's total is the truth rather than a stored guess. */
-  settlement_lines: LineRow[] | null
   /**
    * PostgREST returns a to-one embed as an object and a to-many embed as an
    * array depending on how it reads the foreign key, and it has been both
@@ -160,6 +168,15 @@ const requestedStatus = params.get('status') ?? 'all'
 const status = isSettlementStatus(requestedStatus) ? requestedStatus : 'all'
 const driverFilter = params.get('driver') ?? ''
 
+/**
+ * THE RESTING VIEW: everything, nobody filtered.
+ *
+ * Declared here rather than beside the charts because the query below reads it.
+ * The charts belong to the resting view and only to it — see the note above
+ * `pay`. The STAGE STRIP is the exception, and the reason is in the note there.
+ */
+const resting = status === 'all' && !driverFilter
+
 let query = supabase
   .from('settlements')
   .select(
@@ -176,12 +193,32 @@ let query = supabase
 if (status !== 'all') query = query.eq('status', status)
 if (/^[0-9a-f-]{36}$/i.test(driverFilter)) query = query.eq('driver_id', driverFilter)
 
-const [{ data, error: listError }, { data: driverData }] = await Promise.all([
+const [{ data, error: listError }, { data: driverData }, stageResult] = await Promise.all([
   query,
   supabase
     .from('drivers')
     .select('id, first_name, last_name, status')
     .order('last_name', { ascending: true }),
+  /**
+   * The stage strip's own rows, and ONLY when the list is filtered.
+   *
+   * The strip is a filter control, so unlike the charts it cannot vanish the
+   * moment somebody uses it — a row of stages that empties itself when you tap
+   * one is a control that lies about the other three. But the list query above
+   * IS filtered, so on a filtered view its rows would report every other stage
+   * as nought.
+   *
+   * So the strip gets the whole book, and the cost is paid only by the filtered
+   * view: at rest it reuses the rows already on screen. Five columns, no
+   * ordering, no driver names — a stage total needs the status, whether the row
+   * has been replaced, the frozen net, and the lines a draft's total is derived
+   * from, and nothing else.
+   */
+  resting
+    ? null
+    : supabase
+        .from('settlements')
+        .select('status, superseded_at, net_cents, settlement_lines ( category, amount_cents )'),
 ])
 
 const rows = (data ?? []) as unknown as SettlementRow[]
@@ -206,7 +243,7 @@ function driverName(row: SettlementRow): string {
  * of the two numbers a settlement gets are two pages that will eventually
  * disagree about what a driver was paid.
  */
-function netOf(row: SettlementRow) {
+function netOf(row: StageRow) {
   return netForDisplay(
     row.status,
     row.net_cents,
@@ -236,7 +273,6 @@ const defaultStart = shiftDays(today, -6)
 
 const error = params.get('error') ?? listError?.message ?? null
 const tabs = [{ value: 'all', label: 'All' }, ...SETTLEMENT_STATUSES]
-const tab = 'rounded-lg px-3 py-1.5 text-sm font-medium transition'
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
 
 /**
@@ -254,14 +290,101 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
  * below `sm`; from `sm` it is `table-row` again and the property is ignored.
  */
 const cell = 'block px-4 py-1 sm:table-cell sm:py-3'
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
+/**
+ * ONE FIELD CONSTRUCTION, AND IT LIVES IN global.css.
+ *
+ * `.field-input` carries the visible ink-500 border — the old ink-100 was
+ * 1.18:1 against white, a border nobody could see — 16px type so iOS does not
+ * zoom the page when a thumb lands in a box, and the focus border colour. The
+ * focus RING is the single `:focus-visible` rule in global.css: no per-field
+ * ring is written here and none can be got wrong. The `ring-brand-500/20` this
+ * page used to carry was 1.33:1 and failed WCAG 2.2 outright.
+ */
+const field = 'field-input mt-1'
 
-// Draft totals across the whole list, for the tile. Locked settlements are
-// excluded: money already paid is not money still owed.
-const owing = rows
-  .filter((r) => !isLocked(r.status) && !r.superseded_at)
+
+/**
+ * DRAFT → APPROVED → PAID, WITH THE COUNT AND THE MONEY AT EACH STAGE.
+ *
+ * The question this page is opened with is "who still needs paying", and the
+ * three tiles that used to sit here could not answer it: they counted open
+ * settlements and paid ones and added the open money into one figure, so a
+ * fleet with four drafts and a week's approved statements read as one number
+ * with no stage to it. The strip is the same numbers, cut by stage, each one a
+ * tap that filters the list underneath.
+ *
+ * TWO KINDS OF MONEY ARE ON THIS STRIP AND THEY ARE NEVER ADDED TOGETHER.
+ *
+ * A draft's total is re-derived from its lines on every page load, so it is
+ * still moving. A paid settlement's total is the frozen `net_cents` that was on
+ * the cheque. Adding a moving figure to a frozen one produces a number nobody
+ * can reconcile against anything afterwards — not the bank, not the lines, not
+ * this page next week — so each stage prints its own total, the strip prints no
+ * grand total, and the words under each figure say which kind it is.
+ *
+ * VOID GETS NO MONEY AT ALL. A voided statement has a stored net because voiding
+ * snapshots one, but no money moved, and a dollar figure under the word "Void"
+ * reads as money that went somewhere.
+ *
+ * A REPLACED ROW IS IN NO TOTAL. A paid settlement that has since been revised
+ * is superseded, and its revision carries the corrected amount — count both and
+ * one week's pay appears twice. Excluded here exactly as the table below fades
+ * them out, and counted in a sentence so the exclusion is visible rather than
+ * silent.
+ */
+const stageFailed = Boolean(stageResult?.error)
+// A failed stage query falls back to the rows already on screen rather than to
+// an empty array: four stages reading nought over a list that plainly has rows
+// in it is worse than a partial answer that says it is partial, and the amber
+// line under the strip says which one this is.
+const stageRows: StageRow[] = resting || stageFailed
+  ? rows
+  : ((stageResult?.data ?? []) as unknown as StageRow[])
+
+const STAGES: readonly { value: string; label: string; money: boolean; note: string }[] = [
+  {
+    value: 'draft',
+    label: 'Draft',
+    money: true,
+    note: 'Added up from the lines every time this page loads.',
+  },
+  {
+    value: 'approved',
+    label: 'Approved',
+    money: true,
+    note: 'Signed off, not paid. You can still change these.',
+  },
+  { value: 'paid', label: 'Paid', money: true, note: 'Locked. This is what was paid.' },
+  { value: 'void', label: 'Void', money: false, note: 'Cancelled. No money moved.' },
+]
+
+const live = stageRows.filter((r) => !r.superseded_at)
+const stages = STAGES.map((s) => {
+  const mine = live.filter((r) => r.status === s.value)
+  return {
+    ...s,
+    count: mine.length,
+    // Integer cents, added. `netOf` hands back the frozen figure on a locked
+    // row and the live sum on an open one, which is the whole reason it is
+    // shared with the table below rather than written again here.
+    cents: mine.reduce((n, r) => n + (netOf(r).cents ?? 0), 0),
+  }
+})
+/**
+ * What is still to pay: draft and approved together, from the same rows the
+ * strip is built from so the two can never disagree.
+ *
+ * Locked settlements are excluded, because money already paid is not money
+ * still owed, and replaced rows are excluded with them.
+ */
+const owing = live
+  .filter((r) => !isLocked(r.status))
   .reduce((n, r) => n + (netOf(r).cents ?? 0), 0)
+
+const replaced = stageRows.filter((r) => r.superseded_at).length
+// Anything with a stored total that does not match its own lines. It cannot
+// happen through this app, so it is reported and never quietly averaged away.
+const drifting = live.filter((r) => netOf(r).drift).length
 
 /**
  * THE CHARTS BELONG TO THE RESTING VIEW, AND ONLY TO IT.
@@ -273,9 +396,10 @@ const owing = rows
  * a correction is in flight; filtered to one driver, "paid by driver" is one
  * bar. So `pay` is derived only when the list is everything — not computed and
  * then hidden, because a value that exists is a value a later edit will render.
+ *
+ * The stage strip above is the one exception, and it is a filter control rather
+ * than a chart — see the note on the query it runs.
  */
-const resting = status === 'all' && !driverFilter
-
 const pay = resting
   ? paidSettlements(
       // Mapped rather than passed through: the derivation takes a settlement's
@@ -332,6 +456,95 @@ const ytdItems = ytd.map((d) => ({
 const ytdCents = ytd.reduce((n, d) => n + (d.cents ?? 0), 0)
 const ytdPaidDrivers = ytd.filter((d) => d.cents !== null).length
 
+/**
+ * THIS MONTH AGAINST LAST MONTH, PER DRIVER.
+ *
+ * The year-to-date bars say who earned what. They cannot say whether it is
+ * going up or down, and that is the question a driver asks first — "am I making
+ * less than last month" — and the one an owner needs an answer to before the
+ * driver asks it. A year-to-date total is the one figure that can never show it:
+ * it only ever grows.
+ *
+ * MONTHS, not settlement periods. A period is whatever week or fortnight each
+ * driver is settled on, and periods do not line up between two drivers or even
+ * between two of the same driver's statements, so "this period against last"
+ * would compare a fortnight with a week and call the difference a pay cut. The
+ * month is the one span every driver shares, it is the span the chart above
+ * already uses, and it is the span a bank statement uses.
+ *
+ * Both lists share one ceiling (`max` on Bars), so a bar that is half as long
+ * really is half the money. Scaled to their own maxima, a month where everyone
+ * earned less would draw exactly like the month before it.
+ *
+ * NO GROUPING IS DONE HERE THAT IS NOT PLAIN ADDITION. The hard parts — one row
+ * per revision chain, drafts excluded because their totals are still moving, a
+ * settlement placed on the day the money moved — are all inside
+ * `paidSettlements` in src/lib/charts/pay.ts, where they are tested. This adds
+ * up integer cents per driver inside two date windows and nothing else.
+ */
+const monthPair =
+  pay && monthly && monthly.buckets.length >= 2
+    ? (() => {
+        const thisMonth = monthly.buckets[monthly.buckets.length - 1]
+        const lastMonth = monthly.buckets[monthly.buckets.length - 2]
+        const sumIn = (bucket: { start: Date; end: Date }) => {
+          const out = new Map<string, { cents: number; settlements: number }>()
+          for (const p of pay.rows) {
+            const t = p.on.getTime()
+            if (t < bucket.start.getTime() || t >= bucket.end.getTime()) continue
+            const entry = out.get(p.driverId) ?? { cents: 0, settlements: 0 }
+            entry.cents += p.cents
+            entry.settlements += 1
+            out.set(p.driverId, entry)
+          }
+          return out
+        }
+        const nowMap = sumIn(thisMonth)
+        const prevMap = sumIn(lastMonth)
+        const ids = [...new Set([...nowMap.keys(), ...prevMap.keys()])]
+        const rowsFor = ids
+          .map((driverId) => ({
+            driverId,
+            name: nameById.get(driverId) ?? 'Unknown driver',
+            now: nowMap.get(driverId) ?? null,
+            prev: prevMap.get(driverId) ?? null,
+          }))
+          .sort(
+            (a, b) =>
+              (b.now?.cents ?? -1) - (a.now?.cents ?? -1) ||
+              (b.prev?.cents ?? -1) - (a.prev?.cents ?? -1) ||
+              a.name.localeCompare(b.name),
+          )
+        return {
+          thisLabel: thisMonth.label,
+          lastLabel: lastMonth.label,
+          rows: rowsFor,
+          // One ceiling over both months, taken from the whole set and not from
+          // the eight rows that get drawn.
+          ceiling: ceilingFor([
+            ...rowsFor.map((r) => r.now?.cents ?? null),
+            ...rowsFor.map((r) => r.prev?.cents ?? null),
+          ]),
+          // Drivers on the roster who were paid in neither month. Named in a
+          // sentence rather than drawn as two empty rows each.
+          quiet: activeDrivers.filter((d) => !ids.includes(d.id)).length,
+        }
+      })()
+    : null
+
+/** "$420.00 more than last month", in words, never an arrow on its own. */
+function changeNote(
+  now: { cents: number; settlements: number } | null,
+  prev: { cents: number; settlements: number } | null,
+): string {
+  if (!now && !prev) return 'Nothing marked paid in either month'
+  if (!now) return 'Nothing marked paid this month'
+  if (!prev) return 'Nothing marked paid last month, so there is nothing to compare'
+  const diff = now.cents - prev.cents
+  if (diff === 0) return 'The same as last month'
+  return `${formatCents(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than last month`
+}
+
 const payCoverage = pay ? paidCoverage(pay) : undefined
 // The trailing month is short by however much of it is left, every load, all
 // month — and a chart that always ends on a runt column reads as pay falling
@@ -353,26 +566,96 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
     your payroll.
   </p>
 
-  <div class="grid gap-4 sm:grid-cols-3">
-    <div class={card}>
-      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Open settlements</h3>
-      <div class="mt-1 text-3xl font-semibold tabular-nums">
-        {rows.filter((r) => !isLocked(r.status)).length}
-      </div>
-      <div class="mt-1 text-xs text-ink-500">Draft and approved. You can still change these.</div>
-    </div>
-    <div class={card}>
-      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Net on open settlements</h3>
-      <div class="mt-1 text-3xl font-semibold tabular-nums">{formatCents(owing)}</div>
-      <div class="mt-1 text-xs text-ink-500">Added up from the lines every time this page loads.</div>
-    </div>
-    <div class={card}>
-      <h3 class="text-xs tracking-wide text-ink-500 uppercase">Paid</h3>
-      <div class="mt-1 text-3xl font-semibold tabular-nums">
-        {rows.filter((r) => r.status === 'paid').length}
-      </div>
-      <div class="mt-1 text-xs text-ink-500">Locked. To correct one, make a revision.</div>
-    </div>
+  {/*
+    THE STAGE STRIP. Draft → Approved → Paid, and Void when there is one.
+
+    Each stage is a tap that filters the list below, and the one that is filtered
+    wears the same tinted pill the header and the tabs use — one selected
+    metaphor for the whole app, so "blue means you are here" is a single rule.
+    They are `<a>` and not buttons because they go somewhere; each card is far
+    over the 44px a thumb needs, and the 12px gap keeps two of them from being
+    one mis-tap.
+  */}
+  <nav aria-label="Filter settlements by stage" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    {
+      stages
+        .filter((s) => s.value !== 'void' || s.count > 0)
+        .map((s) => (
+          <a
+            href={withParam('status', s.value)}
+            aria-current={status === s.value ? 'page' : undefined}
+            class:list={[
+              'rounded-xl border p-4 transition-colors',
+              // No `bg-white` on the selected card: a utility outranks the
+              // .is-current component class in Tailwind v4's cascade layers, so
+              // a white background left on it would quietly cancel the tint
+              // that says which stage you are looking at.
+              status === s.value
+                ? 'is-current border-brand-600'
+                : 'border-ink-100 bg-white hover:bg-ink-50',
+            ]}
+          >
+            <span class="text-xs tracking-wide text-ink-500 uppercase">{s.label}</span>
+            <span class="mt-1 block text-3xl font-semibold tabular-nums">{s.count}</span>
+            <span class="mt-0.5 block text-sm font-normal text-ink-700">
+              {s.count === 0
+                ? 'Nothing at this stage'
+                : s.money
+                  ? /* Exact cents. Never compact money on a figure somebody
+                       reconciles against a cheque. */
+                    formatCents(s.cents)
+                  : 'No money moved'}
+            </span>
+            <span class="mt-1 block text-xs font-normal text-ink-500">
+              {s.count > 0 && s.money && s.cents === 0
+                ? 'Nothing has been put on these yet.'
+                : s.note}
+            </span>
+          </a>
+        ))
+    }
+  </nav>
+
+  {/*
+    The two sentences the strip cannot carry, and both are about money that is
+    deliberately in none of the figures above it.
+  */}
+  <div class="mt-3 space-y-1 text-sm text-ink-700">
+    <p>
+      Still to pay: <span class="font-semibold tabular-nums">{formatCents(owing)}</span> across{' '}
+      <span class="tabular-nums">{stages[0].count + stages[1].count}</span> open{' '}
+      {stages[0].count + stages[1].count === 1 ? 'settlement' : 'settlements'} — draft and approved
+      together. That figure is added up from the lines every time this page loads, so it moves as
+      you work.
+    </p>
+    {
+      replaced > 0 && (
+        <p>
+          <span class="tabular-nums">{replaced}</span>{' '}
+          {replaced === 1 ? 'settlement has' : 'settlements have'} been replaced by a later
+          revision. {replaced === 1 ? 'It is' : 'They are'} in none of the figures above, so one
+          period is never counted twice.
+        </p>
+      )
+    }
+    {
+      drifting > 0 && (
+        <p class="font-medium text-red-700">
+          <span class="tabular-nums">{drifting}</span>{' '}
+          {drifting === 1 ? 'settlement does' : 'settlements do'} not match{' '}
+          {drifting === 1 ? 'its' : 'their'} own lines. That cannot happen through this app. Open{' '}
+          {drifting === 1 ? 'it' : 'them'} below — {drifting === 1 ? 'it is' : 'they are'} marked.
+        </p>
+      )
+    }
+    {
+      stageFailed && (
+        <p class="rounded-lg bg-amber-50 px-4 py-3 text-amber-900">
+          We could not add up the other stages just now, so the counts above cover only the
+          settlements you are looking at. The list below is still correct.
+        </p>
+      )
+    }
   </div>
 
 
@@ -380,7 +663,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
     <h2 class="text-lg font-semibold tracking-tight">Start a settlement</h2>
     <div class="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-end">
       <label class="block">
-        <span class="text-sm font-medium">Driver <span class="text-red-600">*</span></span>
+        <span class="field-label">Driver <span class="text-red-600">*</span></span>
         <select name="driver_id" required class={field}>
           <option value="">— choose —</option>
           {
@@ -393,7 +676,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
         </select>
       </label>
       <label class="block">
-        <span class="text-sm font-medium">From</span>
+        <span class="field-label">From</span>
         <input
           type="date"
           name="period_start"
@@ -403,43 +686,47 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
         />
       </label>
       <label class="block">
-        <span class="text-sm font-medium">To</span>
+        <span class="field-label">To</span>
         <input type="date" name="period_end" value={today} required class={`${field} tabular-nums`} />
       </label>
-      <button
-        type="submit"
-        name="intent"
-        value="create"
-        class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-      >
+      <button type="submit" name="intent" value="create" class="btn btn-primary">
         Start
       </button>
     </div>
     {
       activeDrivers.length === 0 && (
         <p class="mt-3 text-sm text-ink-500">
-          No active drivers yet. <a href="/app/drivers/new" class="font-medium text-brand-600 hover:underline">Add one →</a>
+          No active drivers yet.{' '}
+          <a href="/app/drivers/new" class="link">
+            Add one <span aria-hidden="true">→</span>
+          </a>
         </p>
       )
     }
   </form>
 
   <div class="mt-6 flex flex-wrap items-end justify-between gap-4">
-    <nav class="flex flex-wrap gap-1">
+    {/* gap-2, not gap-1: two 44px targets closer than 8px apart are one
+        mis-tap, and this row is worked with a thumb. */}
+    <nav aria-label="Filter settlements by status" class="flex flex-wrap gap-2">
       {
-        tabs.map((t) => (
-          <a
-            href={withParam('status', t.value === 'all' ? '' : t.value)}
-            class:list={[
-              tab,
-              status === t.value || (t.value === 'all' && status === 'all')
-                ? 'bg-brand-500/10 text-brand-700'
-                : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900',
-            ]}
-          >
-            {t.label}
-          </a>
-        ))
+        tabs.map((t) => {
+          const here = status === t.value || (t.value === 'all' && status === 'all')
+          return (
+            /* .filter-tab is 44px tall — the old tab was 34px — and .is-current
+               is the one selected metaphor in this app: a tinted pill plus
+               semibold, which survives colour blindness and a phone screen in
+               the sun. aria-current is what a screen reader gets, and it is
+               never the colour on its own. */
+            <a
+              href={withParam('status', t.value === 'all' ? '' : t.value)}
+              aria-current={here ? 'page' : undefined}
+              class:list={['filter-tab', here && 'is-current']}
+            >
+              {t.label}
+            </a>
+          )
+        })
       }
     </nav>
 
@@ -448,7 +735,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
     <form method="GET" class="flex items-end gap-2">
       {status !== 'all' && <input type="hidden" name="status" value={status} />}
       <label class="block">
-        <span class="text-sm font-medium">Driver</span>
+        <span class="field-label">Driver</span>
         <select name="driver" class={field}>
           <option value="">Everyone</option>
           {
@@ -460,12 +747,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
           }
         </select>
       </label>
-      <button
-        type="submit"
-        class="rounded-lg border border-ink-100 px-4 py-2.5 font-medium transition hover:bg-ink-50"
-      >
-        Filter
-      </button>
+      <button type="submit" class="btn btn-secondary">Filter</button>
     </form>
   </div>
 
@@ -508,31 +790,28 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
                       the block rather than off the right-hand edge — and the
                       link itself is a 44px tap there. */}
                   <td class={`${cell} order-3 sm:whitespace-nowrap`}>
-                    <a
-                      href={`/app/settlements/${r.id}`}
-                      class="inline-flex min-h-11 items-center font-medium tabular-nums hover:text-brand-600 hover:underline sm:min-h-0"
-                    >
+                    {/* .link-row is the shared 44px row link. It keeps its
+                        height at every width here — this is the only link in
+                        the row, and a 20px line of tabular numbers is not a
+                        thumb target on the page a settlement is opened from. */}
+                    <a href={`/app/settlements/${r.id}`} class="link-row tabular-nums">
                       {formatDate(r.period_start)} – {formatDate(r.period_end)}
                     </a>
                     {r.revision > 1 && (
-                      <span class="ml-2 rounded-md bg-ink-100 px-1.5 py-0.5 text-xs text-ink-500 tabular-nums">
-                        rev {r.revision}
-                      </span>
+                      <span class="badge badge-neutral ml-2 tabular-nums">rev {r.revision}</span>
                     )}
                     {r.superseded_at && (
-                      <span class="block text-xs text-ink-300">Replaced by a later revision</span>
+                      <span class="block text-xs text-ink-500">Replaced by a later revision</span>
                     )}
                   </td>
                   {/* THE DRIVER LEADS. This list is opened to answer "what does
                       this man get", and his name is the way in. */}
                   <td class={`${cell} order-1 font-medium sm:font-normal`}>{driverName(r)}</td>
                   <td class={`${cell} order-4`}>
-                    <span
-                      class:list={[
-                        'rounded-md px-2 py-0.5 text-xs font-medium',
-                        settlementStatusPillClass(r.status),
-                      ]}
-                    >
+                    {/* settlementStatusPillClass hands back the shared
+                        `badge badge-*` pair, so there is no padding to repeat
+                        here — one badge construction for the whole app. */}
+                    <span class={settlementStatusPillClass(r.status)}>
                       {settlementStatusLabel(r.status)}
                     </span>
                     {r.paid_on && (
@@ -550,13 +829,13 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
                   <td class={`${cell} order-2 sm:text-right sm:whitespace-nowrap`}>
                     <span class="text-ink-500 sm:hidden">Net </span>
                     <span class="font-medium tabular-nums">{formatCents(net.cents)}</span>
-                    <span class="text-xs text-ink-300 sm:block">
+                    <span class="text-xs text-ink-500 sm:block">
                       {' '}
                       {net.frozen ? 'as paid' : 'from the lines'}
                     </span>
                     {net.drift && (
-                      <span class="mt-1 block rounded-md bg-red-100 px-1.5 py-0.5 text-xs text-red-700">
-                        does not match its lines
+                      <span class="badge badge-danger mt-1">
+                        <span aria-hidden="true">⚠</span> does not match its lines
                       </span>
                     )}
                   </td>
@@ -631,6 +910,88 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
               ? `${formatCents(ytdCents)} paid to ${ytdPaidDrivers} ${ytdPaidDrivers === 1 ? 'driver' : 'drivers'} so far this year. Every settlement behind these totals is in the list below.`
               : `Nothing has been marked paid in ${payYear} yet.`}
           </p>
+        </Figure>
+      </div>
+    )
+  }
+
+  {/*
+    THE THIRD FIGURE, AND THE ONLY ONE THAT SHOWS A DIRECTION.
+
+    Three charts is the limit on one screen and this one earns the third slot:
+    the chart above it can only grow, because a year-to-date total is a running
+    sum, so neither of the two says whether a driver is making less than he made
+    last month. That is the first thing a driver asks and the last thing an
+    owner finds out.
+
+    Two lists, one ceiling, the same driver order in both, so a bar half as long
+    really is half the money. Drawn only when both months have somebody in them:
+    a paired chart with one side empty is a comparison with nothing to compare.
+  */}
+  {
+    monthPair && monthPair.rows.length > 0 && (
+      <div class="mt-4">
+        <Figure
+          title="Paid to each driver, this month and last"
+          subtitle={`${monthPair.thisLabel} against ${monthPair.lastLabel}. Both sides are drawn to the same scale`}
+          coverage={[
+            'This month is not over yet, so its bars are short by however much of it is left.',
+            payCoverage,
+          ]
+            .filter(Boolean)
+            .join(' ')}
+        >
+          <div class="grid gap-6 sm:grid-cols-2">
+            <div>
+              <h4 class="text-xs tracking-wide text-ink-500 uppercase">
+                {monthPair.thisLabel} — so far
+              </h4>
+              <div class="mt-3">
+                <Bars
+                  items={monthPair.rows.map((r) => ({
+                    label: r.name,
+                    // `null`, never 0. Nothing marked paid is a fact about our
+                    // records; "he earned nothing" is a claim about his month,
+                    // and only the first one is ours to make.
+                    value: r.now ? r.now.cents : null,
+                    display: r.now ? formatCents(r.now.cents) : 'nothing marked paid',
+                    note: changeNote(r.now, r.prev),
+                    href: `/app/settlements?driver=${r.driverId}`,
+                  }))}
+                  max={monthPair.ceiling}
+                  limit={8}
+                />
+              </div>
+            </div>
+            <div>
+              <h4 class="text-xs tracking-wide text-ink-500 uppercase">
+                {monthPair.lastLabel} — the whole month
+              </h4>
+              <div class="mt-3">
+                <Bars
+                  items={monthPair.rows.map((r) => ({
+                    label: r.name,
+                    value: r.prev ? r.prev.cents : null,
+                    display: r.prev ? formatCents(r.prev.cents) : 'nothing marked paid',
+                    note: r.prev
+                      ? `${r.prev.settlements} ${r.prev.settlements === 1 ? 'settlement' : 'settlements'}`
+                      : 'No settlement was marked paid last month',
+                    href: `/app/settlements?driver=${r.driverId}`,
+                  }))}
+                  max={monthPair.ceiling}
+                  limit={8}
+                />
+              </div>
+            </div>
+          </div>
+          {monthPair.quiet > 0 && (
+            <p class="mt-4 border-t border-ink-100 pt-3 text-sm text-ink-700">
+              <span class="tabular-nums">{monthPair.quiet}</span> active{' '}
+              {monthPair.quiet === 1 ? 'driver had' : 'drivers had'} nothing marked paid in either
+              month, so {monthPair.quiet === 1 ? 'he is' : 'they are'} on neither list. That is
+              about the statements, not about the work.
+            </p>
+          )}
         </Figure>
       </div>
     )
