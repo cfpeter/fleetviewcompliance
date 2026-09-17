@@ -705,6 +705,25 @@ const subtitle =
             : 'Start with your USDOT number. We fill in what the federal record knows.'
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
+
+/**
+ * The shared badge, picked from the tone string the library hands back.
+ *
+ * The same mapping /check.astro uses, and for the same reason: these two spans
+ * carried a local `rounded-md px-2 py-0.5 text-sm font-medium` wrapper, and a
+ * Tailwind utility outranks `.badge` — so the local wrapper silently gave the
+ * federal status and the safety rating a different radius, a different size and
+ * a different weight from every other badge in the app. One construction.
+ */
+const badgeFor = (tone: string): string =>
+  tone.includes('emerald')
+    ? 'badge badge-success'
+    : tone.includes('red')
+      ? 'badge badge-danger'
+      : tone.includes('amber')
+        ? 'badge badge-warning'
+        : 'badge badge-neutral'
+
 // The shared field and button constructions from global.css. The local ones
 // these replace bordered ink-100, which is 1.35:1 against the card.
 const field = 'field-input mt-1'
@@ -720,8 +739,24 @@ const quiet = 'btn btn-tertiary btn-sm'
  */
 const problem = msg?.tone === 'error' ? msg.text : null
 
-/** The one refusal that is about a box on this page rather than about the flow. */
-const badField = problem && params.get('notice') === 'dot_invalid' ? 'dot' : null
+/**
+ * The refusals that are about a BOX on this page rather than about the flow.
+ *
+ * The summary box at the top links each message to a field id, so this list and
+ * the `id=` on the two inputs below are one decision: a code named here with no
+ * matching id gives the reader a link that goes nowhere. Everything else on this
+ * page — a send that failed, a rate limit, a census that would not answer — is
+ * about the claim and not about anything he can retype, so it stays in the
+ * summary with no field link.
+ */
+const noticeCode = params.get('notice')
+const badField = !problem
+  ? null
+  : noticeCode === 'dot_invalid'
+    ? 'dot'
+    : noticeCode === 'claim_code_shape' || noticeCode === 'claim_wrong'
+      ? 'code'
+      : null
 
 const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 text-sky-900'
 ---
@@ -748,19 +783,31 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
       step === 'ask' && (
         <>
           <form method="POST" class={card}>
-            <label class="block">
-              <span class="text-sm font-medium">Your USDOT number</span>
-              <input
-                type="text"
-                name="dot"
-                inputmode="numeric"
-                autocomplete="off"
-                required
-                autofocus
-                placeholder="1234567"
-                class={`${field} text-xl tabular-nums`}
-              />
+            {/* The id is what the summary box at the top links to, and what
+                aria-describedby points back at. Explicit `for` rather than a
+                wrapping label, so the three ids are visible together. */}
+            <label class="field-label" for="dot">
+              Your USDOT number
             </label>
+            <input
+              type="text"
+              id="dot"
+              name="dot"
+              inputmode="numeric"
+              autocomplete="off"
+              required
+              autofocus
+              placeholder="1234567"
+              class={`${field} text-xl tabular-nums`}
+              aria-invalid={badField === 'dot' ? 'true' : undefined}
+              aria-describedby={badField === 'dot' ? 'dot-error' : undefined}
+            />
+            {badField === 'dot' && (
+              <p class="field-error" id="dot-error">
+                <span aria-hidden="true">⚠</span>
+                <span>{problem}</span>
+              </p>
+            )}
             <button type="submit" name="intent" value="lookup" class={`${primary} mt-4`}>
               Look up my carrier
             </button>
@@ -818,7 +865,7 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
                   USDOT <span class="tabular-nums">{dotParam}</span>
                   {where && (
                     <>
-                      <span aria-hidden="true" class="mx-2 text-ink-300">
+                      <span aria-hidden="true" class="mx-2 text-ink-500">
                         ·
                       </span>
                       {where}
@@ -826,9 +873,7 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
                   )}
                 </p>
               </div>
-              <span class:list={['rounded-md px-2.5 py-1 text-sm font-medium', status.tone]}>
-                {status.label}
-              </span>
+              <span class={badgeFor(status.tone)}>{status.label}</span>
             </div>
 
             <dl class="mt-5 grid gap-4 border-t border-ink-100 pt-5 sm:grid-cols-3">
@@ -862,9 +907,7 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
               <div>
                 <dt class="text-xs tracking-wide text-ink-500 uppercase">Safety rating</dt>
                 <dd class="mt-1">
-                  <span class:list={['rounded-md px-2 py-0.5 text-sm font-medium', rating.tone]}>
-                    {rating.label}
-                  </span>
+                  <span class={badgeFor(rating.tone)}>{rating.label}</span>
                 </dd>
                 <dd class="mt-1.5 text-xs text-ink-500">{rating.note}</dd>
               </div>
@@ -896,8 +939,10 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
             </button>
           </form>
 
-          <p class="mt-3 text-center text-sm">
-            <a href="/app/setup" class="text-ink-500 hover:underline">
+          {/* A Tertiary button, not a line of words: it is an action, and a
+              44px target is the floor for every control on this page. */}
+          <p class="mt-3 text-center">
+            <a href="/app/setup" class={quiet}>
               That is not us — try another number
             </a>
           </p>
@@ -1003,7 +1048,7 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
               <input type="hidden" name="dot" value={dotParam} />
               <label class="block">
                 <span class="text-sm font-medium">
-                  What should we know? <span class="font-normal text-ink-300">(optional)</span>
+                  What should we know? <span class="font-normal text-ink-500">(optional)</span>
                 </span>
                 <textarea
                   name="note"
@@ -1032,7 +1077,10 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
             </form>
           </div>
 
-          <p class="mt-3 text-center text-sm">
+          {/* Tertiary buttons in a gapped row rather than two links either side
+              of a dot: each is a 44px target, and the gap between them is the
+              8px two targets are never allowed to be closer than. */}
+          <div class="mt-3 flex flex-wrap items-center justify-center gap-2">
             {/*
               This picker is reachable from a live claim — "send it somewhere
               else" lands here — so there has to be a way back to the code that
@@ -1040,17 +1088,14 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
               costs a send out of three an hour.
             */}
             {codeClaim && (
-              <>
-                <a href={`/app/setup?dot=${dotParam}`} class="text-ink-500 hover:underline">
-                  Enter the code we already sent
-                </a>
-                <span aria-hidden="true" class="mx-2 text-ink-300">·</span>
-              </>
+              <a href={`/app/setup?dot=${dotParam}`} class={quiet}>
+                Enter the code we already sent
+              </a>
             )}
-            <a href="/app/setup" class="text-ink-500 hover:underline">
+            <a href="/app/setup" class={quiet}>
               Start over with a different number
             </a>
-          </p>
+          </div>
         </>
       )
     }
@@ -1069,19 +1114,28 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
 
             <form method="POST" class="mt-4">
               <input type="hidden" name="dot" value={dotParam} />
-              <label class="block">
-                <span class="text-sm font-medium">The code</span>
-                <input
-                  type="text"
-                  name="code"
-                  inputmode="numeric"
-                  autocomplete="one-time-code"
-                  required
-                  autofocus
-                  placeholder="123456"
-                  class={`${field} text-2xl tracking-[0.3em] tabular-nums`}
-                />
+              <label class="field-label" for="code">
+                The code
               </label>
+              <input
+                type="text"
+                id="code"
+                name="code"
+                inputmode="numeric"
+                autocomplete="one-time-code"
+                required
+                autofocus
+                placeholder="123456"
+                class={`${field} text-2xl tracking-[0.3em] tabular-nums`}
+                aria-invalid={badField === 'code' ? 'true' : undefined}
+                aria-describedby={badField === 'code' ? 'code-error' : undefined}
+              />
+              {badField === 'code' && (
+                <p class="field-error" id="code-error">
+                  <span aria-hidden="true">⚠</span>
+                  <span>{problem}</span>
+                </p>
+              )}
               <button type="submit" name="intent" value="code" class={`${primary} mt-4`}>
                 Confirm this carrier
               </button>
@@ -1211,15 +1265,14 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
             )}
           </div>
 
-          <p class="mt-3 text-center text-sm">
-            <a href={`/app/setup?dot=${dotParam}&verify=1`} class="text-ink-500 hover:underline">
+          <div class="mt-3 flex flex-wrap items-center justify-center gap-2">
+            <a href={`/app/setup?dot=${dotParam}&verify=1`} class={quiet}>
               Send a code instead
             </a>
-            <span aria-hidden="true" class="mx-2 text-ink-300">·</span>
-            <a href="/app/setup" class="text-ink-500 hover:underline">
+            <a href="/app/setup" class={quiet}>
               Try a different number
             </a>
-          </p>
+          </div>
         </>
       )
     }
@@ -1305,8 +1358,8 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
           </div>
 
           {/* Nothing is being skipped once the roster is full, so the word goes. */}
-          <p class="mt-5 text-center text-sm">
-            <a href="/app" class="text-ink-500 hover:underline">
+          <p class="mt-5 text-center">
+            <a href="/app" class={quiet}>
               {rosterDone ? 'Go to the dashboard' : 'Skip for now — go to the dashboard'}
             </a>
           </p>
@@ -1317,7 +1370,8 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
             list is empty — a nudge that never goes away is furniture — so once
             both have something on them, the URL is how he gets back.
           */}
-          <p class="mt-2 text-center text-xs text-ink-300">
+          {/* 12px, so the floor here is ink-700 and not ink-500. */}
+          <p class="mt-2 text-center text-xs text-ink-700">
             You can open this page any time. The address is /app/setup.
           </p>
         </>

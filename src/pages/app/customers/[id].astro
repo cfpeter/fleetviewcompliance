@@ -333,16 +333,16 @@ const revenueCoverage = months
       history.length > loads.length &&
         `Drawn from ${missing > 0 ? '' : 'all '}${history.length} loads on file for them. The table below is only the last ${loads.length}.`,
       months.window.unpricedLoads > 0 &&
-        `${months.window.unpricedLoads} ${loadWord(months.window.unpricedLoads)} here carry no rate yet and are in no column.`,
+        `${months.window.unpricedLoads} ${loadWord(months.window.unpricedLoads)} here ${months.window.unpricedLoads === 1 ? 'carries' : 'carry'} no rate yet and ${months.window.unpricedLoads === 1 ? 'is' : 'are'} in no column.`,
       months.window.quotedLoads + months.window.cancelledLoads > 0 &&
-        `${months.window.quotedLoads + months.window.cancelledLoads} quoted or cancelled ${loadWord(months.window.quotedLoads + months.window.cancelledLoads)} are left out.`,
+        `${months.window.quotedLoads + months.window.cancelledLoads} quoted or cancelled ${loadWord(months.window.quotedLoads + months.window.cancelledLoads)} ${months.window.quotedLoads + months.window.cancelledLoads === 1 ? 'is' : 'are'} left out.`,
       months.window.writtenOffCents > 0 &&
         `${formatCents(months.window.writtenOffCents)} of what is drawn has been written off.`,
       months.outside.countedLoads + months.outside.unpricedLoads > 0 &&
-        `${months.outside.countedLoads + months.outside.unpricedLoads} older ${loadWord(months.outside.countedLoads + months.outside.unpricedLoads)} are before this axis starts.`,
+        `${months.outside.countedLoads + months.outside.unpricedLoads} older ${loadWord(months.outside.countedLoads + months.outside.unpricedLoads)} ${months.outside.countedLoads + months.outside.unpricedLoads === 1 ? 'is' : 'are'} before this axis starts.`,
       months.undated > 0 && `${months.undated} could not be placed on it at all.`,
       missing > 0 &&
-        `${missing} older ${loadWord(missing)} did not fit in one request and are on no chart here.`,
+        `${missing} older ${loadWord(missing)} did not fit in one request and ${missing === 1 ? 'is' : 'are'} on no chart here.`,
     ]
       .filter(Boolean)
       .join(' ')
@@ -361,9 +361,9 @@ const mixCoverage = mix
   ? [
       'Bands are counts of loads, not dollars.',
       mix.unpricedLoads > 0 &&
-        `${mix.unpricedLoads} of them carry no rate, so the amounts below are lower than the real figures.`,
+        `${mix.unpricedLoads} of them ${mix.unpricedLoads === 1 ? 'carries' : 'carry'} no rate, so the amounts below are lower than the real figures.`,
       mix.quotedLoads + mix.cancelledLoads > 0 &&
-        `${mix.quotedLoads + mix.cancelledLoads} quoted or cancelled ${loadWord(mix.quotedLoads + mix.cancelledLoads)} are not on this bar.`,
+        `${mix.quotedLoads + mix.cancelledLoads} quoted or cancelled ${loadWord(mix.quotedLoads + mix.cancelledLoads)} ${mix.quotedLoads + mix.cancelledLoads === 1 ? 'is' : 'are'} not on this bar.`,
       missing > 0 && `${missing} older ${loadWord(missing)} did not fit in one request.`,
       'This shows what is still out. How long they take to pay is the "How fast they pay" card at the top of this page.',
     ]
@@ -386,11 +386,11 @@ const agingCoverage = aging
       agingSource(aging),
       'Only loads marked invoiced, with the factor, or funded. Anything you have not invoiced yet is not on these bars.',
       aging.unpricedLoads > 0 &&
-        `${aging.unpricedLoads} ${loadWord(aging.unpricedLoads)} still out carry no rate yet, so the amounts are lower than the real figures.`,
+        `${aging.unpricedLoads} ${loadWord(aging.unpricedLoads)} still out ${aging.unpricedLoads === 1 ? 'carries' : 'carry'} no rate yet, so the amounts are lower than the real figures.`,
       aging.undatedLoads > 0 &&
-        `${aging.undatedLoads} ${loadWord(aging.undatedLoads)} still out have no readable date and are in no band.`,
+        `${aging.undatedLoads} ${loadWord(aging.undatedLoads)} still out ${aging.undatedLoads === 1 ? 'has' : 'have'} no readable date and ${aging.undatedLoads === 1 ? 'is' : 'are'} in no band.`,
       missing > 0 &&
-        `${missing} older ${loadWord(missing)} did not fit in one request and are on no bar here.`,
+        `${missing} older ${loadWord(missing)} did not fit in one request and ${missing === 1 ? 'is' : 'are'} on no bar here.`,
     ]
       .filter(Boolean)
       .join(' ')
@@ -513,11 +513,11 @@ const speedCoverage = speed
         `${speed.awaiting} ${invoiceWord(speed.awaiting)} out with them ${speed.awaiting === 1 ? 'has' : 'have'} no payment date yet, so ${speed.awaiting === 1 ? 'it is' : 'they are'} in no figure here. Waiting is not the same as late.`,
       payDatesStored &&
         speed.unrecorded > 0 &&
-        `${speed.unrecorded} of their ${loadWord(speed.unrecorded)} carry no invoice date, so ${speed.unrecorded === 1 ? 'it is' : 'they are'} not counted. Type the date when you send the invoice.`,
+        `${speed.unrecorded} of their loads ${speed.unrecorded === 1 ? 'has' : 'have'} no invoice date, so ${speed.unrecorded === 1 ? 'it is' : 'they are'} not counted. Type the date when you send the invoice.`,
       speed.unreadable > 0 &&
-        `${speed.unreadable} ${loadWord(speed.unreadable)} show money arriving before the invoice went out. That is a typed date in the wrong box, and ${speed.unreadable === 1 ? 'it is' : 'they are'} in no figure here.`,
+        `${speed.unreadable} ${loadWord(speed.unreadable)} ${speed.unreadable === 1 ? 'shows' : 'show'} money arriving before the invoice went out. That is a typed date in the wrong box, and ${speed.unreadable === 1 ? 'it is' : 'they are'} in no figure here.`,
       missing > 0 &&
-        `${missing} older ${loadWord(missing)} did not fit in one request and are in no figure here.`,
+        `${missing} older ${loadWord(missing)} did not fit in one request and ${missing === 1 ? 'is' : 'are'} in no figure here.`,
     ].filter((line): line is string => typeof line === 'string')
   : []
 
@@ -1130,8 +1130,8 @@ const said = 'text-ink-500 sm:hidden'
                 {aging.chaseUnpricedLoads > 0 && (
                   <>
                     {aging.chaseUnpricedLoads} more {loadWord(aging.chaseUnpricedLoads)} past that
-                    line carry no rate, so {aging.chaseUnpricedLoads === 1 ? 'it is' : 'they are'} in
-                    no figure here.{' '}
+                    line {aging.chaseUnpricedLoads === 1 ? 'carries' : 'carry'} no rate, so{' '}
+                    {aging.chaseUnpricedLoads === 1 ? 'it is' : 'they are'} in no figure here.{' '}
                   </>
                 )}
                 Ring them today.
@@ -1139,8 +1139,9 @@ const said = 'text-ink-500 sm:hidden'
             )}
             {aging.disputedLoads > 0 && (
               <p class="font-medium text-red-700">
-                Separately, {aging.disputedLoads} {loadWord(aging.disputedLoads)} are short paid or
-                in dispute: <span class="tabular-nums">{formatCents(aging.disputedCents)}</span>.
+                Separately, {aging.disputedLoads} {loadWord(aging.disputedLoads)}{' '}
+                {aging.disputedLoads === 1 ? 'is' : 'are'} short paid or in dispute:{' '}
+                <span class="tabular-nums">{formatCents(aging.disputedCents)}</span>.
                 Those are not on the bars above, because waiting will not fix them.
               </p>
             )}

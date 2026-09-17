@@ -432,18 +432,46 @@ const loadName = load.load_number
     : 'Load'
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
-const field =
-  'mt-1 w-full rounded-lg border border-ink-100 bg-white px-3 py-2 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
-const badge = 'rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset'
-const arrow =
-  'rounded-lg border border-ink-100 px-2.5 py-1.5 text-sm font-medium transition hover:bg-ink-50 disabled:cursor-not-allowed disabled:text-ink-300 disabled:hover:bg-white'
+/**
+ * The shared field construction from src/styles/global.css, not a local copy.
+ *
+ * The local one was 40px tall, drew its border in ink-100 — 1.2:1 against white,
+ * an edge a dispatcher in a yard cannot see — and carried `outline-none`, which
+ * deleted the focus ring on every box on this page. `.field-input` is 46px, its
+ * border is ink-500, and the ring comes back.
+ */
+const field = 'field-input mt-1'
+/**
+ * The shared badge shape, with the ring these two helpers add on top.
+ *
+ * It was a local `rounded-md ... font-medium` construction, and a Tailwind
+ * utility outranks `.badge` — so this page drew rounded rectangles at
+ * font-medium while the load board two clicks away drew rounded-full pills at
+ * font-semibold, in the same colours. Same bug the load page had. The colours
+ * still come from `stopTypeBadgeClass` and `appointmentBadgeClass`; only the
+ * shape is shared now.
+ */
+const badge = 'badge ring-1 ring-inset'
+/**
+ * The reorder arrows. `.btn-icon` is 44x44 — the old ones were 30px, which is
+ * the whole control for changing the order the driver runs the stops in.
+ */
+const arrow = 'btn btn-secondary btn-icon'
 ---
 
 <App
   title={`Stops · ${loadName}`}
   subtitle={`${stops.length} ${stops.length === 1 ? 'stop' : 'stops'} · ${load.status.replace(/_/g, ' ')}`}
 >
-  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {/* The shared error box from global.css, with role="alert" so a reader
+      already on the page hears it arrive. */}
+  {
+    error && (
+      <p role="alert" class="error-summary mb-5">
+        {error}
+      </p>
+    )
+  }
   {added && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop added at the end of the run.</p>}
   {saved && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Stop saved.</p>}
   {timed && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Times saved.</p>}
@@ -476,12 +504,11 @@ const arrow =
             renumbering stopped partway. The order below is right. The numbers are not.
           </p>
         </div>
-        <button
-          type="submit"
-          name="intent"
-          value="renumber"
-          class="rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-amber-700"
-        >
+        {/* Secondary, and 44px. It was a 30px amber fill, which is a sixth
+            button colour nobody else in the app uses and a target a thumb
+            misses — on the one control that repairs the numbers the driver was
+            given over the phone. */}
+        <button type="submit" name="intent" value="renumber" class="btn btn-secondary">
           Renumber 1–{stops.length}
         </button>
       </form>
@@ -489,34 +516,41 @@ const arrow =
   }
 
   <div class={`mb-6 ${card}`}>
-    <div class="flex flex-wrap items-baseline justify-between gap-3">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h2 class="text-lg font-semibold tracking-tight">Detention terms on this load</h2>
-      <a href={`/app/loads/${load.id}`} class="text-sm font-medium text-brand-600 hover:underline">
-        Back to the load →
+      {/* `.link-back` is the one back-link construction in the app: 44px tall,
+          underlined on hover, and the arrow is decoration inside the label so
+          "Back" is the word that gets read out. `ml-0` cancels the pull it uses
+          when it sits under a heading; `-mr-3` puts its padding box back
+          against the card edge. */}
+      <a href={`/app/loads/${load.id}`} class="link-back -mr-3 ml-0">
+        <span aria-hidden="true">←</span> Back to the load
       </a>
     </div>
 
+    {/* ink-700, not ink-500: this is 12px type, and the floor at that size is
+        ink-700. The dashes are ink-500, which is the floor on white. */}
     <dl class="mt-3 grid gap-4 sm:grid-cols-4">
       <div>
-        <dt class="text-xs tracking-wide text-ink-500 uppercase">Free at pickup</dt>
+        <dt class="text-xs tracking-wide text-ink-700 uppercase">Free at pickup</dt>
         <dd class="mt-1 text-2xl font-semibold tabular-nums">
-          {load.free_hours_pickup === null ? <span class="text-ink-300">—</span> : `${load.free_hours_pickup}h`}
+          {load.free_hours_pickup === null ? <span class="text-ink-500">—</span> : `${load.free_hours_pickup}h`}
         </dd>
       </div>
       <div>
-        <dt class="text-xs tracking-wide text-ink-500 uppercase">Free at delivery</dt>
+        <dt class="text-xs tracking-wide text-ink-700 uppercase">Free at delivery</dt>
         <dd class="mt-1 text-2xl font-semibold tabular-nums">
-          {load.free_hours_delivery === null ? <span class="text-ink-300">—</span> : `${load.free_hours_delivery}h`}
+          {load.free_hours_delivery === null ? <span class="text-ink-500">—</span> : `${load.free_hours_delivery}h`}
         </dd>
       </div>
       <div>
-        <dt class="text-xs tracking-wide text-ink-500 uppercase">Detention rate</dt>
+        <dt class="text-xs tracking-wide text-ink-700 uppercase">Detention rate</dt>
         <dd class="mt-1 text-2xl font-semibold tabular-nums">
-          {load.detention_rate_cents === null ? <span class="text-ink-300">—</span> : `${formatCents(load.detention_rate_cents)}/h`}
+          {load.detention_rate_cents === null ? <span class="text-ink-500">—</span> : `${formatCents(load.detention_rate_cents)}/h`}
         </dd>
       </div>
       <div>
-        <dt class="text-xs tracking-wide text-ink-500 uppercase">Pre-approval</dt>
+        <dt class="text-xs tracking-wide text-ink-700 uppercase">Pre-approval</dt>
         <dd class="mt-1 text-sm font-medium">
           {
             load.detention_requires_preapproval === true ? (
@@ -524,7 +558,7 @@ const arrow =
             ) : load.detention_requires_preapproval === false ? (
               'Not required'
             ) : (
-              <span class="text-ink-300">Not on file</span>
+              <span class="text-ink-500">Not on file</span>
             )
           }
         </dd>
@@ -596,27 +630,25 @@ const arrow =
                     <span class:list={[badge, appointmentBadgeClass(s.appointment_type)]}>
                       {appointmentLabel(s.appointment_type)}
                     </span>
-                    {s.lumper_required && (
-                      <span class="rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
-                        Lumper
-                      </span>
-                    )}
+                    {s.lumper_required && <span class="badge badge-warning">Lumper</span>}
                   </div>
 
                   <p class="mt-1.5 font-medium">
-                    {s.company_name ?? <span class="text-ink-300">No company name</span>}
+                    {s.company_name ?? <span class="text-ink-500">No company name</span>}
                   </p>
                   <p class="text-sm text-ink-500">
-                    {place || <span class="text-ink-300">No city</span>}
+                    {place || <span>No city</span>}
                     {s.zip && <span class="ml-1 tabular-nums">{s.zip}</span>}
                   </p>
                   {appointment ? (
                     <p class="mt-1 text-sm tabular-nums">{appointment}</p>
                   ) : (
-                    <p class="mt-1 text-sm text-ink-300">No appointment window</p>
+                    <p class="mt-1 text-sm text-ink-500">No appointment window</p>
                   )}
                   {s.reference_numbers && (
-                    <p class="mt-1 text-xs tabular-nums text-ink-500">
+                    /* ink-700: 12px type, and the floor at that size is ink-700
+                       whatever it is sitting on. */
+                    <p class="mt-1 text-xs tabular-nums text-ink-700">
                       Ref {s.reference_numbers}
                     </p>
                   )}
@@ -626,7 +658,10 @@ const arrow =
                     only the stop id and a direction — never a sequence number,
                     which would be the number this page held when it rendered
                     rather than the one in the table now. */}
-                <div class="flex shrink-0 gap-1">
+                {/* gap-2, not gap-1: two 44px targets 4px apart are one target
+                    a thumb cannot choose between, and choosing wrong here
+                    reorders the run. */}
+                <div class="flex shrink-0 gap-2">
                   <form method="POST">
                     <input type="hidden" name="stop_id" value={s.id} />
                     <input type="hidden" name="dir" value="up" />
@@ -665,7 +700,7 @@ const arrow =
                 <form method="POST" class="flex flex-wrap items-end gap-3">
                   <input type="hidden" name="stop_id" value={s.id} />
                   <label class="block">
-                    <span class="text-sm font-medium">Arrived</span>
+                    <span class="field-label">Arrived</span>
                     <input
                       type="datetime-local"
                       name="arrived_at"
@@ -674,7 +709,7 @@ const arrow =
                     />
                   </label>
                   <label class="block">
-                    <span class="text-sm font-medium">Departed</span>
+                    <span class="field-label">Departed</span>
                     <input
                       type="datetime-local"
                       name="departed_at"
@@ -682,12 +717,11 @@ const arrow =
                       class={`${field} tabular-nums`}
                     />
                   </label>
-                  <button
-                    type="submit"
-                    name="intent"
-                    value="record_times"
-                    class="rounded-lg bg-ink-900 px-4 py-2.5 font-medium text-white transition hover:bg-ink-700"
-                  >
+                  {/* Secondary, not the dark fill this used to be. Inside /app
+                      the action colour is brand blue, and a dark button here
+                      reads as a second Primary against "Save stop" in the
+                      editor below it. Dark is marketing chrome. */}
+                  <button type="submit" name="intent" value="record_times" class="btn btn-secondary">
                     Save times
                   </button>
                 </form>
@@ -719,9 +753,14 @@ const arrow =
                         · no free hours on file for a {stopTypeLabel(s.stop_type).toLowerCase()}
                       </span>
                     ) : clock.over ? (
-                      <span class="rounded-md bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900">
-                        <span class="tabular-nums">{formatMinutes(clock.overMinutes)}</span> past{' '}
-                        <span class="tabular-nums">{freeHours}h</span> free
+                      /* The shared badge, not a local rectangle. The inner span
+                         keeps the sentence as ONE flex child, so `.badge`'s gap
+                         does not open holes between "45m", "past" and "2h". */
+                      <span class="badge badge-warning">
+                        <span>
+                          <span class="tabular-nums">{formatMinutes(clock.overMinutes)}</span>{' '}
+                          past <span class="tabular-nums">{freeHours}h</span> free
+                        </span>
                       </span>
                     ) : (
                       <span class="text-ink-500">
@@ -753,7 +792,12 @@ const arrow =
 
             {/* ------------------------------------------------- the stop itself */}
             <details open={isNew ? stops.length === 0 : editOpen === s.id} class="mt-4">
-              <summary class="cursor-pointer text-sm font-medium text-brand-600 hover:underline">
+              {/* The one control that opens the whole editor, and it was a 20px
+                  line of blue text with no underline until the cursor found it.
+                  44px, underlined at rest, and the native marker is dropped
+                  because the row is flex — the same construction the driver page
+                  and Documents.astro use for a fold. */}
+              <summary class="flex min-h-11 cursor-pointer list-none items-center font-medium text-brand-700 underline underline-offset-2 select-none [&::-webkit-details-marker]:hidden">
                 {isNew ? 'Stop details' : `Edit stop ${position}`}
               </summary>
 
@@ -762,7 +806,7 @@ const arrow =
 
                 <div class="grid gap-4 sm:grid-cols-2">
                   <label class="block">
-                    <span class="text-sm font-medium">
+                    <span class="field-label">
                       Stop type <span class="text-red-600">*</span>
                     </span>
                     <select name="stop_type" class={field}>
@@ -774,7 +818,7 @@ const arrow =
                     </select>
                   </label>
                   <label class="block">
-                    <span class="text-sm font-medium">Company</span>
+                    <span class="field-label">Company</span>
                     <input
                       type="text"
                       name="company_name"
@@ -785,17 +829,17 @@ const arrow =
                 </div>
 
                 <label class="block">
-                  <span class="text-sm font-medium">Street</span>
+                  <span class="field-label">Street</span>
                   <input type="text" name="street" value={s.street ?? ''} class={field} />
                 </label>
 
                 <div class="grid gap-4 sm:grid-cols-3">
                   <label class="block">
-                    <span class="text-sm font-medium">City</span>
+                    <span class="field-label">City</span>
                     <input type="text" name="city" value={s.city ?? ''} class={field} />
                   </label>
                   <label class="block">
-                    <span class="text-sm font-medium">State</span>
+                    <span class="field-label">State</span>
                     <input
                       type="text"
                       name="state"
@@ -807,7 +851,7 @@ const arrow =
                     />
                   </label>
                   <label class="block">
-                    <span class="text-sm font-medium">ZIP</span>
+                    <span class="field-label">ZIP</span>
                     <input
                       type="text"
                       name="zip"
@@ -820,7 +864,7 @@ const arrow =
 
                 <div class="grid gap-4 sm:grid-cols-2">
                   <label class="block">
-                    <span class="text-sm font-medium">Contact</span>
+                    <span class="field-label">Contact</span>
                     <input
                       type="text"
                       name="contact_name"
@@ -829,7 +873,7 @@ const arrow =
                     />
                   </label>
                   <label class="block">
-                    <span class="text-sm font-medium">Phone</span>
+                    <span class="field-label">Phone</span>
                     {/*
                       Read back the way a person reads it, now that the column is
                       normalised on the way in. Rendering the raw column would
@@ -849,7 +893,7 @@ const arrow =
                 </div>
 
                 <label class="block">
-                  <span class="text-sm font-medium">Appointment type</span>
+                  <span class="field-label">Appointment type</span>
                   <select name="appointment_type" class={field}>
                     <option value="" selected={s.appointment_type === null}>
                       Not known yet
@@ -860,7 +904,7 @@ const arrow =
                       </option>
                     ))}
                   </select>
-                  <span class="mt-1 block text-xs text-ink-500">
+                  <span class="field-hint block">
                     Miss a hard appointment and the load can be refused, or pushed back two days.
                     FCFS is a window: being late costs waiting time, not the load. If you leave this
                     blank, nobody can tell the driver which one he has.
@@ -869,7 +913,7 @@ const arrow =
 
                 <div class="grid gap-4 sm:grid-cols-2">
                   <label class="block">
-                    <span class="text-sm font-medium">Window opens</span>
+                    <span class="field-label">Window opens</span>
                     <input
                       type="datetime-local"
                       name="window_start"
@@ -878,14 +922,14 @@ const arrow =
                     />
                   </label>
                   <label class="block">
-                    <span class="text-sm font-medium">Window closes</span>
+                    <span class="field-label">Window closes</span>
                     <input
                       type="datetime-local"
                       name="window_end"
                       value={isoToLocalInput(s.window_end)}
                       class={`${field} tabular-nums`}
                     />
-                    <span class="mt-1 block text-xs text-ink-500">
+                    <span class="field-hint block">
                       On a hard appointment both boxes are usually the same time. Times are your own
                       local time.
                     </span>
@@ -893,7 +937,7 @@ const arrow =
                 </div>
 
                 <label class="block">
-                  <span class="text-sm font-medium">Reference numbers on this stop</span>
+                  <span class="field-label">Reference numbers on this stop</span>
                   <input
                     type="text"
                     name="reference_numbers"
@@ -901,44 +945,36 @@ const arrow =
                     placeholder="PO 44821 · BOL 9912 · seal 0087"
                     class={`${field} tabular-nums`}
                   />
-                  <span class="mt-1 block text-xs text-ink-500">
+                  <span class="field-hint block">
                     One box, because every broker names these numbers differently. Put whatever the
                     gate will ask for here.
                   </span>
                 </label>
 
                 <label class="block">
-                  <span class="text-sm font-medium">Instructions</span>
+                  <span class="field-label">Instructions</span>
                   <textarea name="instructions" rows="3" class={field}>{s.instructions ?? ''}</textarea>
                 </label>
 
-                <label class="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    name="lumper_required"
-                    checked={s.lumper_required}
-                    class="size-4 rounded border-ink-300"
-                  />
-                  <span class="text-sm font-medium">Lumper required</span>
+                {/* .check-row is the 44px target the whole row shares, so the
+                    box and its words are one control. The 20px box itself comes
+                    from global.css, which sizes every checkbox in the app — the
+                    local `size-4` shrank this one back to 16px. */}
+                <label class="check-row">
+                  <input type="checkbox" name="lumper_required" checked={s.lumper_required} />
+                  <span class="field-label">Lumper required</span>
                 </label>
 
                 <div class="flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+                  {/* The Primary inside this open editor. `.btn` is 44px; the
+                      hand-rolled fill it replaces was the same blue at 42px and
+                      one more place for the shape to drift. */}
                   {isNew ? (
-                    <button
-                      type="submit"
-                      name="intent"
-                      value="add_stop"
-                      class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-                    >
+                    <button type="submit" name="intent" value="add_stop" class="btn btn-primary">
                       Add stop
                     </button>
                   ) : (
-                    <button
-                      type="submit"
-                      name="intent"
-                      value="save_stop"
-                      class="rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white transition hover:bg-brand-700"
-                    >
+                    <button type="submit" name="intent" value="save_stop" class="btn btn-primary">
                       Save stop {position}
                     </button>
                   )}
@@ -950,25 +986,33 @@ const arrow =
                   {!isNew &&
                     (removing ? (
                       <>
+                        {/* The only red fill on this page, and it is the press
+                            that deletes the stop. */}
                         <button
                           type="submit"
                           name="intent"
                           value="remove_stop"
-                          class="ml-auto rounded-lg bg-red-600 px-5 py-2.5 font-medium text-white transition hover:bg-red-700"
+                          class="btn btn-danger ml-auto"
                         >
                           Remove stop {position}
                         </button>
+                        {/* "Keep it" is the way out, and a way out is never red.
+                            Tertiary, and 44px like everything beside it. */}
                         <a
                           href={`/app/loads/${load.id}/stops?edit=${s.id}#stop-${s.id}`}
-                          class="text-sm font-medium text-brand-600 hover:underline"
+                          class="btn btn-tertiary"
                         >
                           Keep it
                         </a>
                       </>
                     ) : (
+                      /* The text form of the danger button — red because it
+                         opens a delete, not because it is a link. It deletes
+                         nothing itself: it puts the confirm state in the URL,
+                         and the POST above is what removes the stop. */
                       <a
                         href={`/app/loads/${load.id}/stops?edit=${s.id}&confirm=${s.id}#stop-${s.id}`}
-                        class="ml-auto text-sm text-red-600 hover:underline"
+                        class="btn btn-danger-text ml-auto"
                       >
                         Remove this stop
                       </a>

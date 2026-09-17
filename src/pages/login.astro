@@ -310,44 +310,55 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
 
       {
         signup && (
-          <label class="check-row items-start py-2" for="terms">
-            <input
-              type="checkbox"
-              id="terms"
-              name="terms"
-              value="yes"
-              required
-              class="mt-0.5"
-              aria-invalid={badField === 'terms' ? 'true' : undefined}
-              aria-describedby={badField === 'terms' ? 'terms-error' : undefined}
-            />
-            <span class="text-sm text-ink-700">
-              {ASSENT.lead}{' '}
-              <a
-                href={ASSENT.termsHref}
-                target="_blank"
-                rel="noopener"
-                class="link font-medium"
-              >
-                {ASSENT.terms}
-              </a>{' '}
-              {ASSENT.join}{' '}
-              <a
-                href={ASSENT.privacyHref}
-                target="_blank"
-                rel="noopener"
-                class="link font-medium"
-              >
-                {ASSENT.privacy}
-              </a>{ASSENT.stop}
-              {badField === 'terms' && (
-                <span class="field-error" id="terms-error">
-                  <span aria-hidden="true">⚠</span>
-                  <span>{problem}</span>
-                </span>
-              )}
-            </span>
-          </label>
+          /*
+            The message sits OUTSIDE the label, and that is the whole reason for
+            the wrapper. A <label> that wraps its control contributes every word
+            inside it to that control's accessible name — so with the refusal in
+            there the checkbox announced as the entire assent sentence followed
+            by "⚠ Tick the box to say you agree…", and then read the same
+            sentence a second time from aria-describedby. The name is what the
+            box is; the description is what is wrong with it.
+          */
+          <div>
+            <label class="check-row items-start py-2" for="terms">
+              <input
+                type="checkbox"
+                id="terms"
+                name="terms"
+                value="yes"
+                required
+                class="mt-0.5"
+                aria-invalid={badField === 'terms' ? 'true' : undefined}
+                aria-describedby={badField === 'terms' ? 'terms-error' : undefined}
+              />
+              <span class="text-sm text-ink-700">
+                {ASSENT.lead}{' '}
+                <a
+                  href={ASSENT.termsHref}
+                  target="_blank"
+                  rel="noopener"
+                  class="link font-medium"
+                >
+                  {ASSENT.terms}
+                </a>{' '}
+                {ASSENT.join}{' '}
+                <a
+                  href={ASSENT.privacyHref}
+                  target="_blank"
+                  rel="noopener"
+                  class="link font-medium"
+                >
+                  {ASSENT.privacy}
+                </a>{ASSENT.stop}
+              </span>
+            </label>
+            {badField === 'terms' && (
+              <p class="field-error" id="terms-error">
+                <span aria-hidden="true">⚠</span>
+                <span>{problem}</span>
+              </p>
+            )}
+          </div>
         )
       }
 

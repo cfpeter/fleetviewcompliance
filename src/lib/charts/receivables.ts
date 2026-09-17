@@ -228,7 +228,8 @@ export interface Aging {
  */
 export function agingSource(aging: Aging): string {
   const { agedFromInvoice: invoiced, agedFromEntry: entered } = aging
-  if (invoiced === 0 && entered === 0) return 'Nothing is invoiced and waiting, so there is nothing to count from.'
+  if (invoiced === 0 && entered === 0)
+    return 'Nothing is invoiced and waiting, so there is nothing to count from.'
   if (entered === 0) {
     return 'Counted from the day you sent the invoice.'
   }
@@ -236,7 +237,11 @@ export function agingSource(aging: Aging): string {
     return 'Counted from the day the load was entered, not the day the invoice went out, because no invoice date is recorded on these loads. Every figure here is older than the invoice behind it.'
   }
   const loadWord = (n: number) => (n === 1 ? 'load' : 'loads')
-  return `${invoiced} ${loadWord(invoiced)} counted from the day you sent the invoice. The other ${entered} ${loadWord(entered)} have no invoice date on them, so ${entered === 1 ? 'it is' : 'they are'} counted from the day the load was entered — which is older than the invoice behind ${entered === 1 ? 'it' : 'them'}.`
+  // The verb agrees with the count, not with the commoner case. "The other 1
+  // load have no invoice date on them" is the sentence a reader who is working
+  // in a second language stops on, and this one is printed under a money chart.
+  const one = entered === 1
+  return `${invoiced} ${loadWord(invoiced)} counted from the day you sent the invoice. The other ${entered} ${loadWord(entered)} ${one ? 'has' : 'have'} no invoice date on ${one ? 'it' : 'them'}, so ${one ? 'it is' : 'they are'} counted from the day the load was entered — which is older than the invoice behind ${one ? 'it' : 'them'}.`
 }
 
 function bandIndexFor(days: number): number {

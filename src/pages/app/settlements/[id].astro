@@ -1,8 +1,21 @@
 ---
 /**
- * One settlement: every line, where each line came from, and the net.
+ * One driver pay statement: every line, where each line came from, and the net.
  *
- * NOT PAYROLL. This page produces a settlement STATEMENT — the sheet handed to
+ * "DRIVER PAY" AND "PAY STATEMENT" ON THE HEADINGS AND THE LINKS.
+ *
+ * The navigation calls this section "Driver pay", so the way back to it says
+ * "driver pay" and the document itself is a "driver pay statement" — which is
+ * what the sheet physically is, handed over with the cheque. "Settlement" is
+ * abstract, legalistic, and three syllables, on a page read by an owner in a
+ * second language who wants to know what a man is owed.
+ *
+ * THE ROUTE, THE TABLES AND EVERY `Settlement*` IDENTIFIER ARE UNTOUCHED. This
+ * is wording on the screen and nothing else: /app/settlements/:id still
+ * resolves, `settlements` and `settlement_lines` keep their names, and so does
+ * every function in src/lib/settlements/compute.ts.
+ *
+ * NOT PAYROLL. This page produces a DRIVER PAY STATEMENT — the sheet handed to
  * a driver beside the cheque — and prints it. No withholding, no filings. It
  * says so on screen and again in the printed footer, because a carrier who
  * believes otherwise is a carrier who stops withholding.
@@ -807,7 +820,7 @@ function lineTerms(l: LineRow): string {
 const params = Astro.url.searchParams
 const error = params.get('error') ?? lineError?.message ?? null
 const notice = params.has('created')
-  ? 'Settlement started. Pay from an agreement below, or add lines by hand.'
+  ? 'Pay statement started. Pay from an agreement below, or add lines by hand.'
   : params.has('added')
     ? 'Line added.'
     : params.has('removed')
@@ -850,7 +863,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
 ---
 
 <App
-  title={driver ? fullName(driver) : 'Settlement'}
+  title={driver ? fullName(driver) : 'Pay statement'}
   subtitle={`${periodLabel}${settlement.revision > 1 ? ` · revision ${settlement.revision}` : ''}`}
 >
   <div data-screen-only>
@@ -875,7 +888,13 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
       settlement.superseded_at && replacedBy && (
         <p class="mb-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
           Replaced by revision <span class="tabular-nums">{replacedBy.revision}</span>.{' '}
-          <a href={`/app/settlements/${replacedBy.id}`} class="link">
+          {/* Underlined at rest, and 44px tall. It stays a link because it sits
+              inside a sentence, but it is the way to the statement that
+              replaced this one, and a 20px line of text is not a thumb target. */}
+          <a
+            href={`/app/settlements/${replacedBy.id}`}
+            class="link inline-flex min-h-11 items-center"
+          >
             Open it <span aria-hidden="true">→</span>
           </a>{' '}
           This one is kept exactly as it was paid.
@@ -887,7 +906,10 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
         <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
           This is revision <span class="tabular-nums">{settlement.revision}</span>, correcting an
           earlier statement.{' '}
-          <a href={`/app/settlements/${settlement.supersedes_id}`} class="link">
+          <a
+            href={`/app/settlements/${settlement.supersedes_id}`}
+            class="link inline-flex min-h-11 items-center"
+          >
             See what it replaces <span aria-hidden="true">→</span>
           </a>
         </p>
@@ -913,8 +935,10 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
           it at the foot of the file: it opens the browser's own print dialog,
           and the statement prints correctly from Ctrl+P without it. */}
       <button type="button" id="print" class={secondary}>Print / Save as PDF</button>
+      {/* Back to the section, so it is named the way the navigation names it.
+          "All settlements" pointed at a heading that no longer says that. */}
       <a href="/app/settlements" class="link-back ml-0">
-        <span aria-hidden="true">←</span> All settlements
+        <span aria-hidden="true">←</span> Back to driver pay
       </a>
       {
         driver && (
@@ -1025,7 +1049,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
     <header class="border-b border-ink-100 pb-5">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 class="text-2xl font-semibold tracking-tight">Settlement statement</h2>
+          <h2 class="text-2xl font-semibold tracking-tight">Driver pay statement</h2>
           <p class="mt-1 text-sm text-ink-500">
             This is not a payroll document. No tax was taken out. Nothing was filed.
           </p>
@@ -1098,13 +1122,16 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                         <div class="font-medium">
                           {l.description || lineKindLabel(l.kind)}
                         </div>
-                        <div class="text-xs text-ink-500">
+                        {/* 12px, so ink-700. These are the terms that settle an
+                            argument about the line above them — the last text
+                            on this page that may be hard to read. */}
+                        <div class="text-xs text-ink-700">
                           {lineKindLabel(l.kind)}
                           {/* THE TERMS, ON THE LINE. Which miles, and what the
                               percentage was of. Copied here when the line was
                               made, so a later edit to the agreement cannot
                               change what this statement says it paid. */}
-                          {lineTerms(l) && <span class="text-ink-500"> · {lineTerms(l)}</span>}
+                          {lineTerms(l) && <span> · {lineTerms(l)}</span>}
                         </div>
                       </td>
                       <td
@@ -1166,16 +1193,16 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
           <dd class="tabular-nums">{formatCents(shownNet)}</dd>
         </div>
       </dl>
-      <p class="mt-3 text-right text-xs text-ink-500">
+      <p class="mt-3 text-right text-xs text-ink-700">
         {locked ? 'This is the amount that was paid.' : 'This adds up the lines above. Nothing is saved until you mark it paid.'}
       </p>
     </div>
 
     {settlement.note && <p class="mt-6 text-sm text-ink-700">{settlement.note}</p>}
 
-    <footer class="mt-8 border-t border-ink-100 pt-4 text-xs text-ink-500">
+    <footer class="mt-8 border-t border-ink-100 pt-4 text-xs text-ink-700">
       <p>
-        This is a settlement statement. It is not a payroll record. No federal or state tax was
+        This is a driver pay statement. It is not a payroll record. No federal or state tax was
         taken out. No FICA was worked out. Nothing was filed with any agency. Gross pay, tax and
         reporting are handled by whoever runs this carrier’s payroll.
       </p>
@@ -1193,7 +1220,9 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
           <h2 class="font-semibold tracking-tight">
             This statement is {settlement.status === 'paid' ? 'paid' : 'void'} and locked
           </h2>
-          <p class="mt-2 max-w-3xl text-sm text-ink-500">
+          {/* ink-700: this card is a brand tint, and the floor on a tint is
+              ink-700 whatever the type size is. */}
+          <p class="mt-2 max-w-3xl text-sm text-ink-700">
             Nobody can add, change or remove a line here. Not this page, and not anything else: the
             database refuses it. That is on purpose. The driver is holding a copy of this sheet, so
             it has to stay the same. To correct it, make a revision. A revision copies these lines
@@ -1244,8 +1273,11 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                             <span class="badge badge-neutral">{payMethodLabel(row.method)}</span>
                             <span class="font-semibold tabular-nums">{rateSummary(ag)}</span>
                           </div>
+                          {/* ink-700: this card turns amber when the agreement
+                              is missing a term, and the floor on a tint is
+                              ink-700. */}
                           {termsSummary(ag) && (
-                            <p class="mt-0.5 text-sm text-ink-500">{termsSummary(ag)}</p>
+                            <p class="mt-0.5 text-sm text-ink-700">{termsSummary(ag)}</p>
                           )}
                           {gap && (
                             <p class="mt-2 rounded-lg bg-amber-100 px-3 py-2 text-sm text-amber-900">
@@ -1386,7 +1418,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                       <option value={l.id}>{loadLabel(l)}</option>
                     ))}
                   </select>
-                  <span class="mt-1 block text-xs text-ink-500">
+                  <span class="mt-1 block text-xs text-ink-700">
                     Escrow, insurance and the ELD fee belong to the whole period, not to one load.
                     Tolls and lumpers usually belong to one load.
                   </span>
@@ -1467,7 +1499,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                 <button type="submit" name="intent" value="mark_paid" class={`mt-3 ${primary}`}>
                   Mark paid — {formatCents(totals.netCents)}
                 </button>
-                <p class="mt-2 text-xs text-ink-500">
+                <p class="mt-2 text-xs text-ink-700">
                   This saves <span class="tabular-nums">{formatCents(totals.netCents)}</span> on the
                   row and locks every line. After that, a correction needs a revision.
                 </p>

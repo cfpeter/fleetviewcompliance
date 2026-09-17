@@ -1,6 +1,21 @@
 ---
 /**
- * Settlements, by period and by driver.
+ * Driver pay, by period and by driver.
+ *
+ * "DRIVER PAY" ON EVERY HEADING AND EVERY LINK, NOT "SETTLEMENTS".
+ *
+ * The navigation has said "Driver pay" since the header was swept, and a
+ * section whose nav label and whose H1 are two different words is a section the
+ * reader cannot tell he has arrived at. "Settlement" is the wrong word for this
+ * reader on its own terms as well: three syllables, abstract, and a legal word
+ * besides, on a screen opened by an owner reading a second language to work out
+ * what he owes a man this week. One record is a PAY STATEMENT — the sheet that
+ * goes to the driver with the cheque, which is what it physically is.
+ *
+ * THE ROUTE, THE TABLES AND EVERY `Settlement*` IDENTIFIER ARE UNTOUCHED. This
+ * is what the screen says, not what the database calls it: /app/settlements
+ * stays /app/settlements, so a bookmark or a texted link still works, and
+ * `settlements`, `settlement_lines` and `settlementTotals` keep their names.
  *
  * NOT PAYROLL. This screen produces the statement that goes with the cheque and
  * exports it; nothing here withholds tax or files anything. The banner says so
@@ -33,7 +48,12 @@ import {
   paidSettlements,
   payByMonth,
 } from '../../../lib/charts/pay.ts'
-import { ceilingFor, compactMoney } from '../../../lib/charts/scale.ts'
+// `compactMoney` is deliberately NOT imported. Every figure on this page is
+// money somebody reconciles against a cheque, and the one place a compact
+// figure is allowed — an axis tick — is written out in full here too, because
+// the exact per-column figures are hidden below 640px and a reader on a phone
+// would have no full number anywhere on the picture to check the axis against.
+import { ceilingFor } from '../../../lib/charts/scale.ts'
 import { formatDate, fullName, todayInCalifornia } from '../../../lib/drivers.ts'
 import { formatCents } from '../../../lib/loads.ts'
 import {
@@ -427,6 +447,22 @@ const monthly = pay ? payByMonth(pay.rows, monthWindow.from, monthWindow.to) : n
 // The ceiling is taken once and passed in, so the axis label and the columns
 // cannot be scaled to two different numbers.
 const monthlyCeiling = monthly ? ceilingFor(monthly.values) : 0
+/**
+ * WHAT FULL HEIGHT IS WORTH, WRITTEN OUT IN FULL.
+ *
+ * An axis tick is the one figure THE MONEY RULE in src/lib/charts/scale.ts
+ * lets stay compact, and only where the exact number is also on the picture in
+ * words. It is not on this one below 640px: Columns hides a known column's
+ * figure at that width, so on the phone this page is read on, '$12k' would be
+ * the only money on the chart and there would be nothing to check it against.
+ * So it is `formatCents`, and "Full height" names what the number measures — a
+ * bare figure floating over a chart gets read as a total.
+ *
+ * Guarded on the ceiling, because `niceCeiling` returns 0 when there is nothing
+ * to scale, and "Full height $0.00" is a claim that nobody was paid.
+ */
+const monthlyAxisLabel =
+  monthlyCeiling > 0 ? `Full height ${formatCents(monthlyCeiling)}` : undefined
 const monthlyEnd = monthly ? monthly.buckets[monthly.buckets.length - 1].end : null
 const chartedRows =
   pay && monthlyEnd
@@ -557,7 +593,7 @@ const monthCoverage = payCoverage
 const showPayCharts = (pay?.rows.length ?? 0) > 0
 ---
 
-<App title="Settlements" subtitle="What each driver is owed for a period, and the paper that shows why.">
+<App title="Driver pay" subtitle="What each driver is owed for a period, and the paper that shows why.">
   {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
 
   <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
@@ -576,7 +612,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
     over the 44px a thumb needs, and the 12px gap keeps two of them from being
     one mis-tap.
   */}
-  <nav aria-label="Filter settlements by stage" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+  <nav aria-label="Filter pay statements by stage" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
     {
       stages
         .filter((s) => s.value !== 'void' || s.count > 0)
@@ -595,7 +631,10 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
                 : 'border-ink-100 bg-white hover:bg-ink-50',
             ]}
           >
-            <span class="text-xs tracking-wide text-ink-500 uppercase">{s.label}</span>
+            {/* ink-700, not ink-500: this is 12px type, and it sits on a
+                tinted pill the moment the stage is the one being looked at.
+                Both of those raise the floor. */}
+            <span class="text-xs tracking-wide text-ink-700 uppercase">{s.label}</span>
             <span class="mt-1 block text-3xl font-semibold tabular-nums">{s.count}</span>
             <span class="mt-0.5 block text-sm font-normal text-ink-700">
               {s.count === 0
@@ -606,7 +645,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
                     formatCents(s.cents)
                   : 'No money moved'}
             </span>
-            <span class="mt-1 block text-xs font-normal text-ink-500">
+            <span class="mt-1 block text-xs font-normal text-ink-700">
               {s.count > 0 && s.money && s.cents === 0
                 ? 'Nothing has been put on these yet.'
                 : s.note}
@@ -660,7 +699,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
 
 
   <form method="POST" class={`mt-6 ${card}`}>
-    <h2 class="text-lg font-semibold tracking-tight">Start a settlement</h2>
+    <h2 class="text-lg font-semibold tracking-tight">Start a pay statement</h2>
     <div class="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-end">
       <label class="block">
         <span class="field-label">Driver <span class="text-red-600">*</span></span>
@@ -697,7 +736,10 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
       activeDrivers.length === 0 && (
         <p class="mt-3 text-sm text-ink-500">
           No active drivers yet.{' '}
-          <a href="/app/drivers/new" class="link">
+          {/* Underlined at rest, and 44px tall. It sits in a sentence, so it
+              stays a link rather than becoming a button — but it is the way off
+              this screen, and a 20px line of text is not a thumb target. */}
+          <a href="/app/drivers/new" class="link inline-flex min-h-11 items-center">
             Add one <span aria-hidden="true">→</span>
           </a>
         </p>
@@ -708,7 +750,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
   <div class="mt-6 flex flex-wrap items-end justify-between gap-4">
     {/* gap-2, not gap-1: two 44px targets closer than 8px apart are one
         mis-tap, and this row is worked with a thumb. */}
-    <nav aria-label="Filter settlements by status" class="flex flex-wrap gap-2">
+    <nav aria-label="Filter pay statements by status" class="flex flex-wrap gap-2">
       {
         tabs.map((t) => {
           const here = status === t.value || (t.value === 'all' && status === 'all')
@@ -757,8 +799,8 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
         <p class="font-medium">Nothing here</p>
         <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
           {status === 'all' && !driverFilter
-            ? 'Start a settlement above. Its lines come from the driver’s pay agreements, plus anything you add by hand.'
-            : 'No settlement matches that filter. Clear it to see the rest.'}
+            ? 'Start a pay statement above. Its lines come from the driver’s pay agreements, plus anything you add by hand.'
+            : 'No pay statement matches that filter. Clear it to see the rest.'}
         </p>
       </div>
     ) : (
@@ -766,7 +808,10 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
         <table class="w-full text-sm sm:min-w-[46rem]">
           {/* No header line on a phone. Five column names above blocks that are
               not columns explain nothing; each block says what it is. */}
-          <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
+          {/* 12px type, so ink-700 and not ink-500: the floor rises at 12px and
+              under, and a column name nobody can read is a table with no header
+              at all. */}
+          <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
             <tr>
               <th class="px-4 py-3 font-medium">Period</th>
               <th class="px-4 py-3 font-medium">Driver</th>
@@ -801,7 +846,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
                       <span class="badge badge-neutral ml-2 tabular-nums">rev {r.revision}</span>
                     )}
                     {r.superseded_at && (
-                      <span class="block text-xs text-ink-500">Replaced by a later revision</span>
+                      <span class="block text-xs text-ink-700">Replaced by a later revision</span>
                     )}
                   </td>
                   {/* THE DRIVER LEADS. This list is opened to answer "what does
@@ -815,7 +860,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
                       {settlementStatusLabel(r.status)}
                     </span>
                     {r.paid_on && (
-                      <span class="ml-2 text-xs text-ink-500 tabular-nums">
+                      <span class="ml-2 text-xs text-ink-700 tabular-nums">
                         {formatDate(r.paid_on)}
                       </span>
                     )}
@@ -829,7 +874,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
                   <td class={`${cell} order-2 sm:text-right sm:whitespace-nowrap`}>
                     <span class="text-ink-500 sm:hidden">Net </span>
                     <span class="font-medium tabular-nums">{formatCents(net.cents)}</span>
-                    <span class="text-xs text-ink-500 sm:block">
+                    <span class="text-xs text-ink-700 sm:block">
                       {' '}
                       {net.frozen ? 'as paid' : 'from the lines'}
                     </span>
@@ -870,7 +915,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
       <div class="mt-8 grid gap-4 lg:grid-cols-2">
         <Figure
           title="Paid out, by month"
-          subtitle="Settlements marked paid, in the month the money moved"
+          subtitle="Pay statements marked paid, in the month the money moved"
           coverage={monthCoverage}
         >
           <Columns
@@ -879,20 +924,23 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
               return {
                 label: b.label,
                 value: v,
-                // Compact here and only here: this is a column label on a
-                // twelve-wide axis, not a figure anybody reconciles. The exact
-                // cents of every settlement in it are in the table below.
-                display: v === null ? '—' : compactMoney(v),
+                // THE FULL FIGURE, COMMAS AND CENTS. Columns prints `display`
+                // above the column AND reads it out as the column's aria-label,
+                // so this is a value label and not an axis tick — '$12.4k' is a
+                // hundred-dollar band printed as if it were a number, and this
+                // is a month's driver pay. `formatCents` renders an absent
+                // month as '—' by itself, never as $0.00.
+                display: formatCents(v),
                 // The trailing month is the one we are standing in, so it is
                 // short by however much of it is left — every load, all month.
                 inProgress: i === monthly.buckets.length - 1,
               }
             })}
             max={monthlyCeiling}
-            axisLabel={compactMoney(monthlyCeiling)}
+            axisLabel={monthlyAxisLabel}
             emptyMessage="Nothing marked paid in the last twelve months."
           />
-          <p class="mt-3 text-xs text-ink-500">
+          <p class="mt-3 text-xs text-ink-700">
             {chartedRows.length > 0
               ? `${formatCents(chartedCents)} across ${chartedRows.length} ${chartedRows.length === 1 ? 'settlement' : 'settlements'} in the last twelve months.`
               : 'Nothing has been marked paid in the last twelve months.'}
@@ -905,7 +953,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
           coverage={payCoverage}
         >
           <Bars items={ytdItems} limit={10} emptyMessage="Nobody has been marked paid yet." />
-          <p class="mt-3 text-xs text-ink-500">
+          <p class="mt-3 text-xs text-ink-700">
             {ytdPaidDrivers > 0
               ? `${formatCents(ytdCents)} paid to ${ytdPaidDrivers} ${ytdPaidDrivers === 1 ? 'driver' : 'drivers'} so far this year. Every settlement behind these totals is in the list below.`
               : `Nothing has been marked paid in ${payYear} yet.`}
@@ -943,7 +991,8 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
         >
           <div class="grid gap-6 sm:grid-cols-2">
             <div>
-              <h4 class="text-xs tracking-wide text-ink-500 uppercase">
+              {/* 12px, so ink-700. */}
+              <h4 class="text-xs tracking-wide text-ink-700 uppercase">
                 {monthPair.thisLabel} — so far
               </h4>
               <div class="mt-3">
@@ -964,7 +1013,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
               </div>
             </div>
             <div>
-              <h4 class="text-xs tracking-wide text-ink-500 uppercase">
+              <h4 class="text-xs tracking-wide text-ink-700 uppercase">
                 {monthPair.lastLabel} — the whole month
               </h4>
               <div class="mt-3">

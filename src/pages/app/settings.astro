@@ -1076,10 +1076,26 @@ const help = 'field-hint block'
             10 digits. You can leave this blank. We do not send text messages yet.
           </span>
           {
+            /*
+              A NOTE, NOT A BADGE, and the badge is why. `.badge` is
+              `whitespace-nowrap` — it is a one-word label, "Overdue" or "Paid" —
+              so this three-sentence warning rendered as a single unbreakable
+              pill about 350px wide inside a card on a 341px phone window, and
+              the end of it was off the screen.
+
+              The sentence itself stays exactly as it was. This number was
+              already saved: `parsePhoneEdit` grandfathers a legacy value on
+              purpose, because tightening the check locked owners out of their
+              own rows, so this is a standing note about a number we hold and not
+              a refusal of anything. Amber, because it is a thing to fix and not
+              a thing that is wrong right now, and the glyph is decoration beside
+              words that say it — colour is never the only signal.
+            */
             phoneUndialable && (
-              <span class="badge badge-warning mt-1.5">
-                We cannot text this number. Type 10 digits. We saved it anyway.
-              </span>
+              <p class="mt-1.5 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                <span aria-hidden="true">⚠</span>
+                <span>We cannot text this number. Type 10 digits. We saved it anyway.</span>
+              </p>
             )
           }
         </div>

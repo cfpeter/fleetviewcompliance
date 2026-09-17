@@ -379,7 +379,12 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
           <p class="mt-1.5">{error}</p>
           {duplicateHref && (
             <p class="mt-2">
-              <a href={duplicateHref} class="font-semibold">
+              {/* The one thing she needs next and cannot get from a sentence, so
+                  it is a 44px target rather than a line of text to aim at. It
+                  keeps the red of the box — `.error-summary a` in global.css —
+                  because the box reads as one thing and the underline is what
+                  says this is a link. */}
+              <a href={duplicateHref} class="inline-flex min-h-11 items-center font-semibold">
                 Open {duplicateName ? `load ${duplicateName}` : 'that load'}
               </a>
             </p>

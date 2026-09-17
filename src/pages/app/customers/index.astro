@@ -218,11 +218,11 @@ const rankingCoverage = ranking
       ranking.unattributedLoads > 0 &&
         `${formatCents(ranking.unattributedCents)} across ${ranking.unattributedLoads} ${loadWord(ranking.unattributedLoads)} has no customer on it. That money is in no bar and out of the share below, so the share looks higher than it really is.`,
       ranking.unpricedLoads > 0 &&
-        `${ranking.unpricedLoads} ${loadWord(ranking.unpricedLoads)} carry no rate yet and are in nobody's total. A load with no rate is not a $0 load.`,
+        `${ranking.unpricedLoads} ${loadWord(ranking.unpricedLoads)} ${ranking.unpricedLoads === 1 ? 'carries' : 'carry'} no rate yet and ${ranking.unpricedLoads === 1 ? 'is' : 'are'} in nobody's total. A load with no rate is not a $0 load.`,
       ranking.quotedLoads + ranking.cancelledLoads > 0 &&
-        `${ranking.quotedLoads + ranking.cancelledLoads} quoted or cancelled ${loadWord(ranking.quotedLoads + ranking.cancelledLoads)} are left out. Neither one is money anyone owes.`,
+        `${ranking.quotedLoads + ranking.cancelledLoads} quoted or cancelled ${loadWord(ranking.quotedLoads + ranking.cancelledLoads)} ${ranking.quotedLoads + ranking.cancelledLoads === 1 ? 'is' : 'are'} left out. Neither one is money anyone owes.`,
       missing > 0 &&
-        `${missing} ${loadWord(missing)} did not fit in one request. They are in no bar and in no share.`,
+        `${missing} ${loadWord(missing)} did not fit in one request. ${missing === 1 ? 'It is' : 'They are'} in no bar and in no share.`,
     ]
       .filter(Boolean)
       .join(' ')
@@ -268,13 +268,13 @@ const agingCoverage = aging
       agingSource(aging),
       'Only loads marked invoiced, with the factor, or funded. Anything you have not invoiced yet is not on these bars.',
       aging.unpricedLoads > 0 &&
-        `${aging.unpricedLoads} ${loadWord(aging.unpricedLoads)} still out carry no rate yet, so the amounts are lower than the real figures. A load with no rate is not a $0 load.`,
+        `${aging.unpricedLoads} ${loadWord(aging.unpricedLoads)} still out ${aging.unpricedLoads === 1 ? 'carries' : 'carry'} no rate yet, so the amounts are lower than the real figures. A load with no rate is not a $0 load.`,
       aging.undatedLoads > 0 &&
-        `${aging.undatedLoads} ${loadWord(aging.undatedLoads)} still out have no readable date and are in no band.`,
+        `${aging.undatedLoads} ${loadWord(aging.undatedLoads)} still out ${aging.undatedLoads === 1 ? 'has' : 'have'} no readable date and ${aging.undatedLoads === 1 ? 'is' : 'are'} in no band.`,
       owed && owed.unattributedLoads > 0 &&
         `${formatCents(owed.unattributedCents)} across ${owed.unattributedLoads} ${loadWord(owed.unattributedLoads)} has no customer on it, so it is on the bars but in nobody's name below.`,
       missing > 0 &&
-        `${missing} ${loadWord(missing)} did not fit in one request and are on no bar here.`,
+        `${missing} ${loadWord(missing)} did not fit in one request and ${missing === 1 ? 'is' : 'are'} on no bar here.`,
     ]
       .filter(Boolean)
       .join(' ')
@@ -627,8 +627,8 @@ const concentration =
                   {aging.chaseUnpricedLoads > 0 && (
                     <>
                       {aging.chaseUnpricedLoads} more {loadWord(aging.chaseUnpricedLoads)} past that
-                      line carry no rate, so {aging.chaseUnpricedLoads === 1 ? 'it is' : 'they are'}{' '}
-                      in no figure here.{' '}
+                      line {aging.chaseUnpricedLoads === 1 ? 'carries' : 'carry'} no rate, so{' '}
+                      {aging.chaseUnpricedLoads === 1 ? 'it is' : 'they are'} in no figure here.{' '}
                     </>
                   )}
                   Ring them today.
@@ -636,15 +636,17 @@ const concentration =
               )}
               {aging.disputedLoads > 0 && (
                 <p class="font-medium text-red-700">
-                  Separately, {aging.disputedLoads} {loadWord(aging.disputedLoads)} are short paid
-                  or in dispute: <span class="tabular-nums">{formatCents(aging.disputedCents)}</span>
+                  Separately, {aging.disputedLoads} {loadWord(aging.disputedLoads)}{' '}
+                  {aging.disputedLoads === 1 ? 'is' : 'are'} short paid or in dispute:{' '}
+                  <span class="tabular-nums">{formatCents(aging.disputedCents)}</span>
                   . Those are not on the bars above, because waiting will not fix them.
                 </p>
               )}
               {aging.unpricedLoads > 0 && (
                 <p class="text-ink-700">
-                  {aging.unpricedLoads} {loadWord(aging.unpricedLoads)} still out have no rate typed
-                  on {aging.unpricedLoads === 1 ? 'it' : 'them'}. Until{' '}
+                  {aging.unpricedLoads} {loadWord(aging.unpricedLoads)} still out{' '}
+                  {aging.unpricedLoads === 1 ? 'has' : 'have'} no rate typed on{' '}
+                  {aging.unpricedLoads === 1 ? 'it' : 'them'}. Until{' '}
                   {aging.unpricedLoads === 1 ? 'it has' : 'they have'} one, nobody can say what{' '}
                   {aging.unpricedLoads === 1 ? 'it is' : 'they are'} worth — so{' '}
                   {aging.unpricedLoads === 1 ? 'it is' : 'they are'} counted in the band and not in

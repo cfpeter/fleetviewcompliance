@@ -104,30 +104,45 @@ const faqs = [
         your DOT number and see your dates in about 10 seconds.
       </p>
 
+      {/*
+        `.field-affix` and `.field-affix-input` from global.css — the shared box
+        that holds a control beside an input. The local version of it drew its
+        own `focus-within:ring-2` and put `outline-none` on the input, which gave
+        this box TWO focus indicators at once: the unlayered `:focus-visible`
+        rule in global.css outranks `outline-none` on purpose, so the shared 2px
+        ring was drawn anyway and the local halo sat under it at a different
+        radius. One ring, the one every other control in the product uses.
+
+        Explicit `for` rather than a wrapping label, and the hint moved out from
+        under it: a <label> that wraps its control folds all of its text into that
+        control's accessible name, so this box announced as "Your USDOT number No
+        account, no email, no card. We read the public federal record." The hint
+        is a description, and `aria-describedby` is how a description is said.
+
+        `rounded-xl` and the padding are kept as utilities, which outrank the
+        component class — the marketing shape does not change.
+      */}
       <form method="GET" action="/check" class="mt-8 max-w-md">
-        <label class="block">
-          <span class="text-sm font-medium">Your USDOT number</span>
-          <div
-            class="mt-1 flex items-center rounded-xl border border-ink-100 bg-white focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/20"
-          >
-            <input
-              type="text"
-              name="dot"
-              inputmode="numeric"
-              pattern="[0-9]*"
-              required
-              placeholder="e.g. 1234567"
-              aria-label="Your USDOT number"
-              class="w-full rounded-xl bg-transparent px-4 py-3.5 text-base tabular-nums outline-none"
-            />
-            <button type="submit" class="btn btn-primary m-1 shrink-0">
-              Check
-            </button>
-          </div>
-          <span class="mt-2 block text-xs text-ink-700">
-            No account, no email, no card. We read the public federal record.
-          </span>
-        </label>
+        <label class="field-label" for="hero-dot">Your USDOT number</label>
+        <div class="field-affix mt-1 rounded-xl">
+          <input
+            type="text"
+            id="hero-dot"
+            name="dot"
+            inputmode="numeric"
+            pattern="[0-9]*"
+            required
+            placeholder="e.g. 1234567"
+            class="field-affix-input px-4 py-3.5 tabular-nums"
+            aria-describedby="hero-dot-hint"
+          />
+          <button type="submit" class="btn btn-primary m-1 shrink-0">
+            Check
+          </button>
+        </div>
+        <p class="mt-2 text-xs text-ink-700" id="hero-dot-hint">
+          No account, no email, no card. We read the public federal record.
+        </p>
       </form>
     </div>
   </section>
@@ -138,9 +153,9 @@ const faqs = [
       class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-8 gap-y-3 px-4 py-6 text-sm text-ink-500 sm:px-6"
     >
       <span>Federal deadlines in every state, plus the California ones</span>
-      <span aria-hidden="true" class="hidden text-ink-300 sm:inline">·</span>
+      <span aria-hidden="true" class="hidden text-ink-500 sm:inline">·</span>
       <span>Your data is yours. We never sell it</span>
-      <span aria-hidden="true" class="hidden text-ink-300 sm:inline">·</span>
+      <span aria-hidden="true" class="hidden text-ink-500 sm:inline">·</span>
       <span>No contract, cancel any month</span>
     </div>
   </section>
@@ -319,6 +334,10 @@ const faqs = [
         Type your DOT number. If it is not useful, close the page. You gave us nothing.
       </p>
       <form method="GET" action="/check" class="mt-6 flex max-w-md flex-col gap-3 sm:flex-row">
+        {/* `.field-input`, for the reason the hero box above uses the shared
+            affix: the local construction drew a second focus ring under the one
+            global.css draws anyway. The heading and the line above it are what
+            name this box on screen, so it keeps its `aria-label`. */}
         <input
           type="text"
           name="dot"
@@ -327,7 +346,7 @@ const faqs = [
           required
           placeholder="USDOT number"
           aria-label="Your USDOT number"
-          class="w-full rounded-xl border border-ink-100 bg-white px-4 py-3.5 text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+          class="field-input rounded-xl px-4 py-3.5 tabular-nums"
         />
         {/* Dark is the marketing chrome variant and stays dark out here. Inside
             /app the action colour is brand blue; this page is not /app. */}

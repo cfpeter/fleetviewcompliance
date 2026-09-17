@@ -625,7 +625,10 @@ const subtitle = lane.origin
         <p class="mt-1.5">{error}</p>
         {duplicateHref && (
           <p class="mt-2">
-            <a href={duplicateHref} class="font-semibold">
+            {/* 44px, like every other target. It keeps the red of the box —
+                `.error-summary a` in global.css — because the box reads as one
+                thing and the underline is what says this is a link. */}
+            <a href={duplicateHref} class="inline-flex min-h-11 items-center font-semibold">
               Open {duplicateName ? `load ${duplicateName}` : 'that load'}
             </a>
           </p>

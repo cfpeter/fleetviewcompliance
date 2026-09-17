@@ -74,6 +74,16 @@ const title = carrier
   : 'Check your USDOT number'
 
 /**
+ * Something was typed and it is not a USDOT number.
+ *
+ * `raw` with no `dot` is the only way to be sure: `normalizeDot` returns '' for
+ * anything that is not 1-8 digits, and an empty `raw` is somebody who simply
+ * arrived at /check. The two must stay apart — drawing the refusal on a first
+ * visit would tell a reader he had made a mistake before he typed anything.
+ */
+const badNumber = !dot && raw !== ''
+
+/**
  * The shared badge, picked from the colour pair the library hands back.
  *
  * `statusLabel` and the authority rows still return a bare `bg-… text-…` pair,
@@ -98,28 +108,54 @@ const badgeFor = (tone: string): string =>
   noindex
 >
   <section class="mx-auto max-w-4xl px-4 py-10 sm:px-6 sm:py-14">
-    <form method="GET" action="/check" class="mb-8 flex max-w-md flex-col gap-3 sm:flex-row">
-      <input
-        type="text"
-        name="dot"
-        inputmode="numeric"
-        value={dot ?? ''}
-        required
-        placeholder="USDOT number"
-        aria-label="USDOT number"
-        class="w-full rounded-xl border border-ink-100 bg-white px-4 py-3 text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
-      />
-      <button type="submit" class="btn btn-primary shrink-0 rounded-xl px-6">
-        Check
-      </button>
-    </form>
+    {/*
+      THE REFUSAL IS ATTACHED TO THE BOX, not printed under the form. It used to
+      be a loose amber line: a screen reader landing on the input heard "USDOT
+      number" and nothing about the number already in it being wrong, and a
+      reader on a phone saw a message with no arrow back to what to retype. The
+      box now carries `aria-invalid` and points at the message through
+      `aria-describedby`, which is the same four-part construction every rejected
+      field in the app uses — see src/components/ui/Field.astro.
 
-    {!dot && raw && (
-      <p class="mb-5 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-        That is not a USDOT number. A USDOT number has 1 to 8 digits, numbers only. Check it and
-        type it again.
-      </p>
-    )}
+      No summary box and no `#form-errors` fragment here, because this form is a
+      GET and there is no 303 to hang a fragment on: the page renders the refusal
+      on the way in, with one box and one message, and the message IS the summary.
+
+      `.field-input` rather than a local construction. The local one bordered
+      ink-100, which is 1.35:1 against white, and carried `outline-none` plus its
+      own `focus:ring-2` — a second focus treatment on top of the one every other
+      control in the product shares. `rounded-xl` is kept: a Tailwind utility
+      outranks the component class, so the marketing shape survives.
+    */}
+    <form method="GET" action="/check" class="mb-8 max-w-md">
+      <label class="field-label" for="dot">Your USDOT number</label>
+      <div class="mt-1 flex flex-col gap-3 sm:flex-row">
+        <input
+          type="text"
+          id="dot"
+          name="dot"
+          inputmode="numeric"
+          value={dot ?? ''}
+          required
+          placeholder="USDOT number"
+          class="field-input rounded-xl tabular-nums"
+          aria-invalid={badNumber ? 'true' : undefined}
+          aria-describedby={badNumber ? 'dot-error' : undefined}
+        />
+        <button type="submit" class="btn btn-primary shrink-0 rounded-xl px-6">
+          Check
+        </button>
+      </div>
+      {badNumber && (
+        <p class="field-error" id="dot-error">
+          <span aria-hidden="true">⚠</span>
+          <span>
+            That is not a USDOT number. Type 1 to 8 digits, numbers only — no letters and no
+            spaces.
+          </span>
+        </p>
+      )}
+    </form>
 
     {failed && (
       <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -152,7 +188,7 @@ const badgeFor = (tone: string): string =>
               USDOT <span class="tabular-nums">{dot}</span>
               {carrier.phy_city && (
                 <>
-                  <span aria-hidden="true" class="mx-2 text-ink-300">·</span>
+                  <span aria-hidden="true" class="mx-2 text-ink-500">·</span>
                   {carrier.phy_city}, {carrier.phy_state}
                 </>
               )}

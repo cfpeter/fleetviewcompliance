@@ -299,10 +299,19 @@ const driverName = (id: string | null) => {
         </select>
       </label>
 
-      <label class="mt-4 block">
-        <span class="text-sm font-medium">
+      {/*
+        An explicit `for`, not a wrapping label, and it is the error that forces
+        it. A <label> that WRAPS its control contributes all of its text to that
+        control's accessible name — so with the message inside it, the select
+        announced as "Which driver (only for a driver file) ⚠ Pick which driver
+        the link is for…" and then read the same sentence again from
+        aria-describedby. The name says what the box is; the description says
+        what is wrong with it. They are two different jobs.
+      */}
+      <div class="mt-4">
+        <label class="field-label" for="subject_id">
           Which driver <span class="font-normal text-ink-500">(only for a driver file)</span>
-        </span>
+        </label>
         <select
           id="subject_id"
           name="subject_id"
@@ -316,12 +325,12 @@ const driverName = (id: string | null) => {
           ))}
         </select>
         {badField === 'subject_id' && (
-          <span class="field-error" id="subject_id-error">
+          <p class="field-error" id="subject_id-error">
             <span aria-hidden="true">⚠</span>
             <span>{errorMessage}</span>
-          </span>
+          </p>
         )}
-      </label>
+      </div>
 
       <label class="mt-4 block">
         <span class="text-sm font-medium">Who is it for</span>
