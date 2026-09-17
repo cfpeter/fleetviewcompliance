@@ -71,6 +71,110 @@ export function visibleSections(view: DashboardView): readonly DashboardSection[
   return DASHBOARD_SECTIONS.filter((s) => showsSection(view, s))
 }
 
+/**
+ * How many rows a section shows before the page stops being a page.
+ *
+ * Measured, not guessed: unfiltered, the dashboard of a real carrier in the dev
+ * data ran 15,494px tall on a desktop, and one section — 119 rows of "we need a
+ * date from you" — was 11,084px of that on its own. Everything above it is the
+ * part that sells the product: the ring, the four tiles, the arithmetic
+ * sentence, the 13-week runway. Everything below it was a wall nobody reached
+ * the bottom of, on either a phone or a sales call.
+ *
+ * Ten because ten is what a person reads before deciding, and because the row
+ * eleven onwards was never the row he came for — see `capSection` on why the
+ * tail is the safe end to cut.
+ */
+export const SECTION_ROW_CAP = 10
+
+/**
+ * Does THIS view trim its sections?
+ *
+ * Only the resting view does, and that asymmetry is the whole design rather
+ * than an optimisation. The cap's link points at `dashboardHref(section)` —
+ * the same URL the stat tile above already points at — so a filtered view is
+ * the DESTINATION of a cap. Capping it too would make "Show all 119" land on a
+ * page showing ten, which is a link lying about where it goes, on the one
+ * screen whose entire job is trust.
+ */
+export function capsSections(view: DashboardView): boolean {
+  return view === 'all'
+}
+
+/** A section's rows after the cap, plus the link to the rest. */
+export interface CappedSection<Item, Extra> {
+  /** The regulation rows to render. */
+  items: Item[]
+  /** The owner's own reminder rows, which sit under them in the same table. */
+  reminders: Extra[]
+  /** Every row the section holds. What the heading and the link must say. */
+  total: number
+  /** How many the cap is holding back. 0 when nothing is hidden. */
+  hidden: number
+  /** The way to the rest, or null when there is no rest. */
+  more: { href: string; label: string } | null
+}
+
+/**
+ * The first `cap` rows of a section, and an honest link to the others.
+ *
+ * WHICH ROWS SURVIVE. The tail is cut, and that is only safe because the lists
+ * arrive ranked. `compareDeadlines` puts the soonest first within a standing
+ * and sorts undated rows last among their peers; `compareReminders` does the
+ * same for the owner's own lines. So:
+ *
+ *   - Overdue cuts expired documents first onto the screen (their due date is
+ *     behind us, so they sort ahead of everything), then missed recurring
+ *     filings by how soon the next cycle lands. The rows that go are the ones
+ *     whose next cycle is furthest out.
+ *   - Coming up cuts strictly soonest-first. The tail is the far end of 45 days.
+ *   - Missing a date is NOT urgency-ranked and cannot be — nothing in that
+ *     bucket has a date we can trust. It is ranked by the schedule we worked
+ *     out unaided, most stale first, and the rows with no date at all sort last
+ *     of all. So the tail this cap hides is disproportionately the rows with
+ *     nothing on them. That is survivable only because the link goes to the
+ *     date editor, which groups every one of them by driver and truck and is
+ *     the surface for answering them anyway. It would not be survivable if the
+ *     link went nowhere.
+ *
+ * Reminders are trimmed after the regulations, never before them, because that
+ * is the order they already render in: when a federal deadline and an errand
+ * are both overdue, the one that stops a truck is the one to read first.
+ *
+ * THE LINK COUNTS THE WHOLE SECTION, not what is on screen. A link reading
+ * "Show all 10" above ten rows would be noise, so a section at or under the cap
+ * gets no link at all; a link reading "Show all 10" above a hundred hidden rows
+ * would be a lie, which is worse than no link.
+ */
+export function capSection<Item, Extra>(
+  section: DashboardSection,
+  view: DashboardView,
+  items: readonly Item[],
+  reminders: readonly Extra[] = [],
+  cap: number = SECTION_ROW_CAP,
+): CappedSection<Item, Extra> {
+  const total = items.length + reminders.length
+
+  if (!capsSections(view) || total <= cap) {
+    return { items: [...items], reminders: [...reminders], total, hidden: 0, more: null }
+  }
+
+  const shownItems = items.slice(0, cap)
+  const shownReminders = reminders.slice(0, cap - shownItems.length)
+
+  return {
+    items: shownItems,
+    reminders: shownReminders,
+    total,
+    hidden: total - shownItems.length - shownReminders.length,
+    // Plain, and deliberately not cleverer than this. The owners reading it are
+    // Glendale and Sun Valley fleet owners, many of whom read English as a
+    // second language: three words, one of them a number they already saw in
+    // the heading, and an arrow that is not a word in any language.
+    more: { href: dashboardHref(section), label: `Show all ${total} →` },
+  }
+}
+
 /** How a view reads mid-sentence: "Showing {noun} only". */
 export function viewNoun(view: DashboardView): string {
   switch (view) {

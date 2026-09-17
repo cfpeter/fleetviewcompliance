@@ -19,11 +19,20 @@
  * walks back through the filters he tried, and the page keeps working on one
  * bar of signal — same reasoning as the segmented control on /app/vehicles.
  */
+import Donut from '../../components/charts/Donut.astro'
 import Figure from '../../components/charts/Figure.astro'
 import Runway from '../../components/charts/Runway.astro'
 import App from '../../layouts/App.astro'
-import { buildRunway } from '../../lib/charts/runway.ts'
 import {
+  attentionParts,
+  buildHealth,
+  donutSlices,
+  healthHeadline,
+} from '../../lib/charts/health.ts'
+import { buildRunway } from '../../lib/charts/runway.ts'
+import { TONES } from '../../lib/charts/tones.ts'
+import {
+  capSection,
   dashboardHref,
   emptyFilterState,
   parseDashboardView,
@@ -237,12 +246,26 @@ if (Astro.request.method === 'POST') {
 
 const overdue = items.filter((i) => i.status.standing === 'overdue')
 const unknown = items.filter((i) => i.status.standing === 'unknown')
-const soon = items.filter(
-  (i) => i.status.standing === 'current' && (i.daysUntil ?? 999) <= SOON_DAYS,
-)
-const later = items.filter(
-  (i) => i.status.standing === 'current' && (i.daysUntil ?? 999) > SOON_DAYS,
-)
+/**
+ * Due soon means a date AHEAD of us, inside the window.
+ *
+ * `daysUntil` is NEGATIVE for a one-time obligation that has been satisfied —
+ * a pre-employment Clearinghouse query run when the driver was hired comes back
+ * `current` with something like -2040. The old test was `<= SOON_DAYS`, which
+ * -2040 passes, so twenty things finished years ago sat under a tile reading
+ * "Due in 45 days". The reminder filter below already had this right; the
+ * deadline filter did not.
+ *
+ * Written once and used for both arms so they stay exhaustive: every `current`
+ * item is in exactly one of them, and a change here cannot put an item in
+ * neither or in both.
+ */
+const dueSoon = (days: number | undefined) => {
+  const d = days ?? Number.POSITIVE_INFINITY
+  return d >= 0 && d <= SOON_DAYS
+}
+const soon = items.filter((i) => i.status.standing === 'current' && dueSoon(i.daysUntil))
+const later = items.filter((i) => i.status.standing === 'current' && !dueSoon(i.daysUntil))
 const manual = items.filter((i) => i.status.standing === 'unsupported')
 
 /**
@@ -280,7 +303,34 @@ const sections = [
 // per view, "unknown ranks with overdue" becomes a thing a future edit can undo
 // on the page while the engine still reports it correctly, and nothing throws.
 const visible = sections.filter((s) => showsSection(view, s.key))
+
+// The TRUE totals of what this view covers, and it stays that way. This is the
+// number in "Showing only what is overdue. 15 of 171 items", and it is what
+// decides whether the filtered empty state fires — neither of which has anything
+// to do with how many rows the resting page chooses to draw. Derived from the
+// capped lists below, a section trimmed to ten would start describing itself as
+// ten, and a view whose rows were all trimmed away would render the "Nothing is
+// overdue" reassurance over a list that is not empty.
 const shownCount = visible.reduce((n, s) => n + s.items.length + s.reminders.length, 0)
+
+/**
+ * The resting page shows the top of each section, not all of it.
+ *
+ * Unfiltered, this page drew every row it had: 15,494px on a desktop, one
+ * section 11,084px of it. Everything worth reading was in the first screen and
+ * everything after it was a wall — so each section now stops at
+ * `SECTION_ROW_CAP` and hands over to the view its own stat tile already points
+ * at. `capSection` is where the rules live, and the rules that matter are that
+ * the tail is the safe end to cut, that the link counts the whole section, and
+ * that a FILTERED view is never capped — it is what the link leads to.
+ *
+ * No second mechanism, and no script. The link is `?show=`, the same parameter
+ * the tiles use, so the page ships the same zero bytes of JavaScript it did.
+ */
+const lists = visible.map((s) => ({
+  ...s,
+  shown: capSection(s.key, view, s.items, s.reminders),
+}))
 
 // Tile counts come off the WHOLE set, never off the filtered one. The counts are
 // the reason he opens the page at all — a tile that reads "0 overdue" merely
@@ -293,58 +343,109 @@ const shownCount = visible.reduce((n, s) => n + s.items.length + s.reminders.len
 // number on this page he checks first, disagreeing with the rows directly below
 // it. He would stop believing the other three.
 const trackedCount = items.length + reminders.length
-const tiles = [
-  {
-    view: 'overdue',
-    label: 'Overdue',
-    count: overdue.length + reminderOverdue.length,
-    noun: 'these',
-    bg: 'bg-red-50/40',
-    idleBorder: 'border-red-200',
+
+/**
+ * The four buckets, counted once, for the ring AND for the tiles.
+ *
+ * THE TILES ARE NOW THE RING'S LEGEND, which is why they are derived from
+ * `buildHealth` rather than hand-assembled here. A ring and a row of counters
+ * showing the same four numbers from two different pieces of arithmetic is two
+ * answers to one question, and the first time a bucket rule changed only one of
+ * them would move — on the screen whose entire job is trust.
+ *
+ * REMINDERS ARE COUNTED, unlike on the runway below. The runway is drawn from
+ * the rules alone and says so, because a shape that counted the owner's own
+ * errands as regulations would make a quiet November look busy for a reason no
+ * regulation is responsible for. The ring is not making that claim: it is the
+ * mix of what is on this screen, the tiles are the ring's legend, and a tile
+ * that counted only regulations while the section under it listed reminders too
+ * would be the number he checks first disagreeing with the rows beneath it.
+ */
+const health = buildHealth([
+  ...items.map((i) => ({ standing: i.status.standing, daysUntil: i.daysUntil })),
+  ...reminders.map((r) => ({ standing: r.status.standing, daysUntil: r.daysUntil })),
+])
+
+/**
+ * The tiles: four big numbers, three of them a filter.
+ *
+ * 'On track' is deliberately NOT a link. There is no `?show=` view behind it
+ * because there is nothing on the other side to do — that is the whole meaning
+ * of the green arc — and a fourth tappable tile that led to a list he does not
+ * need to read would be the one control on this page that wastes a tap. It is
+ * still a tile: the colour rule needs a number and a word beside every slice,
+ * and green is a slice.
+ *
+ * The old fourth tile, 'All items', is gone. It was the way back out of a
+ * filter, and the way back out is now the link in the figure header plus the
+ * sentence under these tiles — so the four tiles map exactly onto the four arcs
+ * and nothing in the row means something the ring does not.
+ */
+const TILE_STYLE: Record<string, { box: string; labelClass: string; countClass: string }> = {
+  overdue: {
+    box: 'border-red-200 bg-red-50/40',
     labelClass: 'text-red-700',
     countClass: 'text-red-700',
   },
-  {
-    view: 'unknown',
-    label: 'Missing a date',
-    count: unknown.length,
-    noun: 'these',
-    bg: 'bg-white',
-    idleBorder: 'border-ink-100',
+  // Grey, not white. It is the colour of the arc, and 'Not sure' in
+  // `standingPill` is already grey — the tile has to look like the pill on the
+  // row it filters to. Never green, never blank: a missing date is not a pass.
+  unknown: {
+    box: 'border-ink-200 bg-ink-50',
     labelClass: 'text-ink-500',
-    countClass: '',
+    countClass: 'text-ink-900',
   },
-  {
-    view: 'soon',
-    label: `Due in ${SOON_DAYS} days`,
-    count: soon.length + reminderSoon.length,
-    noun: 'these',
-    bg: 'bg-white',
-    idleBorder: 'border-ink-100',
-    labelClass: 'text-ink-500',
-    countClass: '',
+  soon: {
+    box: 'border-amber-200 bg-amber-50/40',
+    labelClass: 'text-amber-800',
+    countClass: 'text-amber-800',
   },
-  // The fourth tile is the way back out. It is the only one whose count is the
-  // whole list, so it doubles as "show everything" without adding a fifth
-  // control that would push the other four further apart under his thumb.
-  {
-    view: 'all',
-    label: 'All items',
-    count: trackedCount,
-    noun: 'everything',
-    bg: 'bg-white',
-    idleBorder: 'border-ink-100',
-    labelClass: 'text-ink-500',
-    countClass: '',
+  ontrack: {
+    box: 'border-emerald-200 bg-emerald-50/40',
+    labelClass: 'text-emerald-800',
+    countClass: 'text-emerald-800',
   },
-] as const
+}
 
-// grid-cols-2 on a phone, not one column. Four stacked full-width tiles are
-// ~400px of nothing, which would push the list he came for below the fold on
-// the exact device this filter exists to fix; two-up keeps all four reachable
-// in the first screen and each one still a comfortable thumb target.
-const tileBase = 'block rounded-xl border p-4 transition sm:p-5'
+const tiles = health.buckets.map((b) => ({
+  key: b.key,
+  view: b.view,
+  label: b.label,
+  count: b.count,
+  swatch: TONES[b.tone].swatch,
+  ...TILE_STYLE[b.key],
+}))
+
+// A row, not a stacked card. Stacked, four tiles are ~400px of nothing on a
+// phone and there is no room left beside them for the ring; as rows the whole
+// block — ring and all four numbers — fits in about 190px, which is less than
+// the old tiles took on their own.
+const tileBase = 'flex items-center gap-2 rounded-lg border px-2.5 py-2 transition'
 const tileOn = 'border-ink-900 shadow-sm ring-2 ring-ink-900'
+
+/** The ring is a chart, so it obeys the chart rule: never on a filtered view. */
+const showRing = view === 'all' && health.total > 0
+
+// The sentence under the ring, and it is the reason the centre number is
+// allowed to exist. "21 need attention" with nothing beside it is a score, and
+// a score is a thing a broker quotes back at a carrier who then cannot take it
+// apart. This prints the addition: 4 + 12 + 5 = 21, in the same order and the
+// same words as the tiles above it.
+const parts = attentionParts(health)
+
+const healthSubtitle = !showRing
+  ? undefined
+  : health.needsAttention === 0
+    ? `All ${health.total} we track have a date and are still ahead of you.`
+    : `Out of ${health.total} we track. Tap a box to see the list.`
+
+// Same rule as the runway's: what the shape does NOT cover, attached to the
+// figure rather than dropped in a footnote, because the shape is read whole and
+// in about a second, before any prose on the page is.
+const healthCoverage =
+  showRing && health.unschedulable > 0
+    ? `${health.unschedulable} more have no due date we can work out. They are in the list below.`
+    : undefined
 
 /**
  * The next quarter drawn as a shape.
@@ -439,6 +540,29 @@ if (view === 'unknown' && focus && savedCount && savedCount > 0 && isBatchStamp(
 const dateField =
   'mt-1 w-full max-w-xs rounded-lg border border-ink-100 bg-white px-3 py-2 text-base tabular-nums outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20'
 
+/**
+ * ONE HEADING SCALE, TWO STEPS.
+ *
+ * `h2 text-lg font-semibold` names a section of the page; this names anything a
+ * level below, at the same size and weight the chart frame already gives its own
+ * heading (src/components/charts/Figure.astro). It replaces a 12px grey
+ * uppercase treatment that did not match either of the other two on the page.
+ */
+const cardHeading = 'text-sm font-semibold tracking-tight'
+
+/**
+ * ON A PHONE THE ROWS ARE NOT ROWS.
+ *
+ * This table is 48rem wide and the window on a 375px phone is about 341px, so
+ * over half of every row was behind a sideways scroll — the due date and the
+ * citation among it, on the one screen this product exists to show. Below `sm`
+ * every cell becomes a block; from `sm` the same markup is a table again. ONE
+ * set of cells, not two — and one set for both kinds of row, so a reminder and
+ * a regulation cannot drift apart. The pattern is written down in
+ * src/components/Documents.astro.
+ */
+const cell = 'block px-4 sm:table-cell sm:py-3'
+
 const emptyFiltered = shownCount === 0 && view !== 'all' ? emptyFilterState(view) : null
 
 /**
@@ -489,44 +613,173 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
     )
   }
 
-  <nav aria-label="Filter the list" class="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
-    {
-      tiles.map((t) => {
-        const on = view === t.view
-        // The aria-label is spelled out because the visible tile is three
-        // stacked <div>s: read straight off the DOM the link announces as
-        // "Overdue 2 Show these", and in some readers as a link with no name at
-        // all — a filter whose state a screen-reader user cannot hear.
-        return (
-          <a
-            href={dashboardHref(t.view)}
-            aria-current={on ? 'page' : undefined}
-            aria-label={`${t.label}: ${t.count}. ${on ? 'Showing' : 'Show'} ${t.noun}.`}
-            class:list={[tileBase, t.bg, on ? tileOn : `${t.idleBorder} hover:shadow-sm`]}
-          >
-            <div class:list={['text-xs tracking-wide uppercase', t.labelClass]}>{t.label}</div>
-            <div
-              class:list={[
-                'mt-1 text-2xl font-semibold tabular-nums sm:text-3xl',
-                t.countClass,
-              ]}
-            >
-              {t.count}
-            </div>
-            {/*
-              A second, non-colour signal for which tile is on. The ring does the
-              work for most people, but "selected" carried by outline alone is
-              the kind of state that disappears in sunlight on a cracked phone
-              screen in a yard — which is precisely where this gets read.
-            */}
-            <div class:list={['mt-1 text-xs', on ? 'font-medium text-ink-900' : 'text-ink-300']}>
-              {on ? 'Showing' : 'Show'} {t.noun}
-            </div>
-          </a>
+  {/*
+    ===================================================== where he stands now ===
+
+    ONE element, answering ONE question: how much of this fleet is a problem
+    right now. The ring is the shape and the tiles are the numbers, and they are
+    inside the same frame because they are two halves of one answer rather than
+    two answers — four overdue is a crisis in a fleet of nine and a Tuesday in a
+    fleet of four hundred, which is a proportion and is invisible in a row of
+    counts; and a proportion with no counts beside it is a picture nobody can
+    act on. So the ring carries exactly one number and the tiles carry the four.
+
+    The tiles ARE the ring's legend. Same four buckets, same order, same colours,
+    a swatch on each, and the words and the numbers printed either way — colour
+    is never the only thing tying a tile to its arc.
+  */}
+  <Figure
+    title={healthHeadline(health)}
+    subtitle={healthSubtitle}
+    coverage={healthCoverage}
+    action={view !== 'all' ? { href: '/app', label: 'Show everything' } : undefined}
+  >
+    <div class="flex items-center gap-3 sm:gap-6">
+      {
+        showRing && (
+          <Donut
+            slices={donutSlices(health)}
+            centre={health.needsAttention}
+            centreNote={`of ${health.total}`}
+            centreTone={health.needsAttention === 0 ? 'clear' : 'attention'}
+          />
         )
-      })
+      }
+
+      <nav
+        aria-label="Filter the list"
+        class:list={[
+          'grid min-w-0 flex-1 gap-2',
+          // Beside the ring: one column on a phone, two on a tablet, all four
+          // in a row on a wide screen, where two would leave each tile a third
+          // of a metre of empty space to the right of its own label.
+          // With no ring — a filtered view — it takes the whole width back.
+          showRing ? 'sm:grid-cols-2 sm:gap-3 lg:grid-cols-4' : 'grid-cols-2 sm:grid-cols-4 sm:gap-3',
+        ]}
+      >
+        {
+          tiles.map((t) => {
+            const on = t.view !== null && view === t.view
+            // The aria-label is spelled out because the visible tile is a swatch
+            // and two stacked <span>s: read straight off the DOM the link
+            // announces as "4 Overdue Show these", and in some readers as a link
+            // with no name at all — a filter whose state a screen-reader user
+            // cannot hear.
+            const label = `${t.label}: ${t.count}. ${on ? 'Showing' : 'Show'} these.`
+            const body = (
+              <>
+                <span
+                  class:list={[
+                    // min-w, not w. A fixed 2rem box fits "17" and not "148", and the
+                    // third digit spilled straight across the swatch and the label.
+                    // A fleet's missing-date count reaching three figures is the
+                    // normal case on the day someone signs up, not an edge case.
+                    'min-w-8 shrink-0 text-right text-xl leading-none font-semibold tabular-nums sm:text-2xl',
+                    t.countClass,
+                  ]}
+                >
+                  {t.count}
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="flex items-center gap-1.5">
+                    <span
+                      class:list={['h-2 w-2 shrink-0 rounded-full', t.swatch]}
+                      aria-hidden="true"
+                    />
+                    {/* Wraps, never truncates. Two-up on a 375px phone the
+                        label had about 85px and "Missing a date" needs 82, so
+                        `truncate` cut it to "Missing a ..." on exactly the
+                        device this is read on — and the word beside the number
+                        is the half of the tile that colour is not allowed to
+                        carry alone. A second line costs 14px; a lost word costs
+                        the rule. */}
+                    <span class:list={['block text-xs leading-tight', t.labelClass]}>
+                      {t.label}
+                    </span>
+                  </span>
+                  {/*
+                    A second, non-colour signal for which tile is on. The dark
+                    ring does the work for most people, but "selected" carried by
+                    an outline alone is the kind of state that disappears in
+                    sunlight on a cracked phone screen in a yard — which is
+                    precisely where this gets read.
+
+                    On track says what it is instead: nothing to open.
+                  */}
+                  <span
+                    class:list={[
+                      'mt-0.5 block text-[10px] leading-tight',
+                      t.view === null
+                        ? 'text-emerald-700'
+                        : on
+                          ? 'font-medium text-ink-900'
+                          : 'text-ink-300',
+                    ]}
+                  >
+                    {t.view === null ? 'Nothing to do' : on ? 'Showing' : 'Show these'}
+                  </span>
+                </span>
+              </>
+            )
+
+            // Green is not a link. There is no filtered view behind it because
+            // there is nothing on the other side to act on, and a tap that lands
+            // on a list he does not need to read is a tap this page wasted.
+            return t.view === null ? (
+              <div class:list={[tileBase, t.box]}>{body}</div>
+            ) : (
+              <a
+                href={dashboardHref(t.view)}
+                aria-current={on ? 'page' : undefined}
+                aria-label={label}
+                class:list={[tileBase, t.box, on ? tileOn : 'hover:shadow-sm']}
+              >
+                {body}
+              </a>
+            )
+          })
+        }
+      </nav>
+    </div>
+
+    {/*
+      The sentence that states the finding, and the arithmetic behind the number
+      in the middle of the ring. It is not a summary of the chart — it IS the
+      chart, for a reader who cannot see colour, is holding the phone in the sun,
+      or is being read the page aloud. And it is what stops the centre number
+      being a score: he can see what it is made of without tapping anything.
+    */}
+    {
+      showRing && (
+        <p class="mt-3 text-sm text-ink-500">
+          {parts.length > 1 ? (
+            <span class="tabular-nums">
+              {parts.map((p, i) => (
+                <>
+                  {i > 0 && ' + '}
+                  {p.count} {p.label.toLowerCase()}
+                </>
+              ))}
+              {' = '}
+              <span class="font-medium text-ink-900">{health.needsAttention}</span>.
+            </span>
+          ) : parts.length === 1 ? (
+            <span class="tabular-nums">
+              All {health.needsAttention} are {parts[0].label.toLowerCase()}.
+            </span>
+          ) : (
+            <span>Nothing is overdue, missing a date, or due in the next {SOON_DAYS} days.</span>
+          )}
+          {health.onTrack > 0 && parts.length > 0 && (
+            <span class="tabular-nums">
+              {' '}
+              The other {health.onTrack} {health.onTrack === 1 ? 'is' : 'are'} on track.
+            </span>
+          )}
+        </p>
+      )
     }
-  </nav>
+  </Figure>
 
   {
     view !== 'all' && (
@@ -607,11 +860,13 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
 
       `?show=unknown` stops being a table and becomes a work surface.
 
-      An input on each table row was the obvious answer and is unusable here: the
-      list table is `min-w-[48rem]` inside a horizontal scroller, so on a 375px
-      phone a fifth column sits about 500px off the right edge. The owner in the
-      yard would never find it, and the `help` sentence — the only thing standing
-      between him and a date typed in the wrong direction — has nowhere to go.
+      An input on each table row was the obvious answer and is unusable here. On
+      a phone the list is now a stack of blocks rather than a row of columns, so
+      a fifth cell would be a fifth line under every one of 171 rows, and the
+      `help` sentence — the only thing standing between him and a date typed in
+      the wrong direction — still has nowhere to go. (The original reason was
+      worse: the table was `min-w-[48rem]` inside a sideways scroller, and the
+      input sat about 500px off the right edge of a 375px screen.)
 
       So: one card per driver, truck and the carrier record, and `&s=` opens one.
       Same doctrine as the tiles, one level down — shareable, back-button walks
@@ -697,7 +952,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
 
         {editor.groups.map((g) => (
           <>
-            <h3 class="mt-5 text-xs tracking-wide text-ink-500 uppercase">{g.title}</h3>
+            <h3 class:list={['mt-5', cardHeading]}>{g.title}</h3>
             <div class="mt-2 space-y-2">
               {g.subjects.map((subject) => (
                 <a
@@ -947,14 +1202,18 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
 
   {
     view !== 'unknown' &&
-    visible.map(
+    lists.map(
       (s) =>
-        s.items.length + s.reminders.length > 0 && (
+        s.shown.total > 0 && (
           <section class="mt-8">
             <h2 class="text-lg font-semibold tracking-tight">
               {s.title}
+              {/* The WHOLE section, always — never the number of rows drawn
+                  below. Ten rows under a heading that says 119 is a page
+                  showing you the top of a list; ten rows under a heading that
+                  says 10 is a page that has lost 109 of your deadlines. */}
               <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">
-                {s.items.length + s.reminders.length}
+                {s.shown.total}
               </span>
             </h2>
 
@@ -973,11 +1232,15 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
               </p>
             )}
 
-            {s.reminders.length > 0 && (
+            {s.shown.reminders.length > 0 && (
               /* Said above the table, every time reminders appear in one.
                  Colour alone is not allowed to carry this: the badge in the
                  last column says the word, and this line says what the word
-                 means. Short, because it is read on a phone. */
+                 means. Short, because it is read on a phone.
+
+                 Keyed off the SHOWN reminders, not off the section's. A cap
+                 that trimmed every reminder out of the table would otherwise
+                 leave a line explaining a badge that is not on screen. */
               <p class="mt-1 text-sm text-ink-500">
                 {REMINDER_ORIGIN_NOTE}{' '}
                 <a href="/app/reminders" class="font-medium text-brand-600 hover:underline">
@@ -987,8 +1250,13 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
             )}
 
             <div class={`mt-3 overflow-x-auto rounded-xl border ${s.tone}`}>
-              <table class="w-full min-w-[48rem] text-sm">
-                <thead class="border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase">
+              <table class="w-full text-sm sm:min-w-[48rem]">
+                {/*
+                  No header line on a phone. Four column names above blocks that
+                  are not columns explain nothing — each block says what it is in
+                  its own words instead.
+                */}
+                <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-500 uppercase sm:table-header-group">
                   <tr>
                     <th class="px-4 py-3 font-medium">What</th>
                     <th class="px-4 py-3 font-medium">Who or what</th>
@@ -997,11 +1265,15 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-ink-100">
-                  {s.items.map((i) => {
+                  {s.shown.items.map((i) => {
                     const pill = standingPill(i.status.standing)
                     return (
-                      <tr class="hover:bg-ink-50/60">
-                        <td class="px-4 py-3">
+                      /* The block leads with WHAT is due. The section heading
+                         above it has already said which bucket every row in it
+                         is in, so the pill is not the thing the phone reader is
+                         scanning this list for — the name of the thing is. */
+                      <tr class="block py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                        <td class={cell}>
                           <div class="font-medium">{i.rule.title}</div>
                           {i.status.standing === 'unknown' && i.status.needs && (
                             <div class="mt-0.5 text-xs text-ink-300">
@@ -1009,7 +1281,7 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                             </div>
                           )}
                         </td>
-                        <td class="px-4 py-3">
+                        <td class={`${cell} mt-1 sm:mt-0`}>
                           {i.subjectId ? (
                             <a
                               href={subjectHref(i.subjectType, i.subjectId)}
@@ -1020,19 +1292,20 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                           ) : (
                             <span>{i.subjectLabel}</span>
                           )}
-                          <div class="text-xs text-ink-300">
+                          <span class="text-xs text-ink-300 sm:block">
+                            <span class="sm:hidden"> · </span>
                             {i.subjectType.replaceAll('_', ' ')}
-                          </div>
+                          </span>
                         </td>
-                        <td class="px-4 py-3 whitespace-nowrap">
+                        <td class={`${cell} mt-1.5 whitespace-nowrap sm:mt-0`}>
                           <span class:list={['rounded-md px-2 py-0.5 text-xs font-medium', pill.className]}>
                             {pill.label}
                           </span>
                           {/* A countdown here is a promise of slack, so only a
                               `current` row gets one. See `dueLine`. */}
-                          <div class="mt-1 tabular-nums">{dueLine(i)}</div>
+                          <span class="ml-2 tabular-nums sm:mt-1 sm:ml-0 sm:block">{dueLine(i)}</span>
                         </td>
-                        <td class="px-4 py-3 text-xs text-ink-500">
+                        <td class={`${cell} mt-1.5 text-xs text-ink-500 sm:mt-0`}>
                           <a
                             href={i.rule.sourceUrl}
                             target="_blank"
@@ -1077,17 +1350,17 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                       deadline and an errand are both overdue, the one that stops
                       a truck is the one to read first.
                   */}
-                  {s.reminders.map((r) => {
+                  {s.shown.reminders.map((r) => {
                     const pill = standingPill(r.status.standing)
                     return (
-                      <tr class="bg-brand-500/[0.05] hover:bg-brand-500/[0.09]">
-                        <td class="px-4 py-3">
+                      <tr class="block bg-brand-500/[0.05] py-3 hover:bg-brand-500/[0.09] sm:table-row sm:py-0">
+                        <td class={cell}>
                           <div class="font-medium">{r.title}</div>
                           {r.note && (
                             <div class="mt-0.5 max-w-sm text-xs text-ink-500">{r.note}</div>
                           )}
                         </td>
-                        <td class="px-4 py-3">
+                        <td class={`${cell} mt-1 sm:mt-0`}>
                           {r.subject.href ? (
                             <a
                               href={r.subject.href}
@@ -1100,23 +1373,24 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                           )}
                           {/* The words the nav uses — "Trucks", "Drivers" — not
                               the column names. */}
-                          <div class="text-xs text-ink-300">
+                          <span class="text-xs text-ink-300 sm:block">
+                            <span class="sm:hidden"> · </span>
                             {r.subject.kind === 'carrier'
                               ? 'your company'
                               : r.subject.kind === 'vehicle'
                                 ? 'truck'
                                 : 'driver'}
-                          </div>
+                          </span>
                         </td>
-                        <td class="px-4 py-3 whitespace-nowrap">
+                        <td class={`${cell} mt-1.5 whitespace-nowrap sm:mt-0`}>
                           <span
                             class:list={['rounded-md px-2 py-0.5 text-xs font-medium', pill.className]}
                           >
                             {pill.label}
                           </span>
-                          <div class="mt-1 tabular-nums">{dueLine(r)}</div>
+                          <span class="ml-2 tabular-nums sm:mt-1 sm:ml-0 sm:block">{dueLine(r)}</span>
                         </td>
-                        <td class="px-4 py-3 text-xs">
+                        <td class={`${cell} mt-1.5 text-xs sm:mt-0`}>
                           {/* No link. Nothing to look up IS the fact. */}
                           <span
                             class:list={[
@@ -1133,6 +1407,30 @@ const backOut = 'rounded-lg border border-ink-100 px-4 py-2 text-sm font-medium 
                 </tbody>
               </table>
             </div>
+
+            {/*
+              The rest of the section, one tap away.
+
+              OUTSIDE the table, not in a last row of it. On a phone it belongs
+              to the whole section rather than to a row, and from `sm` up the
+              table is `min-w-[48rem]` inside `overflow-x-auto` — a link placed
+              in there would sit off the right edge on a narrow screen, findable
+              only by somebody who already knew it was there, which is nobody.
+
+              The destination is `?show=` — the same URL the stat tile at the
+              top of the page already points at. No second way of saying "show
+              me the overdue ones", and no script: this is a link.
+            */}
+            {s.shown.more && (
+              <p class="mt-3 text-sm">
+                <a
+                  href={s.shown.more.href}
+                  class="font-medium text-brand-600 hover:underline"
+                >
+                  {s.shown.more.label}
+                </a>
+              </p>
+            )}
           </section>
         ),
     )
