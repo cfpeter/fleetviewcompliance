@@ -6,11 +6,32 @@
  * silently serves a signed-out visitor.
  */
 import { defineMiddleware } from 'astro:middleware'
+import { isOperatorRequest, notFound } from './lib/admin/operators.ts'
 import { handlesAuthCode } from './lib/redirect.ts'
 import { sessionClient } from './lib/supabase/server.ts'
 
 const GUARDED = /^\/app(\/|$)/
 const API = /^\/api\//
+
+/**
+ * The operator screens. Not a carrier's pages — the platform's.
+ *
+ * /app/admin/claims lists claim requests across EVERY carrier: which companies
+ * are here, which USDOT numbers strangers are trying to take, and who is
+ * trying. The whole subtree is matched rather than the one page, so a second
+ * admin screen added later is guarded the day it is created rather than the day
+ * somebody remembers.
+ *
+ * WHY THE GATE IS HERE AND NOT ONLY IN THE PAGE. Both of the refusals below
+ * would announce the route: an unauthenticated visitor gets a redirect to
+ * /login?next=/app/admin/claims, and a signed-in carrier with no membership
+ * gets bounced to /app/setup. A route that does not exist gets neither — Astro
+ * matches routes BEFORE middleware runs, so /app/not-a-page never reaches this
+ * file and comes back a bare 404. So the only place the gate can refuse without
+ * confirming the path is above those two branches, which is where it sits. The
+ * page repeats the check for itself; see the note there.
+ */
+const ADMIN = /^\/app\/admin(\/|$)/
 
 /**
  * Endpoints that authenticate themselves and must NOT require a session.
@@ -60,7 +81,21 @@ const SELF_AUTHENTICATING = /^\/api\/(cron|stripe|auth)\//
  */
 export const onRequest = defineMiddleware(async (context, next) => {
   const response = await route(context, next)
-  if (import.meta.env.DEPLOY_ENV !== 'production') {
+  /**
+   * A BODYLESS 404 IS LEFT EXACTLY AS IT IS, header included.
+   *
+   * That response is what a route which does not exist returns, and the
+   * operator gate returns it deliberately so a refusal cannot be told apart
+   * from a missing page. A route that does not exist never reaches this
+   * middleware — Astro matches first — so it never gets this header, and
+   * setting it here would have made the refusal the one 404 on the host
+   * carrying an extra header. Only outside production, where the header is set
+   * at all, and only ever a hint; it costs nothing to not leak it.
+   *
+   * There is nothing to index in a 404 with no body either way.
+   */
+  const bare404 = response.status === 404 && response.body === null
+  if (import.meta.env.DEPLOY_ENV !== 'production' && !bare404) {
     response.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive')
   }
   return response
@@ -98,11 +133,20 @@ const route = async (
    * exemption this rescue would take every reset link, hand it to the callback,
    * and sign the person in at the dashboard with the password they have already
    * forgotten still on the account.
+   *
+   * THE ADMIN SUBTREE IS EXEMPT, and that is an anti-enumeration rule rather
+   * than an auth one. This redirect fires before anybody's identity is known,
+   * so without the exemption `/app/admin/claims?code=<uuid>` would answer a
+   * stranger with a 303 while `/app/not-a-page?code=<uuid>` answered 404 — the
+   * existence of the route, handed over for the price of a query parameter.
+   * Nothing is lost: Supabase only ever falls back to the project's Site URL,
+   * which is not under /app/admin.
    */
   const strayCode = context.url.searchParams.get('code')
   if (
     strayCode &&
     !handlesAuthCode(pathname) &&
+    !ADMIN.test(pathname) &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(strayCode)
   ) {
     return context.redirect(`/auth/callback?code=${encodeURIComponent(strayCode)}`, 303)
@@ -116,6 +160,40 @@ const route = async (
   const {
     data: { user },
   } = await supabase.auth.getUser()
+
+  /**
+   * THE OPERATOR GATE. Positively granted, or a 404.
+   *
+   * `isOperatorRequest` answers from `ADMIN_OPERATORS` and from nothing else —
+   * no membership, no role, no absence of one. Unset or unreadable
+   * configuration admits NOBODY, including the owner, which is the direction
+   * this has to fail in: a variable nobody set must lock the door, never open
+   * it. src/lib/admin/operators.ts has the rest of the reasoning.
+   *
+   * A MISSING SESSION IS REFUSED THE SAME WAY, and that is the point of putting
+   * this above the `if (!user)` branch. Redirecting a signed-out visitor to
+   * /login tells him the path is real; this way a stranger probing for
+   * /app/admin/anything gets the same bare 404 whether he is signed in, signed
+   * out, or somebody else's customer. An operator who is signed out sees a 404
+   * too — he signs in at /login first, then comes back, and that is a price
+   * worth paying for a screen nobody else may know exists.
+   *
+   * The email address is only ever matched on a CONFIRMED account, so an
+   * address typed at signup cannot stand in for the operator's.
+   *
+   * NOT PROTECTED BY CLOUDFLARE ACCESS. Dev sits behind Access and production
+   * will not; this line is what is left on the real domain.
+   */
+  if (ADMIN.test(pathname)) {
+    const operator =
+      !!user &&
+      (await isOperatorRequest({
+        id: user.id,
+        email: user.email,
+        emailConfirmed: Boolean(user.email_confirmed_at),
+      }))
+    if (!operator) return notFound()
+  }
 
   if (!user) {
     if (API.test(pathname)) {
@@ -135,8 +213,12 @@ const route = async (
   // own memberships, so there is nothing to filter here.
   const { data: memberships } = await supabase.from('memberships').select('carrier_id').limit(1)
 
+  // The operator screens are not a carrier's screens: they read nothing scoped
+  // to a membership, so an operator who has never set a carrier up must not be
+  // marched through onboarding to reach them. The gate above already decided he
+  // may be here.
   const carrierId = memberships?.[0]?.carrier_id
-  if (!carrierId && pathname !== '/app/setup') {
+  if (!carrierId && pathname !== '/app/setup' && !ADMIN.test(pathname)) {
     return context.redirect('/app/setup')
   }
   context.locals.carrierId = carrierId

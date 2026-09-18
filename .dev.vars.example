@@ -29,9 +29,16 @@ DEPLOY_ENV=development
 # Scheduled jobs. Without it /api/cron/digest refuses to run rather than
 # defaulting to unauthenticated.
 CRON_SECRET=
-# The one legitimate privileged key: a cron run has no signed-in user and must
-# read across every carrier.
+# The privileged key: a cron run has no signed-in user and must read across
+# every carrier, and /app/admin/claims must do the same after its allowlist has
+# said yes. Nowhere else.
 SUPABASE_SECRET_KEY=
+
+# Who may open /app/admin. User ids or confirmed account emails, comma or space
+# separated. Empty means NOBODY — a page reads only what reaches the Worker env,
+# so an operator list left in .env is invisible here and the screen 404s for
+# everyone. See src/lib/admin/operators.ts.
+ADMIN_OPERATORS=
 
 # USDOT claim verification, at least 32 characters, DIFFERENT in every
 # environment. Without it /app/setup cannot mint a code and says so.

@@ -1,0 +1,378 @@
+---
+/**
+ * The manual-review queue. The only screen in this product that reads across
+ * every carrier, and therefore the one that has to be wrong about nothing.
+ *
+ * WHY IT EXISTS. When the FMCSA census file carries no phone and no email for a
+ * USDOT number — 37% of the oldest registrations — there is no code to send and
+ * no way for that carrier to prove the number is his. `start_carrier_claim`
+ * writes a row with channel 'manual' and /app/setup tells him "your request is
+ * with a person". Until now nothing showed the request to that person except
+ * an email alert and a hand-typed SQL query, so the promise the setup page makes
+ * was kept by whoever happened to remember. This page is the other half of that
+ * promise, and it shows the same four facts the alert sends — the USDOT number,
+ * who asked, what they typed, and how long it is held — so the mail and the
+ * screen never disagree about what matters.
+ *
+ * ===================================================================
+ * WHAT MAKES THIS PAGE DANGEROUS, AND WHAT IS DONE ABOUT IT
+ * ===================================================================
+ *
+ * A carrier who reaches this screen learns which other companies are on the
+ * platform and which USDOT numbers strangers are trying to take. Worse, a
+ * screen that lists claims is one careless commit away from a screen that
+ * GRANTS them — and granting a claim is handing somebody else's federal number
+ * to whoever asked for it, the exact attack 0021_carrier_claims.sql exists to
+ * prevent. Four things stand between this page and that:
+ *
+ * 1. ACCESS IS POSITIVELY GRANTED. An operator is somebody named in
+ *    `ADMIN_OPERATORS`; there is no rule of the form "is not a carrier". Unset
+ *    or unreadable configuration admits NOBODY, owner included. The reasoning
+ *    is in src/lib/admin/operators.ts.
+ *
+ * 2. THE REFUSAL SAYS NOTHING. src/middleware.ts guards the whole /app/admin
+ *    subtree and answers a non-operator — signed in, signed out, anybody — with
+ *    the bare 404 an unknown route returns. It refuses ABOVE the login redirect
+ *    and above the /app/setup redirect, because either of those would confirm
+ *    the path. The check below repeats it for this page alone, so that the
+ *    service-role client cannot be created by a request that has not been
+ *    positively allowed even if that regex is ever edited, moved or narrowed.
+ *
+ * 3. THE PRIVILEGED KEY IS READ AFTER THE CHECK, NEVER BEFORE. See the comment
+ *    over the client itself for why RLS has to be bypassed here at all and what
+ *    replaces it.
+ *
+ * 4. READ-ONLY. There is no form, no POST handler and no action on this page.
+ *    Listing a request is a presentation problem; giving a stranger a carrier is
+ *    a decision about evidence, audit and reversal, and it is being designed
+ *    separately. Nothing here writes anything.
+ *
+ * NOT PROTECTED BY CLOUDFLARE ACCESS. Dev sits behind Access and production
+ * will not, so Access is not part of this page's defence and must never be
+ * treated as part of it.
+ *
+ * ZERO CLIENT JAVASCRIPT, like every other screen: the filter is a link with a
+ * query parameter and nothing on the page moves.
+ */
+import { createClient } from '@supabase/supabase-js'
+import App from '../../../layouts/App.astro'
+import {
+  buildQueue,
+  countBucket,
+  filterQueue,
+  type ManualClaimRow,
+  MANUAL_DAYS,
+  parseShow,
+  type ShowValue,
+} from '../../../lib/admin/claims-queue.ts'
+import { adminEnv, isOperator, notFound, OPERATOR_ENV_KEY } from '../../../lib/admin/operators.ts'
+
+// ---------------------------------------------------------------- the gate
+//
+// FIRST, AND ABOVE EVERY OTHER LINE IN THIS FILE. Nothing below runs — no
+// environment read for a key, no client, no query — until this has answered yes.
+//
+// `getUser()` and not `Astro.locals`: getUser revalidates the session against
+// Supabase, and this is the one page in the app where it is worth paying for
+// that a second time rather than trusting a value another file put in `locals`.
+// The refusal is the same bare 404 the middleware gives, so a request that
+// somehow reaches this page without passing the guard leaves with the same
+// answer as one for a route that does not exist.
+const supabase = Astro.locals.supabase
+const user = supabase ? (await supabase.auth.getUser()).data.user : null
+const env = await adminEnv()
+
+const operator = isOperator(
+  { id: user?.id, email: user?.email, emailConfirmed: Boolean(user?.email_confirmed_at) },
+  env(OPERATOR_ENV_KEY),
+)
+if (!operator) {
+  return notFound()
+}
+
+// ------------------------------------------------------- reading the queue
+
+/**
+ * THE SERVICE-ROLE CLIENT, AND WHY RLS IS BEING BYPASSED.
+ *
+ * `carrier_claims` is carrier-scoped by policy: 0021 grants `select` only where
+ * `user_id = auth.uid()`, so the signed-in client — even the owner's — can see
+ * the claims he made himself and nothing else. That is right, and it is exactly
+ * why this queue cannot be read with it: the whole job of the page is the rows
+ * belonging to OTHER people. A secret key is the only way across.
+ *
+ * WHAT REPLACES RLS. The allowlist above. RLS is the database refusing to
+ * answer a question it should not; here the refusal has already happened, one
+ * screen earlier, before this key was so much as read from the environment. The
+ * order is the control: move the check below this line and the guarantee is
+ * gone. There is also nothing to mis-scope — one query, one table, one channel,
+ * no `carrier_id` filter to forget, and no write of any kind.
+ *
+ * `code_hash` IS NOT IN THE SELECT. The service key can read it; the carrier's
+ * own grant in 0021 deliberately cannot, and that column stays out of every
+ * page for the same reason it was left out of the grant — a peppered hash is
+ * useless to look at and is exactly the sort of value that ends up in a
+ * screenshot or a bug report.
+ *
+ * This contradicts the note in src/lib/supabase/server.ts that says no
+ * service-role client exists in this application, and the note in .env.example
+ * that says SUPABASE_SECRET_KEY is for scheduled jobs only. Both were written
+ * before there was an operator screen; the rule they are protecting — that no
+ * CARRIER-facing page may ever hold this key — is unchanged, and this page is
+ * not carrier-facing. It is the second place in the codebase to use it, after
+ * src/pages/api/cron/digest.ts, and it should stay the second.
+ */
+// A literal key is the one safe shape of `import.meta.env` — Vite replaces that
+// single value and nothing else, and PUBLIC_* is public by definition. A
+// COMPUTED key inlines every variable the build machine carried; see
+// tests/env-inlining.test.ts.
+const url = env('PUBLIC_SUPABASE_URL') ?? import.meta.env.PUBLIC_SUPABASE_URL
+const secretKey = env('SUPABASE_SECRET_KEY')
+
+const show: ShowValue = parseShow(Astro.url.searchParams.get('show'))
+
+/** Newest 200. Deep history is a database question, not an operator's screen. */
+const LIMIT = 200
+
+const configured = Boolean(url && secretKey)
+let readFailed = false
+let rows: ManualClaimRow[] = []
+const emails = new Map<string, string | null>()
+
+if (url && secretKey) {
+  const db = createClient(url, secretKey, { auth: { persistSession: false } })
+
+  const { data, error } = await db
+    .from('carrier_claims')
+    .select('id, dot_number, user_id, note, created_at, expires_at, verified_at, voided_at')
+    .eq('channel', 'manual')
+    .order('created_at', { ascending: false })
+    .limit(LIMIT)
+
+  if (error) {
+    readFailed = true
+  } else {
+    rows = (data ?? []) as ManualClaimRow[]
+    const ids = [...new Set(rows.map((r) => r.user_id))]
+    if (ids.length > 0) {
+      // The account email, which is what the operator has to write back to. Only
+      // the id and the address — nothing else on the profile is his business.
+      const { data: profiles } = await db.from('profiles').select('id, email').in('id', ids)
+      for (const p of (profiles ?? []) as { id: string; email: string | null }[]) {
+        emails.set(p.id, p.email)
+      }
+    }
+  }
+}
+
+const now = new Date()
+const items = buildQueue(rows, emails, now)
+const waiting = countBucket(items, 'waiting')
+const expired = countBucket(items, 'expired')
+const finished = countBucket(items, 'finished')
+const visible = filterQueue(items, show)
+
+const tabs: { value: ShowValue; label: string; count: number }[] = [
+  { value: 'waiting', label: 'Waiting', count: waiting },
+  { value: 'expired', label: 'Ran out', count: expired },
+  { value: 'finished', label: 'Finished', count: finished },
+  { value: 'all', label: 'All', count: items.length },
+]
+
+/**
+ * Whether there is a queue to show at all.
+ *
+ * NOTHING IS PRINTED WHEN THIS IS FALSE, and that is the point of it. A count
+ * of zero and an empty table are a sentence — "no carrier is waiting on you" —
+ * and it is a lie when the truth is that this screen never got an answer. The
+ * message at the top says what happened instead.
+ */
+const ready = configured && !readFailed
+
+const emptyLine: Record<ShowValue, string> = {
+  waiting: 'Nothing is waiting. Nobody has an open request right now.',
+  expired: 'Nothing has run out.',
+  finished: 'Nothing has been finished by hand.',
+  all: 'Nobody has asked for a manual review yet.',
+}
+
+/**
+ * The stacked-cell table the rest of the app uses: blocks on a phone, a real
+ * table from `sm`. One set of cells, not two — the same shape as the fuel
+ * receipts list and src/components/Documents.astro. No `min-w` below `sm`, so
+ * nothing is pushed off the side of a phone.
+ */
+const cell = 'block px-4 py-1 sm:table-cell sm:py-3 sm:align-top'
+/** The column name, carried into the block that no longer has a header row. */
+const colName = 'text-ink-500 sm:hidden'
+---
+
+<App
+  title="Claim requests"
+  subtitle="People who asked to be given a USDOT number by hand."
+>
+  <div class="mb-6 max-w-3xl space-y-2 text-sm text-ink-700">
+    <p>
+      Somebody asks for a manual review when the federal file has no phone and no email for
+      their USDOT number. There is no code to send them, so a person has to check it. Each
+      request is held for {MANUAL_DAYS} days and then it runs out.
+    </p>
+    {/* Said out loud, because the next thing an operator looks for is a button.
+        There is none, on purpose — see the top of this file. */}
+    <p>
+      This page only shows requests. Nobody is given a carrier from here. To give somebody a
+      carrier, check who they are first and do it by hand.
+    </p>
+  </div>
+
+  {
+    !configured && (
+      <p class="mb-6 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        This page cannot read the queue: SUPABASE_SECRET_KEY is not set for this deployment.
+        Nothing is broken for carriers — requests are still being written and the email alert
+        still goes out.
+      </p>
+    )
+  }
+
+  {
+    readFailed && (
+      <p class="mb-6 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+        The queue could not be read. Try again. The requests are still in the database.
+      </p>
+    )
+  }
+
+  {/* The one number the page is opened for, above the filter rather than inside
+      it: "what needs me today" is answered before anything is clicked. */}
+  {
+    ready && (
+      <p class="mb-4 text-base font-semibold">
+        {waiting === 0
+          ? 'Nothing is waiting.'
+          : waiting === 1
+            ? '1 request is waiting for you.'
+            : `${waiting} requests are waiting for you.`}
+      </p>
+    )
+  }
+
+  {/*
+    Filtering is a link with a query parameter — no script anywhere in this app.
+    .filter-tab is 44px tall and .is-current is the one selected mark in the
+    product: a tinted pill plus semibold, which survives a colour-blind reader
+    and a phone screen in the sun. aria-current is what a screen reader gets, so
+    the colour never carries it alone, and every tab prints its own count.
+  */}
+  {
+    ready && (
+      <nav
+        aria-label="Filter claim requests"
+        class="-mx-4 mb-4 flex items-center gap-2 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0"
+      >
+        {tabs.map((t) => {
+          const here = show === t.value
+          return (
+            <a
+              href={`/app/admin/claims?show=${t.value}`}
+              aria-current={here ? 'page' : undefined}
+              class:list={['filter-tab shrink-0 gap-2', here && 'is-current']}
+            >
+              {t.label}
+              <span class="tabular-nums">{t.count}</span>
+            </a>
+          )
+        })}
+      </nav>
+    )
+  }
+
+  {
+    !ready ? null : visible.length === 0 ? (
+      <div class="rounded-xl border border-ink-100 bg-white px-4 py-8 text-center">
+        <p class="text-sm text-ink-700">{emptyLine[show]}</p>
+      </div>
+    ) : (
+      <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
+        <table class="w-full text-sm sm:min-w-[64rem]">
+          {/* No header line on a phone: six column names above blocks that are
+              not columns explain nothing, and each block says what it is. */}
+          <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
+            <tr>
+              <th class="px-4 py-3 font-medium">USDOT</th>
+              <th class="px-4 py-3 font-medium">State</th>
+              <th class="px-4 py-3 font-medium">Who asked</th>
+              <th class="px-4 py-3 font-medium">Asked</th>
+              <th class="px-4 py-3 font-medium">Closes</th>
+              <th class="px-4 py-3 font-medium">What they typed</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-ink-100">
+            {visible.map((item) => (
+              <tr class="flex flex-col py-3 sm:table-row sm:py-0">
+                <td class={`${cell} font-semibold tabular-nums sm:whitespace-nowrap`}>
+                  <span class={`${colName} font-normal`}>USDOT </span>
+                  {item.dotNumber}
+                </td>
+                {/* The badge is a shared component class and wears no local
+                    geometry: a `rounded-md px-2` here would outrank the
+                    component layer and quietly change its shape. */}
+                <td class={cell}>
+                  <span class={item.badge.className}>{item.badge.label}</span>
+                </td>
+                <td class={`${cell} break-words`}>
+                  <span class={colName}>Who asked </span>
+                  {item.email ? (
+                    /* mailto, because writing back is the whole job, and a link
+                       rather than a button: it goes somewhere. `.link` keeps the
+                       colour and the underline — the affordance — and the two
+                       utilities buy it the 44px height every target in this app
+                       has, the same way `.link-row` does for a record name. */
+                    <a
+                      class="link inline-flex min-h-11 items-center"
+                      href={`mailto:${item.email}`}
+                    >
+                      {item.email}
+                    </a>
+                  ) : (
+                    /* The same words the email alert uses, so the mail and the
+                       screen never describe one request two ways. Grey, and it
+                       is never hidden: an account with no address is the row
+                       that needs the most work, not the least. */
+                    <span class="text-ink-500">no address on the account</span>
+                  )}
+                </td>
+                <td class={`${cell} text-ink-700 sm:whitespace-nowrap`}>
+                  <span class={colName}>Asked </span>
+                  {item.askedLine}
+                </td>
+                <td class={`${cell} text-ink-700 sm:whitespace-nowrap`}>
+                  <span class={colName}>Closes </span>
+                  {item.closesLine}
+                </td>
+                {/* Free text the claimant typed. Astro escapes it — never
+                    set:html, on this page least of all. */}
+                <td class={`${cell} sm:max-w-md`}>
+                  <span class={colName}>What they typed </span>
+                  {item.note ? (
+                    <span class="break-words whitespace-pre-line">{item.note}</span>
+                  ) : (
+                    <span class="text-ink-500">nothing</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
+
+  {
+    ready && rows.length >= LIMIT && (
+      <p class="mt-4 text-sm text-ink-700">
+        Showing the newest {LIMIT} requests. Older ones are in the database.
+      </p>
+    )
+  }
+</App>
