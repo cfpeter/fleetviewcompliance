@@ -310,6 +310,30 @@ function safeRedirect(raw: string | undefined): string | null {
 const SUPPORT = 'info@fleetviewcompliance.com'
 const PRODUCT = 'FleetView Compliance'
 
+/**
+ * WHERE THE HTML FOR THESE COMES FROM, AND WHY IT IS NOT WRITTEN HERE.
+ *
+ * Every one of these messages goes out with a text part AND an HTML part. The
+ * markup is applied in `sendEmail` (src/lib/notify/send.ts) using the shared
+ * layout in src/lib/notify/email-layout.ts, so the confirmation email and the
+ * morning digest are drawn by the same code and cannot drift apart. Composing a
+ * second copy of that markup in this file would be the drift.
+ *
+ * WHICH MAKES THE SHAPE OF THE TEXT BELOW LOAD-BEARING. The layout reads it:
+ *
+ *   * paragraphs are separated by a BLANK LINE;
+ *   * the link sits ALONE on its own line, which is what turns it into the
+ *     button, with the address printed underneath it in full;
+ *   * a one-time code starts its sentence, which is what prints it large.
+ *
+ * Anything the layout does not recognise renders as an ordinary paragraph, so a
+ * new message here is never broken — only plainer. Keep the shape when editing
+ * the words.
+ *
+ * NOTHING ABOUT THE LINK ITSELF IS PRESENTATION. `actionLink` above is the only
+ * thing that builds it, `token_hash` passes through exactly as received, and the
+ * layout escapes the URL without touching a character of it.
+ */
 function linkBody(lines: string[], link: string, closing: string): string {
   return `${lines.join('\n')}\n\n${link}\n\n${closing}\n`
 }

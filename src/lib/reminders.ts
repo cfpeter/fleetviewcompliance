@@ -402,17 +402,43 @@ export function selectReminders(args: {
   return out.sort((a, b) => a.item.daysUntil - b.item.daysUntil)
 }
 
+/**
+ * One reminder, broken into the four pieces the morning email prints.
+ *
+ * ONE SOURCE FOR BOTH PARTS OF THE EMAIL. The plain-text line below and the
+ * HTML row in src/lib/notify/digest-email.ts are built from this same object,
+ * so the two halves of one message cannot drift into saying different things
+ * about the same reminder — which is the failure a reader on a text-only client
+ * would never be able to see.
+ */
+export interface ReminderEmailParts {
+  title: string
+  /** The driver or the truck. Empty when the reminder is the whole company's. */
+  about: string
+  when: string
+  /** What goes in the slot where a regulation prints its citation. */
+  foot: string
+}
+
+export function reminderEmailParts(item: ReminderItem): ReminderEmailParts {
+  return {
+    title: item.title,
+    about: item.subject.kind === 'carrier' ? '' : item.subject.label,
+    when:
+      item.status.standing === 'overdue'
+        ? `LATE since ${toDateOnly(item.dueOn)}`
+        : `due ${toDateOnly(item.dueOn)} (${item.daysUntil} days)`,
+    // Saying what this is — in the same slot, every time — is what stops an
+    // owner reading his own note as something the government sent him.
+    foot: 'Your reminder, not a rule.',
+  }
+}
+
 /** One reminder as a line in the morning email. */
 export function reminderEmailLine(item: ReminderItem): string {
-  const when =
-    item.status.standing === 'overdue'
-      ? `LATE since ${toDateOnly(item.dueOn)}`
-      : `due ${toDateOnly(item.dueOn)} (${item.daysUntil} days)`
-  const about = item.subject.kind === 'carrier' ? '' : ` — ${item.subject.label}`
-  // The second line is where a regulation prints its CFR citation. Saying what
-  // this is instead — in the same slot, every time — is what stops an owner
-  // reading his own note as something the government sent him.
-  return `• ${item.title}${about} — ${when}\n  Your reminder, not a rule.`
+  const parts = reminderEmailParts(item)
+  const about = parts.about ? ` — ${parts.about}` : ''
+  return `• ${parts.title}${about} — ${parts.when}\n  ${parts.foot}`
 }
 
 // ---------------------------------------------------------------- loading

@@ -5,8 +5,24 @@
  * configured — so the whole pipeline can be exercised end to end before a
  * single credential exists.
  */
+import { htmlFromText } from './email-layout.ts'
 import { type GuardConfig, guard, type Outbound } from './guard.ts'
 import { isSuppressed } from './suppression.ts'
+
+/**
+ * An outbound message, plus the HTML part an email may carry.
+ *
+ * WIDENED, NOT CHANGED. `Outbound` is the guard's type and stays the guard's
+ * type: every existing caller still passes exactly what it passed before, and
+ * `guard()` is still handed the same object. The extra field is optional
+ * because only a caller with real structure to show — the digest, whose groups
+ * and colours cannot survive a plain-text round trip — has anything to put in
+ * it. Everything else leaves it out and gets the layout applied here.
+ */
+export type Outgoing = Outbound & {
+  /** Pre-rendered HTML. Absent means "render my text through the layout". */
+  html?: string
+}
 
 export interface SendResult {
   /**
@@ -50,7 +66,25 @@ export interface SendOptions {
   suppressedEmails?: ReadonlySet<string> | null
 }
 
-async function sendEmail(m: Outbound, to: string, p: Providers): Promise<SendResult> {
+/**
+ * BOTH PARTS, ON EVERY EMAIL, DECIDED IN ONE PLACE.
+ *
+ * `text` is not a legacy field and is never replaced by `html`. Three separate
+ * reasons, any one of which would be enough:
+ *
+ *   * Some people read mail as text, by preference or by necessity — a screen
+ *     reader, a terminal client, a phone on a bad connection.
+ *   * A message with an HTML part and no text part scores materially worse with
+ *     every spam filter worth the name, and a digest in a junk folder is a
+ *     deadline nobody was told about.
+ *   * The text part is the fallback that proves the HTML is honest: every link
+ *     in the markup appears in it as a visible address.
+ *
+ * And the HTML is added HERE rather than left to each caller, so that no email
+ * can escape this product unstyled by somebody forgetting — the same reason the
+ * recipient is decided in guard.ts and nowhere else.
+ */
+async function sendEmail(m: Outgoing, to: string, p: Providers): Promise<SendResult> {
   if (!p.resendApiKey || !p.fromEmail) {
     return { status: 'skipped', destination: to, detail: 'email provider not configured' }
   }
@@ -65,6 +99,7 @@ async function sendEmail(m: Outbound, to: string, p: Providers): Promise<SendRes
       to: [to],
       subject: m.subject ?? 'FleetView Compliance',
       text: m.body,
+      html: m.html ?? htmlFromText(m.body),
     }),
   })
   if (!res.ok) {
@@ -130,7 +165,7 @@ async function sendSms(m: Outbound, to: string, p: Providers): Promise<SendResul
 }
 
 export async function send(
-  message: Outbound,
+  message: Outgoing,
   config: GuardConfig,
   providers: Providers,
   options: SendOptions = {},

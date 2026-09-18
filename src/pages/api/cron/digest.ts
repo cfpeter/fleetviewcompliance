@@ -19,6 +19,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { APIRoute } from 'astro'
 import { loadDeadlines } from '../../../lib/deadlines.ts'
+import { composeDigestEmail } from '../../../lib/notify/digest-email.ts'
 import { minutesOfDayInZone, parseClockTime } from '../../../lib/notify/guard.ts'
 import { DEFAULT_LEAD_DAYS } from '../../../lib/notify/preferences.ts'
 import {
@@ -30,12 +31,7 @@ import {
 } from '../../../lib/notify/select.ts'
 import { CEILING, sendOrCeiling, smsBody } from '../../../lib/notify/send.ts'
 import { fetchDeliveryEvent, fetchSuppressions } from '../../../lib/notify/suppression.ts'
-import {
-  loadReminders,
-  REMINDER_CATEGORY,
-  reminderEmailLine,
-  selectReminders,
-} from '../../../lib/reminders.ts'
+import { loadReminders, REMINDER_CATEGORY, selectReminders } from '../../../lib/reminders.ts'
 import type { Subject } from '../../../lib/rules/types.ts'
 
 interface Profile {
@@ -550,43 +546,34 @@ export const POST: APIRoute = async ({ request }) => {
       // there is nothing to filter here — and nothing can be silently dropped.
       const reminderEmails = reminderSplit.deliver
       if ((emailItems.length || reminderEmails.length) && profile.email) {
-        const lines = emailItems.map((c) => {
-          const when =
-            c.item.status.standing === 'overdue'
-              ? `OVERDUE since ${c.item.status.lastDue?.toISOString().slice(0, 10) ?? 'recently'}`
-              : `due ${c.item.status.nextDue?.toISOString().slice(0, 10)} (${c.item.daysUntil} days)`
-          return `• ${c.item.rule.title} — ${c.item.subjectLabel} — ${when}\n  ${c.item.rule.citation}`
+        // The whole message — subject, text part and HTML part — composed in one
+        // pure function so it can be tested without a Worker or a database. The
+        // grouping, the wording and the colour rules live there; what stays here
+        // is the part this route is actually responsible for: who is told, and
+        // what is written down afterwards.
+        //
+        // Worker var first, build-time value second — a literal key, so only
+        // this one public string is replaced. There is no request origin to
+        // build from here (a cron POST's origin is the scheduler's).
+        const mail = composeDigestEmail({
+          carrierName: carrier.legal_name,
+          deadlines: emailItems,
+          reminders: reminderEmails,
+          siteUrl: get('PUBLIC_SITE_URL') ?? import.meta.env.PUBLIC_SITE_URL ?? '',
+          today,
         })
-
-        // His own reminders go UNDER the deadlines, behind a heading that says
-        // whose they are. Same email, because he has one morning; separate
-        // block, because the lines above each carry a CFR citation and these
-        // carry the words "Your reminder, not a rule" in the same slot. An
-        // owner skimming an email on a phone must never read his own note as
-        // something the government sent him.
-        if (reminderEmails.length > 0) {
-          lines.push(`YOUR OWN REMINDERS (not laws)\n${'—'.repeat(28)}`)
-          for (const c of reminderEmails) lines.push(reminderEmailLine(c.item))
-        }
-
-        const overdueCount =
-          emailItems.filter((c) => c.item.status.standing === 'overdue').length +
-          reminderEmails.filter((c) => c.item.status.standing === 'overdue').length
-        const total = emailItems.length + reminderEmails.length
-        const subject = overdueCount
-          ? `${overdueCount} overdue · ${carrier.legal_name}`
-          : `${total} coming up · ${carrier.legal_name}`
+        const subject = mail.subject
 
         const result = await sendOrCeiling(
           {
             channel: 'email',
             to: profile.email,
             subject,
-            // Worker var first, build-time value second — a literal key, so only
-            // this one public string is replaced. There is no request origin to
-            // build from here (a cron POST's origin is the scheduler's), so an
-            // empty string would put a bare "/app" in somebody's email.
-            body: `${lines.join('\n\n')}\n\nSee everything: ${get('PUBLIC_SITE_URL') ?? import.meta.env.PUBLIC_SITE_URL ?? ''}/app\n`,
+            // Both parts. `body` is the text part and stays the fallback; the
+            // HTML is the same content with the urgency groups drawn. See the
+            // note on sendEmail() in src/lib/notify/send.ts.
+            body: mail.text,
+            html: mail.html,
           },
           guardConfig,
           providers,
