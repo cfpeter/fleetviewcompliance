@@ -43,6 +43,7 @@ import {
   formatDate,
   fullName,
   isDriverStatus,
+  statusLabel,
   statusPillClass,
   todayInCalifornia,
 } from '../../../lib/drivers.ts'
@@ -58,6 +59,15 @@ import {
 import { formatCents } from '../../../lib/loads.ts'
 import { formatPhone, parsePhoneEdit, toE164 } from '../../../lib/phone.ts'
 import { anchorSlot, planAnchorWrites } from '../../../lib/anchors/plan.ts'
+import {
+  readUnboxedDates,
+  UNBOXED_HEADING,
+  UNBOXED_LEAD,
+  unboxedQuestions,
+  unboxedSlots,
+} from '../../../lib/anchors/unboxed.ts'
+import { answerLink, resolveAnchor } from '../../../lib/rules/anchors.ts'
+import { answerKeyFor } from '../../../lib/rules/answer.ts'
 import { DRIVER_ANCHORS, DRIVER_ANCHOR_GROUPS } from '../../../lib/rules/driver-anchors.ts'
 import {
   type SettlementCategory,
@@ -272,17 +282,46 @@ if (Astro.request.method === 'POST') {
      * one must not" is a bug nobody would see: the screen keeps showing the old
      * date, she retypes it, and the table fills with corrections that never take.
      */
+    /*
+      THE DATES `DRIVER_ANCHORS` HAS NO BOX FOR.
+
+      Twelve driver anchors are facts about the man: when his card expires, when
+      the MVR came back. The engine also asks when a JOB was last done — the DQF
+      opened, the road test passed, the previous employers investigated — and
+      files that under the rule's own code, which no driver anchor spells. Those
+      rows sat in the checklist above saying a date was missing with nothing on
+      this page to type into.
+
+      Read from the SAME function that draws them (src/lib/anchors/unboxed.ts),
+      so what may be posted and what is on screen are one list. It is a pure
+      function of the rule catalogue, so it costs no query here.
+    */
+    const extra = readUnboxedDates(
+      unboxedSlots('driver', DRIVER_ANCHORS.map((a) => a.key)),
+      (field) => form.get(field) as string | null,
+      new Date().toISOString().slice(0, 10),
+    )
+    if (!extra.ok) return fail(extra.message)
+
     const { supersede, inserts, conflicts } = planAnchorWrites({
-      entries: DRIVER_ANCHORS.map((anchor) => ({
-        subject: 'driver' as const,
-        subjectId: id,
-        anchorKey: anchor.key,
-        // A blank box is left alone rather than treated as "delete this date".
-        // These records are the evidence a driver was qualified during the
-        // period they covered, and an accidental tab through an empty field
-        // must never be the thing that removes one.
-        on: formDate(form, `date_${anchor.key}`),
-      })),
+      entries: [
+        ...DRIVER_ANCHORS.map((anchor) => ({
+          subject: 'driver' as const,
+          subjectId: id,
+          anchorKey: anchor.key,
+          // A blank box is left alone rather than treated as "delete this date".
+          // These records are the evidence a driver was qualified during the
+          // period they covered, and an accidental tab through an empty field
+          // must never be the thing that removes one.
+          on: formDate(form, `date_${anchor.key}`),
+        })),
+        ...extra.typed.map((t) => ({
+          subject: 'driver' as const,
+          subjectId: id,
+          anchorKey: t.key,
+          on: t.on,
+        })),
+      ],
       current,
       carrierId,
       userId,
@@ -459,9 +498,16 @@ const history = (historyRows ?? []) as unknown as HistoryRow[]
  * no "no rule uses this date any more" case to explain — a truck changes kind
  * and its old dates stop being read, a driver does not. The fallback is the raw
  * key, for a row written by an import under a name this build does not know.
+ *
+ * `unboxedSlotByKey` is the second lookup, and it is not optional now that this
+ * page collects rule-code dates: written under the anchor list alone, a road
+ * test date typed in the form below would appear in the history as
+ * `road_test_or_equivalent`, which reads as a row nobody put there. It is
+ * declared further down, beside the questions it describes, and this runs when
+ * the page renders rather than when it is read.
  */
 const driverAnchorLabel = (key: string) =>
-  DRIVER_ANCHORS.find((a) => a.key === key)?.label ?? key
+  DRIVER_ANCHORS.find((a) => a.key === key)?.label ?? unboxedSlotByKey.get(key)?.label ?? key
 
 /**
  * The qualification ring.
@@ -503,8 +549,68 @@ const checklist = isActiveDriver(driver) ? buildDriverChecklist(driverItems, obs
 // for a driver whose file was complete. The date inputs below were fixed for
 // this once and this line was missed — the two must move together, and the
 // types cannot catch it because both keys are strings.
-const missing = DRIVER_ANCHORS.filter(
+const missingAnchors = DRIVER_ANCHORS.filter(
   (a) => a.expected === 'always' && !current.has(anchorSlot('driver', id, a.key)),
+)
+
+/**
+ * THE BOXES `DRIVER_ANCHORS` HAS NO ENTRY FOR.
+ *
+ * Twelve driver anchors, and the checklist above asks for more than twelve
+ * things. A `computed` rule — the DQF being opened, the road test, the
+ * pre-employment Clearinghouse query, the previous-employer investigation —
+ * files its last completion under its OWN CODE (see `answerKeyFor`), and no
+ * driver anchor spells a rule code. So those rows named a missing date and had
+ * no box on this page: four of them on a driver with a hire date on file, and
+ * the hazmat one on every driver.
+ *
+ * Built here, after `current`, because a box has to show what it already holds.
+ * The words come from the same registry the dashboard reads, so the two screens
+ * ask one question rather than two that can drift apart.
+ */
+const unboxed = unboxedQuestions({
+  subject: 'driver',
+  boxed: DRIVER_ANCHORS.map((a) => a.key),
+  rows: driverItems,
+  onFile: (key) => current.get(anchorSlot('driver', id, key))?.occurred_on ?? '',
+})
+const unboxedByKey = new Map(unboxed.map((q) => [q.key, q]))
+
+/**
+ * How many of the dates we expect from every driver are still blank.
+ *
+ * The rule-code questions are counted here too. Counting only the twelve
+ * anchors, this said "every date we expect from a driver is recorded" over a
+ * checklist that named four rows with no date — one screen answering the same
+ * question two ways, which teaches her that one of the two is not worth reading.
+ */
+const missing = [
+  ...missingAnchors.map((a) => a.key),
+  ...unboxed.filter((q) => q.expected === 'always' && q.on === '').map((q) => q.key),
+]
+/** Every key a driver rule could ask for, drawn or not. The history reads it. */
+const unboxedSlotByKey = new Map(
+  unboxedSlots('driver', DRIVER_ANCHORS.map((a) => a.key)).map((s) => [s.key, s]),
+)
+
+/**
+ * The `compliance_records.anchor_key` behind each checklist row.
+ *
+ * A `ChecklistRow` carries the RULE CODE, and the two are only sometimes the
+ * same string: `medical_certificate_general` is answered under
+ * `medical_certificate_expires`, `dqf_maintained` under `dqf_maintained`. Read
+ * off the engine's own rows rather than worked out again here — a screen that
+ * guesses this stores a date perfectly and leaves the rule reporting "no date"
+ * forever, with nothing on screen looking broken.
+ *
+ * `answerKeyFor` is the fallback and it matters: compute.ts sets `answerKey` on
+ * the two UNKNOWN branches and on neither overdue one, so an EXPIRED licence —
+ * the single most enforcement-visible document in the industry — comes back
+ * without one. Read only off `status`, that row would lose its way into the
+ * record. The same expression the truck page uses, for the same reason.
+ */
+const answerKeyByRule = new Map(
+  driverItems.map((i) => [i.rule.code, i.status.answerKey ?? answerKeyFor(i.rule)]),
 )
 
 const settlements = (settlementData ?? []) as unknown as DriverSettlementRow[]
@@ -694,20 +800,48 @@ const summaryRow =
 /**
  * Where a checklist row sends him to answer it.
  *
- * `null` when there is no box on this page for that rule — the pre-employment
- * Clearinghouse query is one — and a row with no link simply has no link rather
- * than a button that lands nowhere.
+ * FIVE OF TWELVE GREY ROWS USED TO LAND NOWHERE, and a grey row he cannot
+ * answer is the whole complaint. They came in two kinds and they need two
+ * different answers:
+ *
+ *   1. The key is a RULE CODE — the DQF opened, the road test, the previous
+ *      employers, the hire-time MVR. Those have boxes in the date form now (see
+ *      `unboxed`), under the same `date_<key>` id every other box uses, so the
+ *      existing link shape carries them with no special case.
+ *   2. The key is on the DENY-LIST — `hire_date` and `cdl_expires`. Those must
+ *      never become a compliance record: deadlines.ts projects both out of the
+ *      driver's own columns with `if (a[anchorKey]) continue`, so a record
+ *      SILENTLY OUTRANKS the column, and a typo would move five federal rules
+ *      onto wrong dates while his own page went on showing the right one. The
+ *      registry already says where each one really lives; when that is this very
+ *      page, the useful link is the one that OPENS THE RECORD FOLD rather than a
+ *      link back to where he is standing.
+ *
+ * `null` survives for a key in neither group, and a row with no link still has
+ * no link rather than a button that lands nowhere. tests/unboxed-dates.test.ts
+ * is what keeps that case unreachable.
  */
 function answerHref(row: { code: string; anchorKey?: string }): string | null {
-  // The licence expiry is a column on the driver record, not a compliance
-  // record, so it is answered in the record fold and not in the date form.
-  if (row.code === 'cdl_expiry') return `/app/drivers/${id}?edit=record#record`
   // `box` and the fragment name the same field, and both are needed: the
   // fragment scrolls the browser to it, and the parameter is the half the
   // SERVER can read — a fragment never leaves the browser, so without it a
   // field inside a folded group would be linked to and still not be on screen.
-  if (row.anchorKey) {
-    return `/app/drivers/${id}?edit=dates&box=${row.anchorKey}#date_${row.anchorKey}`
+  const toBox = (key: string) => `/app/drivers/${id}?edit=dates&box=${key}#date_${key}`
+  const record = `/app/drivers/${id}?edit=record#record`
+
+  if (row.anchorKey) return toBox(row.anchorKey)
+
+  const key = answerKeyByRule.get(row.code)
+  if (!key) return null
+  if (unboxedByKey.has(key)) return toBox(key)
+
+  const entry = resolveAnchor(key)
+  if (entry?.answeredElsewhere) {
+    const href = answerLink(entry, id)
+    // `answerLink` points AWAY from the screen the row is on. For a driver
+    // column it points at this page, which as a link is a tap that changes
+    // nothing — so it becomes the parameter that opens the record instead.
+    return href === `/app/drivers/${id}` ? record : href
   }
   return null
 }
@@ -767,17 +901,26 @@ const ICONS = {
   }
 
   {/*
-    `items-start`, and it is not decoration.
+    TWO BLOCKS, AND THE LIST IS IN THE LEFT ONE. That is the whole layout, and
+    it is why this page has no placement rules on it while the truck page does.
 
-    A grid stretches its children to the tallest one in the row by default. The
-    record card on the left is FOLDED shut most of the time — a summary and two
-    links, about 200px — while the rail on the right runs to three cards and the
-    best part of 900px. Stretched to match it, the card became an empty white
-    box most of a screen tall, which reads as a page that failed to load rather
-    than as a form somebody closed. Each column is its own height now.
+    The left column is the record and then the checklist; the rail is the ring.
+    Measured at 1440px: the left column runs about 1,100px and the rail about
+    300. A rail that ENDS above long content is what every page with a sidebar
+    looks like — the space beside it is open at the bottom and reads as margin.
+    The shape that reads as broken is the other way round, a short column beside
+    a long rail, which walls a rectangle of blank page in on three sides. The
+    truck page had exactly that: its record folded to 220px, its rail ran to
+    700, and its timeline waited below the grid instead of filling the column.
+    The owner's words for it: "i dont like this gap open space empty space".
+    That page now puts its timeline where this page puts its checklist, so the
+    two are the same shape again. Nothing here had to move.
 
-    The truck page carries the same line for the same reason: its record folds
-    away too, so without this it grows the identical hole.
+    `items-start`, and it is not decoration. A grid stretches its children to
+    the tallest one in the row by default, and on a driver whose file is in
+    order the rail is the taller side — the record card would stretch into an
+    empty white box most of a screen tall, which reads as a page that failed to
+    load rather than as a form somebody closed. Each column is its own height.
   */}
   <div class="grid items-start gap-6 lg:grid-cols-[1fr_minmax(0,20rem)]">
     {/*
@@ -821,7 +964,7 @@ const ICONS = {
               utilities that used to sit beside it were quietly overriding the
               shared badge — the same status is now the same shape and the same
               colour here as it is on the roster. */}
-          <span class={statusPillClass(driver.status)}>{driver.status}</span>
+          <span class={statusPillClass(driver.status)}>{statusLabel(driver.status)}</span>
           <svg
             aria-hidden="true"
             viewBox="0 0 20 20"
@@ -1432,6 +1575,81 @@ const ICONS = {
           })
         }
 
+        {/*
+          THE ROWS THE TWELVE BOXES ABOVE CANNOT ANSWER.
+
+          These are the questions the engine files under a rule code rather than
+          an anchor — "was the road test passed", not "when does his card
+          expire". Four of them appear the moment a hire date is on file, and
+          before this card they were four rows in the checklist above saying a
+          date was missing with nowhere on the page to type it.
+
+          They are in THIS form and not on another screen. The dashboard has
+          been able to ask them all along, and sending her there would have been
+          a different page, a different save, and no way back to the driver. The
+          questions are read out of the same registry the dashboard reads, so
+          the two screens ask one question rather than two that can drift.
+
+          A FOLD, ON THE SAME RULE AS THE GROUPS ABOVE: it closes only when
+          every box in it is optional AND empty, because a date already recorded
+          is the answer somebody came to read, and an outstanding question is
+          the reason this card exists.
+        */}
+        {
+          unboxed.length > 0 && (
+            <div class={card}>
+              {(() => {
+                const blankOptional =
+                  !unboxed.some((q) => q.key === wantedBox) &&
+                  unboxed.every((q) => q.expected === 'only_if_it_applies' && q.on === '')
+                return (
+                  <details open={!blankOptional} class="group/field">
+                    <summary class={summaryRow}>
+                      <h3 class={cardHeading}>{UNBOXED_HEADING}</h3>
+                      <svg
+                        aria-hidden="true"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        class="size-4 shrink-0 text-ink-500 transition-transform group-open/field:rotate-180"
+                      >
+                        <path d="M5 8l5 5 5-5" />
+                      </svg>
+                      {blankOptional && (
+                        <span class="ml-auto text-xs text-ink-700">
+                          Leave blank unless it applies
+                        </span>
+                      )}
+                    </summary>
+                    <p class="mt-3 max-w-3xl text-sm text-ink-500">{UNBOXED_LEAD}</p>
+                    <div class="mt-4 grid gap-4 sm:grid-cols-2">
+                      {unboxed.map((q) => (
+                        /* The id is what the checklist row above lands on, so
+                           the box a row asks for is the box she sees. */
+                        <label id={q.domId} class="block">
+                          <span class="field-label">{q.label}</span>
+                          <input
+                            type="date"
+                            name={q.field}
+                            value={q.on}
+                            min="1900-01-01"
+                            max={q.kind === 'last_done' ? today : undefined}
+                            class="field-input mt-1 tabular-nums"
+                          />
+                          <span class="field-hint block">{q.help}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </details>
+                )
+              })()}
+            </div>
+          )
+        }
+
         <div
           class="sticky bottom-0 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white/95 p-4 backdrop-blur"
         >
@@ -1497,17 +1715,24 @@ const ICONS = {
                   return {
                     label: b.label,
                     value: v,
-                    // Compact because it is a column label. The cent-exact
-                    // figures are in the table beside it and on each statement;
-                    // nothing anybody disputes is read off a bar.
-                    display: v === null ? '—' : compactMoney(v),
+                    // Full, not compact, and the old comment here was wrong
+                    // about its own page. It claimed the cent-exact figures sit
+                    // "in the table beside it" — the table beside it is Recent
+                    // settlements, which lists INDIVIDUAL statements, not month
+                    // totals. So the exact figure for a month appeared nowhere,
+                    // and `display` is also the whole of the column's
+                    // aria-label: a screen reader said "$14.3k" and stopped.
+                    //
+                    // This is a man's pay. Rounding it is the one place in this
+                    // app where a compact number is least defensible.
+                    display: v === null ? '—' : formatCents(v),
                     // The trailing month is the one we are standing in, so it is
                     // short by however much of it is left — every load, all month.
                     inProgress: i === monthly.buckets.length - 1,
                   }
                 })}
                 max={monthlyCeiling}
-                axisLabel={compactMoney(monthlyCeiling)}
+                axisLabel={`Full height ${compactMoney(monthlyCeiling)}`}
                 emptyMessage="Nothing marked paid in the last six months."
               />
               <p class="mt-3 text-xs text-ink-700">

@@ -17,6 +17,14 @@ import Ring from '../../../components/charts/Ring.astro'
 import Documents from '../../../components/Documents.astro'
 import { type AnswerEntry, anchorSlot, planAnchorWrites } from '../../../lib/anchors/plan.ts'
 import {
+  readUnboxedDates,
+  UNBOXED_HEADING,
+  UNBOXED_LEAD,
+  UNBOXED_ROW_LINK,
+  unboxedQuestions,
+  unboxedSlots,
+} from '../../../lib/anchors/unboxed.ts'
+import {
   COVERAGE_NOTE,
   noScheduleNote,
   ringSubtitle,
@@ -33,6 +41,7 @@ import {
 } from '../../../lib/documents.ts'
 import { isActiveVehicle, VEHICLE_NOT_ACTIVE_MEANS } from '../../../lib/fleet/active.ts'
 import { daysBetween, toUtcMidnight } from '../../../lib/rules/dates.ts'
+import { answerKeyFor } from '../../../lib/rules/answer.ts'
 import { type DeadlineItem, dueLine, SOON_DAYS } from '../../../lib/rules/index.ts'
 import {
   canRemove,
@@ -57,6 +66,7 @@ import {
   statusLabel,
   statusPillClass,
   textOrNull,
+  todayIso,
   upperOrNull,
   VEHICLE_KINDS,
   VEHICLE_STATUSES,
@@ -236,6 +246,34 @@ if (Astro.request.method === 'POST') {
       })
     }
 
+    /*
+      THE DATES THIS CATALOGUE HAS NO BOX FOR.
+
+      `anchorsForKind` lists facts about the unit. The engine also asks when the
+      job was last DONE — Form 2290 filed, the § 396.21 report kept — and files
+      that under the rule's own code, which no vehicle anchor spells. Those rows
+      were grey on the timeline above with nothing on this page to answer them.
+
+      Read from the SAME function that draws them (src/lib/anchors/unboxed.ts),
+      so the set that may be posted and the set on screen are one list. It is a
+      pure function of the rule catalogue, which is why it costs nothing here:
+      no second evaluation of the engine on the way through a save.
+    */
+    const extra = readUnboxedDates(
+      unboxedSlots(vehicle.kind, anchorsForKind(vehicle.kind).map((a) => a.key)),
+      (field) => form.get(field) as string | null,
+      todayIso(),
+    )
+    if (!extra.ok) return fail(extra.message, '#dates')
+    for (const t of extra.typed) {
+      entries.push({
+        subject: 'vehicle',
+        subjectId: vehicle.id,
+        anchorKey: t.key,
+        on: t.on,
+      })
+    }
+
     /**
      * THIS SCREEN USED TO INSERT WITHOUT EVER SUPERSEDING.
      *
@@ -281,7 +319,11 @@ if (Astro.request.method === 'POST') {
       const { error } = await supabase.from('compliance_records').insert(inserts)
       if (error) return fail(error.message, '#dates')
     }
-    return go(`?dates=${inserts.length}#dates`)
+    // `#add-dates` and not `#dates`: he is standing in the form, and landing on
+    // the section heading above it reads as the form having closed. The fold is
+    // open either way — `dates=N` is one of the things that opens it — but
+    // where the browser puts him is what he judges it by.
+    return go(`?dates=${inserts.length}#add-dates`)
   }
 
   /**
@@ -327,8 +369,11 @@ if (Astro.request.method === 'POST') {
       .eq('id', recordId)
       .is('superseded_at', null)
 
-    if (error) return fail(error.message, '#history')
-    return go('?withdrew=1#history')
+    // Back where he pressed it, with the form still open. `add=1` is what
+    // reopens the fold server-side — a fragment alone never reaches us.
+    const cameFromDates = String(form.get('from') ?? '') === 'dates'
+    if (error) return fail(error.message, cameFromDates ? '#add-dates' : '#history')
+    return go(cameFromDates ? '?add=1&withdrew=1#add-dates' : '?withdrew=1#history')
   }
 
   return fail('That button did not tell us what to do. Try again.')
@@ -640,15 +685,6 @@ const MARK_ICON: Record<Mark, string> = {
  * reason in the list further down, because `dueLine` would call it "no date
  * yet", which is addressed to the owner and invents a job that is not his.
  */
-function detailOf(i: DeadlineItem, mark: Mark): string {
-  if (mark === 'nodate' && !i.status.nextDue) {
-    const key = i.status.answerKey ?? i.status.needs?.[0]
-    const box = key ? anchorByKey(key) : undefined
-    if (box) return `Add: ${box.label}`
-  }
-  return dueLine(i)
-}
-
 /** anchor_key -> the date in force, and the row it came from. */
 const current = new Map<string, { on: string; id: string }>()
 for (const r of anchorRows ?? []) {
@@ -669,6 +705,85 @@ const history = (historyRows ?? []) as unknown as HistoryRow[]
 const anchors = anchorsForKind(vehicle.kind)
 const federal = anchors.filter((a) => a.jurisdiction === 'federal')
 const california = anchors.filter((a) => a.jurisdiction === 'CA')
+
+/**
+ * THE BOXES THIS CATALOGUE HAS NO ENTRY FOR.
+ *
+ * `VEHICLE_ANCHORS` holds six facts about the unit, and they are the six the
+ * owner is asked for on an empty truck. Answer all six and the engine asks three
+ * more questions: has the 2290 actually been filed, is the § 396.21 report being
+ * kept, is the CTC-VIS listing current. Those are COMPLETIONS, not facts about
+ * the truck, so `answerKeyFor` files them under the rule's own code — and no
+ * vehicle anchor spells a rule code, so this form could not ask them. Three grey
+ * rows on the timeline above, each saying a date is missing, with no box on the
+ * page. That is the defect, and it only appears AFTER he answers, which is the
+ * worst possible moment for it.
+ *
+ * Built here, after `current`, because a box has to show what it already holds.
+ * The words come from the same registry the dashboard reads, so the two screens
+ * ask one question rather than two.
+ */
+const unboxed = unboxedQuestions({
+  subject: vehicle.kind,
+  boxed: anchors.map((a) => a.key),
+  rows: unitItems,
+  onFile: (key) => current.get(key)?.on ?? '',
+})
+const unboxedByKey = new Map(unboxed.map((q) => [q.key, q]))
+// Every key this kind could ever be asked for, drawn or not. The history table
+// reads it, because a date recorded months ago must still get its name even
+// when its question has since been answered and left the list above.
+const unboxedSlotByKey = new Map(
+  unboxedSlots(vehicle.kind, anchors.map((a) => a.key)).map((s) => [s.key, s]),
+)
+
+/**
+ * The box on THIS page that answers this row, or nothing.
+ *
+ * The timeline names the OBLIGATION ("Form 2290 heavy vehicle use tax") and the
+ * form names the FACT the owner types ("First used on public highways"). They
+ * are both right and they share no words, so a row and its box cannot be
+ * matched by reading. The owner proved it: he opened the form from a Form 2290
+ * row, read six labels, and asked where the input was.
+ *
+ * So the box is resolved rather than assumed: the key the engine would read the
+ * answer back from, looked up in the two things this form draws — the vehicle
+ * anchors, and the rule-code questions beside them.
+ *
+ * The words differ between the two, and that is the point. An anchor box is
+ * NAMED, because its name is the one thing the row does not say. A rule-code box
+ * carries the row's own title, so repeating it would be the row read back to
+ * him; what he needs there is what to type, so that is what it says.
+ *
+ * `?add=1` opens the fold SERVER-SIDE — a fragment alone never reaches the
+ * server — and `#date_<key>` lands him on the box itself rather than on the top
+ * of a form of nine.
+ *
+ * Still returns nothing when neither list has the key. A link into a form that
+ * cannot answer him is worse than no link, and it is what the first version of
+ * this did. After this change no reachable grey row lands there, and
+ * tests/unboxed-dates.test.ts is what keeps that true.
+ */
+const boxKeys = new Set(anchors.map((a) => a.key))
+function boxFor(i: DeadlineItem): { href: string; words: string } | undefined {
+  const key = i.status.answerKey ?? answerKeyFor(i.rule)
+  const to = `/app/vehicles/${vehicle.id}?add=1#date_${key}`
+
+  const anchor = anchorByKey(key)
+  if (anchor && boxKeys.has(key)) return { href: to, words: `Put in: ${anchor.label}` }
+  if (unboxedByKey.has(key)) return { href: to, words: UNBOXED_ROW_LINK }
+
+  return undefined
+}
+
+function detailOf(i: DeadlineItem, mark: Mark): string {
+  if (mark === 'nodate' && !i.status.nextDue) {
+    const key = i.status.answerKey ?? i.status.needs?.[0]
+    const box = key ? anchorByKey(key) : undefined
+    if (box) return `Add: ${box.label}`
+  }
+  return dueLine(i)
+}
 
 const params = Astro.url.searchParams
 const error = params.get('error')
@@ -902,16 +1017,46 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
   }
 
   {/*
-    `items-start`, and it is not decoration.
+    THREE BLOCKS, AND THE READING ORDER DECIDES WHERE EACH ONE GOES.
 
-    A grid stretches its children to the tallest one in the row by default. The
-    record card on the left folds shut — a summary and a link, about 200px —
-    while the rail on the right runs to three cards. Stretched to match it, the
-    card becomes an empty white box most of a screen tall, which reads as a page
-    that failed to load rather than as a form somebody closed. The driver page
-    carries the same line for the same reason.
+    The owner opens a truck to ask two things in this order: is anything wrong
+    with this unit, and what do I owe on it. The first is answered above this
+    grid in words, and again by the circle in the rail. The second is the
+    timeline — and the timeline is THE CONTENT OF THIS PAGE.
+
+    It used to start below the grid, at full width. That left the record card
+    alone in the left column: it folds shut to about 220px while the rail beside
+    it runs to three cards and the best part of 900, so a wide screen drew a
+    blank rectangle of page the height of half a screen, walled in by the card
+    above it, the rail beside it and the timeline below. The owner's words for
+    it: "i dont like this gap open space empty space". So the timeline moved up
+    beside the rail, where the reading order wanted it anyway — the driver page
+    has carried its own list in the left column all along, and these two are the
+    same screen with a different noun on it.
+
+    THE PLACEMENT IS `lg:` ONLY, AND THE SOURCE ORDER IS THE PHONE ORDER. Under
+    1024px there is one column and these three blocks come out in the order they
+    are written — record, rail, timeline — which is exactly the order this page
+    has always had on a phone. Nothing about the narrow layout moved, and the
+    boxes still follow the timeline immediately, below the grid.
+
+    `items-start` is not decoration either. A grid stretches its children to the
+    tallest thing in the row, and the record is the short one, so without this
+    the closed card becomes a white box most of a screen tall — which reads as a
+    page that failed to load rather than as a form somebody closed. The driver
+    page carries the same line for the same reason.
+
+    `lg:grid-rows-[auto_1fr]` is what decides WHERE the leftover space falls on
+    a unit whose list is short — a trailer owes two items, not nine. The rail
+    crosses both rows, so when it is the taller side the grid has slack to hand
+    out, and with two automatic rows it splits it between them: 100px under the
+    record, 80px under the timeline, and the record floats away from the block
+    it belongs above. Pinning row one to its content sends every pixel of it to
+    the bottom of the column, under everything, where the page simply ends.
   */}
-  <div class="grid items-start gap-6 lg:grid-cols-[1fr_minmax(0,20rem)]">
+  <div
+    class="grid items-start gap-6 lg:grid-cols-[1fr_minmax(0,20rem)] lg:grid-rows-[auto_1fr]"
+  >
     {/*
       THE RECORD IS FOLDED AWAY, ON `details` ALONE.
 
@@ -930,7 +1075,7 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
       `open` is decided on the server, so a refused save always comes back with
       the form already open under its own error message. See `recordOpen`.
     */}
-    <div class="rounded-xl border border-ink-100 bg-white p-5">
+    <div class="rounded-xl border border-ink-100 bg-white p-5 lg:col-start-1 lg:row-start-1">
       <details open={recordOpen} class="group">
         <summary
           class="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-3 select-none [&::-webkit-details-marker]:hidden"
@@ -1168,7 +1313,22 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
       </div>
     </div>
 
-    <div class="space-y-4">
+    {/*
+      THE RAIL STANDS BESIDE BOTH ROWS, and it is not sticky.
+
+      `lg:row-span-2` is what closes the hole: the rail keeps its own height and
+      the timeline runs up the left of it instead of waiting for it to finish.
+
+      Not sticky, and that was measured rather than assumed. These three cards
+      come to about 700px on a truck with dates on file and past 900 on one with
+      caveats, against 707px of room under a 61px header on a 768px laptop. A
+      pinned block taller than the space it is pinned in never shows its last
+      card — the reader would lose "Dates we still want" for good — and the
+      alternative, a scrollbar inside the rail, hides the same line behind a
+      second thing to scroll. The sentence the ring draws is already printed at
+      full width at the top of this page, in bigger type, before the grid.
+    */}
+    <div class="space-y-4 lg:col-start-2 lg:row-start-1 lg:row-span-2">
       {
         /*
           First in the rail, like the ring on the driver page, because it is the
@@ -1256,113 +1416,73 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
           </div>
           <div class="flex justify-between gap-4 py-2">
             <dt class="text-ink-500">Dates we still want</dt>
+            {/* The rule-code questions are counted here too. Without them this
+                read 0 on a truck whose headline two cards up said three dates
+                were not on file — the same screen answering one question two
+                ways, which teaches him to believe neither. */}
             <dd class="text-right font-medium tabular-nums">
-              {anchors.filter((a) => !current.has(a.key)).length}
+              {anchors.filter((a) => !current.has(a.key)).length +
+                unboxed.filter((q) => q.on === '').length}
             </dd>
           </div>
         </dl>
       </div>
     </div>
-  </div>
 
-  <!-- ------------------------------------------------------------- dates -->
-
-  <section id="dates" class="mt-8">
-    <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
+    <!-- ----------------------------------------------------------- dates -->
 
     {/*
-      THE TIMELINE REPLACED THE OPEN FORM THAT USED TO BE HERE.
+      SECOND ROW, FIRST COLUMN: under the record, beside the rail.
 
-      The boxes are still one tap away, below. What sat on this page before was
-      about a thousand pixels of date fields on a screen an owner opens to find
-      out when the next inspection lands — the reading buried under the typing.
-      Every row here is one obligation, in the engine's own order, with the mark
-      it earned and the date it turns on.
-
-      There is no map on this page and there will not be one. Where a truck has
-      BEEN is not a compliance fact, and this is the screen where somebody would
-      think to put it. See docs/product/SCOPE.md.
+      The heading keeps its words. What changed is where the block sits on a
+      wide screen — see the note at the top of this grid. The boxes it links to
+      are below the grid, at full width, the way the driver page puts its own
+      date form under its own checklist.
     */}
-    {
-      timeline.length > 0 && (
-        <Figure
-          class="mt-3"
-          title={`${timeline.length} ${timeline.length === 1 ? 'thing' : 'things'} we track for this ${vehicle.kind === 'trailer' ? 'trailer' : 'truck'}`}
-          subtitle="Past its date first, then the dates we do not have, then the soonest."
-          coverage={COVERAGE_NOTE}
-          action={{ href: addDatesHref, label: 'Put a date in' }}
-        >
-          <ol>
-            {onTheClock.map((r, n) => (
-              <li class="relative flex gap-3 pb-4 last:pb-0">
-                {/* The spine. Never under the last dot — a line running off the
-                    bottom of a list reads as a row that failed to load. */}
-                {n < onTheClock.length - 1 && (
-                  <span
-                    class="absolute top-6 bottom-0 left-[10px] w-px bg-ink-100"
-                    aria-hidden="true"
-                  />
-                )}
-                <span
-                  class:list={[
-                    'relative flex size-[22px] shrink-0 items-center justify-center rounded-full',
-                    MARK_STYLE[r.mark].dot,
-                  ]}
-                  aria-hidden="true"
-                >
-                  {MARK_ICON[r.mark] && (
-                    <svg
-                      viewBox="0 0 16 16"
-                      class="size-3.5"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.8"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <path d={MARK_ICON[r.mark]} />
-                    </svg>
-                  )}
-                </span>
-                <div class="min-w-0 flex-1">
-                  <p class="text-sm font-medium">{r.item.rule.title}</p>
-                  <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                    {/* The word, always, beside the colour. */}
-                    <span class:list={['badge', MARK_STYLE[r.mark].pill]}>
-                      {r.mark === 'act' ? lateWords(r.item) : MARK_WORD[r.mark]}
-                    </span>
-                    {/* 12px, so ink-700: this line says what the pill beside it
-                        is about, and it is the half a reader acts on. */}
-                    <span class="text-ink-700">{detailOf(r.item, r.mark)}</span>
-                  </p>
-                </div>
-              </li>
-            ))}
-          </ol>
+    <section id="dates" class="lg:col-start-1 lg:row-start-2">
+      <h2 class="text-lg font-semibold tracking-tight">Compliance dates</h2>
 
-          {/*
-            DECLARED, THEN FOLDED — never dropped, and never given a colour off
-            the urgency scale. Amber means time and only time; these will still
-            be here next year. `details` opens on a tap and from the keyboard on
-            its own, which is the whole disclosure mechanism this app has.
-          */}
-          {noSchedule.length > 0 && (
-            <details class="mt-1 border-t border-ink-100 pt-3">
-              <summary class="flex min-h-11 cursor-pointer items-center text-xs text-ink-700 select-none">
-                <span class="tabular-nums">{noSchedule.length}</span>
-                {noSchedule.length === 1 ? ' more duty has' : ' more duties have'} no date anyone
-                can work out
-              </summary>
-              <ul class="mt-3 space-y-3">
-                {noSchedule.map((r) => (
-                  <li class="flex gap-3">
+      {/*
+        THE TIMELINE REPLACED THE OPEN FORM THAT USED TO BE HERE.
+
+        The boxes are still one tap away, below. What sat on this page before was
+        about a thousand pixels of date fields on a screen an owner opens to find
+        out when the next inspection lands — the reading buried under the typing.
+        Every row here is one obligation, in the engine's own order, with the mark
+        it earned and the date it turns on.
+
+        There is no map on this page and there will not be one. Where a truck has
+        BEEN is not a compliance fact, and this is the screen where somebody would
+        think to put it. See docs/product/SCOPE.md.
+      */}
+      {
+        timeline.length > 0 && (
+          <Figure
+            class="mt-3"
+            title={`${timeline.length} ${timeline.length === 1 ? 'thing' : 'things'} we track for this ${vehicle.kind === 'trailer' ? 'trailer' : 'truck'}`}
+            subtitle="Past its date first, then the dates we do not have, then the soonest."
+            coverage={COVERAGE_NOTE}
+            action={{ href: addDatesHref, label: 'Put a date in' }}
+          >
+            <ol>
+              {onTheClock.map((r, n) => (
+                <li class="relative flex gap-3 pb-4 last:pb-0">
+                  {/* The spine. Never under the last dot — a line running off the
+                      bottom of a list reads as a row that failed to load. */}
+                  {n < onTheClock.length - 1 && (
                     <span
-                      class:list={[
-                        'flex size-[22px] shrink-0 items-center justify-center rounded-full',
-                        MARK_STYLE.read.dot,
-                      ]}
+                      class="absolute top-6 bottom-0 left-[10px] w-px bg-ink-100"
                       aria-hidden="true"
-                    >
+                    />
+                  )}
+                  <span
+                    class:list={[
+                      'relative flex size-[22px] shrink-0 items-center justify-center rounded-full',
+                      MARK_STYLE[r.mark].dot,
+                    ]}
+                    aria-hidden="true"
+                  >
+                    {MARK_ICON[r.mark] && (
                       <svg
                         viewBox="0 0 16 16"
                         class="size-3.5"
@@ -1372,140 +1492,360 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
                         stroke-linecap="round"
                         stroke-linejoin="round"
                       >
-                        <path d={MARK_ICON.read} />
+                        <path d={MARK_ICON[r.mark]} />
                       </svg>
-                    </span>
-                    <div class="min-w-0 flex-1">
-                      <p class="text-sm font-medium">{r.item.rule.title}</p>
-                      <p class="mt-1 text-xs text-ink-700">{r.item.status.reason}</p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
-        </Figure>
+                    )}
+                  </span>
+                  <div class="min-w-0 flex-1">
+                    <p class="text-sm font-medium">{r.item.rule.title}</p>
+                    <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                      {/* The word, always, beside the colour. */}
+                      <span class:list={['badge', MARK_STYLE[r.mark].pill]}>
+                        {r.mark === 'act' ? lateWords(r.item) : MARK_WORD[r.mark]}
+                      </span>
+                      {/* 12px, so ink-700: this line says what the pill beside it
+                          is about, and it is the half a reader acts on. */}
+                      <span class="text-ink-700">{detailOf(r.item, r.mark)}</span>
+                    </p>
+                    {/*
+                      A ROW THAT SAYS SOMETHING IS MISSING HAS TO OFFER THE BOX.
+
+                      The form is folded — that fold is what took 300px off this
+                      page — and the owner read the two "Missing a date" rows,
+                      looked for somewhere to type, and could not find it. His
+                      words: "i dont see those date input". The fold was three
+                      inches below him wearing the words "Put a date in, or change
+                      one", and it still read as a heading rather than a way in.
+                      The rows are where he is already looking, so the way in
+                      belongs on the row.
+
+                      `?add=1` opens the fold SERVER-SIDE — a fragment alone never
+                      reaches the server, so a bare #add-dates would scroll to a
+                      closed box and prove him right a second time. The fragment
+                      now names the BOX rather than the section, so the label he
+                      was sent for is the one under his thumb.
+
+                      Three rows on a fully answered truck used to get no link at
+                      all — the ones the engine files under a rule code. They have
+                      boxes now, in the same form, so `boxFor` finds them too.
+                    */}
+                    {(r.mark === 'nodate' || r.mark === 'act') &&
+                      (() => {
+                        const box = boxFor(r.item)
+                        if (!box) return null
+                        // The words come from `boxFor`, which knows which of the
+                        // two kinds of box this is. An anchor box is named,
+                        // because its name is what the row does not say; a
+                        // rule-code box already wears the row's title, so it says
+                        // what to type instead.
+                        return (
+                          <a
+                            href={box.href}
+                            class="link mt-1 inline-flex min-h-11 items-center text-xs"
+                          >
+                            {box.words}
+                          </a>
+                        )
+                      })()}
+                  </div>
+                </li>
+              ))}
+            </ol>
+
+            {/*
+              DECLARED, THEN FOLDED — never dropped, and never given a colour off
+              the urgency scale. Amber means time and only time; these will still
+              be here next year. `details` opens on a tap and from the keyboard on
+              its own, which is the whole disclosure mechanism this app has.
+            */}
+            {noSchedule.length > 0 && (
+              <details class="mt-1 border-t border-ink-100 pt-3">
+                {/*
+                  `gap-1` and NOT a leading space in the string. This summary is a
+                  flex container, so the text beside the count is an anonymous
+                  flex item — and flex strips leading whitespace from one. The
+                  space was written, and rendered as "1more duty has".
+                */}
+                <summary class="flex min-h-11 cursor-pointer items-center gap-1 text-xs text-ink-700 select-none">
+                  <span class="tabular-nums">{noSchedule.length}</span>
+                  <span>
+                    {noSchedule.length === 1 ? 'more duty has' : 'more duties have'} no date anyone
+                    can work out
+                  </span>
+                </summary>
+                <ul class="mt-3 space-y-3">
+                  {noSchedule.map((r) => (
+                    <li class="flex gap-3">
+                      <span
+                        class:list={[
+                          'flex size-[22px] shrink-0 items-center justify-center rounded-full',
+                          MARK_STYLE.read.dot,
+                        ]}
+                        aria-hidden="true"
+                      >
+                        <svg
+                          viewBox="0 0 16 16"
+                          class="size-3.5"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.8"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <path d={MARK_ICON.read} />
+                        </svg>
+                      </span>
+                      <div class="min-w-0 flex-1">
+                        <p class="text-sm font-medium">{r.item.rule.title}</p>
+                        <p class="mt-1 text-xs text-ink-700">{r.item.status.reason}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </Figure>
+        )
+      }
+    </section>
+  </div>
+
+  <!-- ------------------------------------------------------- the boxes -->
+
+  {/*
+    THE TYPING, AT FULL WIDTH, UNDER BOTH COLUMNS.
+
+    Folded, and it stays folded — that fold is a large part of why this page is
+    a third shorter on a phone than it was. It is out of the left column for one
+    reason: opened, it is a dozen date fields and the tallest thing on the
+    screen, and a form that tall in a 888px column leaves the rail's gutter
+    empty for its whole length. Beneath both columns it has the page to itself.
+
+    The rows above link straight into it — `?add=1#date_<key>` opens the fold on
+    the server and lands on the named box — so nothing here is further from the
+    reader than it was.
+  */}
+  <details open={datesOpen} id="add-dates" class="group mt-4">
+    <summary
+      class="flex cursor-pointer list-none items-center gap-3 rounded-xl border border-ink-100 bg-white p-4 select-none [&::-webkit-details-marker]:hidden"
+    >
+      <h3 class={cardHeading}>Put a date in, or change one</h3>
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 20 20"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        class="size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180"
+      >
+        <path d="M5 8l5 5 5-5"></path>
+      </svg>
+      {/* The count a closed fold owes: how many boxes are behind it. It
+          counts the rule-code ones too, or it promises six and opens nine. */}
+      <span class="ml-auto text-sm font-medium text-brand-600 group-open:hidden">
+        <span class="tabular-nums">{anchors.length + unboxed.length}</span>
+        {anchors.length + unboxed.length === 1 ? ' box' : ' boxes'}
+      </span>
+    </summary>
+
+    {/*
+      TAKING A DATE BACK, from the box that holds it.
+
+      Clearing a box and saving does nothing, and that is deliberate: a blank
+      means "leave this one alone", which is what lets him answer one question
+      without wiping the other eight. Making blank mean DELETE would turn every
+      partial save into a data loss.
+
+      So removal is its own act — and it was only reachable from the history
+      table at the foot of the page, behind a fold. He cleared the box, saved,
+      and nothing happened. The control now sits beside the date it removes.
+
+      A separate form, because HTML forbids nesting one inside another, and the
+      `form=` attribute is what lets a button standing inside the dates form
+      submit into this one instead. No script: each button carries the record id
+      as its own name/value, so one form serves every box.
+    */}
+    <form method="POST" id="remove-date">
+      <input type="hidden" name="intent" value="withdraw_date" />
+      {/*
+        Which screen asked. The same handler serves the Withdraw button in the
+        history table at the foot of the page, and that one belongs back at the
+        table it was pressed in. Without this, removing from a box sent him to
+        `#history` with the date form shut behind him — he pressed a button
+        inside an open form and the form vanished.
+      */}
+      <input type="hidden" name="from" value="dates" />
+    </form>
+
+    <form method="POST" class="mt-4 space-y-4">
+    <p class="max-w-3xl text-sm text-ink-500">
+      Every box below wants the <strong>last time it happened</strong>, not the next time it
+      is due. We count forward from the date you type. A date in the future makes us skip
+      past the deadline you were trying to tell us about.
+    </p>
+
+    {
+      weightUnknown && (
+        <p class="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          This truck has no GVWR on file, so every weight rule below stays ON. We treat an
+          unknown weight as fully regulated, never as exempt. One extra reminder costs you a
+          minute. One missed inspection costs you the truck. Fill in the GVWR above and the
+          list gets shorter only if the truck really is lighter.
+        </p>
       )
     }
 
-    <details open={datesOpen} id="add-dates" class="group mt-4">
-      <summary
-        class="flex cursor-pointer list-none items-center gap-3 rounded-xl border border-ink-100 bg-white p-4 select-none [&::-webkit-details-marker]:hidden"
-      >
-        <h3 class={cardHeading}>Put a date in, or change one</h3>
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 20 20"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          class="size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180"
-        >
-          <path d="M5 8l5 5 5-5"></path>
-        </svg>
-        <span class="ml-auto text-sm font-medium text-brand-600 group-open:hidden">
-          <span class="tabular-nums">{anchors.length}</span>
-          {anchors.length === 1 ? ' box' : ' boxes'}
-        </span>
-      </summary>
-
-      <form method="POST" class="mt-4 space-y-4">
-      <p class="max-w-3xl text-sm text-ink-500">
-        Every box below wants the <strong>last time it happened</strong>, not the next time it
-        is due. We count forward from the date you type. A date in the future makes us skip
-        past the deadline you were trying to tell us about.
-      </p>
-
-      {
-        weightUnknown && (
-          <p class="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            This truck has no GVWR on file, so every weight rule below stays ON. We treat an
-            unknown weight as fully regulated, never as exempt. One extra reminder costs you a
-            minute. One missed inspection costs you the truck. Fill in the GVWR above and the
-            list gets shorter only if the truck really is lighter.
-          </p>
-        )
-      }
-
-      {
-        [
-          { title: 'Federal', items: federal },
-          { title: 'California', items: california },
-        ].map(
-          (group) =>
-            group.items.length > 0 && (
-              /* One card per group, the container the driver page gives its own
-                 date groups. Both pages were already agreed on the heading; they
-                 disagreed about what the heading sat on — a bare block inside one
-                 long card here, a card of its own there. */
-              <div class={card}>
-                <h3 class={cardHeading}>{group.title}</h3>
-                <div class="mt-4 space-y-5">
-                  {group.items.map((anchor) => {
-                    const live = current.get(anchor.key)
-                    return (
-                      <div class="border-t border-ink-100 pt-4 first:border-t-0 first:pt-0">
-                        <label class="block">
-                          <span class="field-label">{anchor.label}</span>
-                          <input
-                            type="date"
-                            name={`date_${anchor.key}`}
-                            value={live?.on ?? ''}
-                            max={today}
-                            class="field-input mt-1 max-w-xs tabular-nums"
-                          />
-                        </label>
-                        <p class="field-hint">{anchor.help}</p>
-                        <p class="mt-1 text-xs text-ink-700">Used for: {anchor.drives}</p>
-                        {anchor.weightNote && (
-                          <p class="mt-1 text-xs text-ink-700">{anchor.weightNote}</p>
-                        )}
-                        {/*
-                          Only ever rendered when the weight is MISSING, and it
-                          says "stays on". There is deliberately no branch here
-                          that turns a NULL GVWR into "does not apply to you".
-                        */}
-                        {anchor.weightNote && weightUnknown && (
-                          <p class="mt-1.5 inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
-                            No GVWR on file, so this one stays on
-                          </p>
-                        )}
-                        {live && (
-                          <p class="mt-1.5 text-xs text-emerald-700">
-                            On file: {formatDay(live.on)}
-                          </p>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
+    {
+      [
+        { title: 'Federal', items: federal },
+        { title: 'California', items: california },
+      ].map(
+        (group) =>
+          group.items.length > 0 && (
+            /* One card per group, the container the driver page gives its own
+               date groups. Both pages were already agreed on the heading; they
+               disagreed about what the heading sat on — a bare block inside one
+               long card here, a card of its own there. */
+            <div class={card}>
+              <h3 class={cardHeading}>{group.title}</h3>
+              <div class="mt-4 space-y-5">
+                {group.items.map((anchor) => {
+                  const live = current.get(anchor.key)
+                  return (
+                    <div class="border-t border-ink-100 pt-4 first:border-t-0 first:pt-0">
+                      {/* The id a timeline row links to, so `#date_<key>`
+                          lands on the box he was sent for instead of on the
+                          top of a form of nine. */}
+                      <label id={`date_${anchor.key}`} class="block">
+                        <span class="field-label">{anchor.label}</span>
+                        <input
+                          type="date"
+                          name={`date_${anchor.key}`}
+                          value={live?.on ?? ''}
+                          max={today}
+                          class="field-input mt-1 max-w-xs tabular-nums"
+                        />
+                      </label>
+                      <p class="field-hint">{anchor.help}</p>
+                      <p class="mt-1 text-xs text-ink-700">Used for: {anchor.drives}</p>
+                      {anchor.weightNote && (
+                        <p class="mt-1 text-xs text-ink-700">{anchor.weightNote}</p>
+                      )}
+                      {/*
+                        Only ever rendered when the weight is MISSING, and it
+                        says "stays on". There is deliberately no branch here
+                        that turns a NULL GVWR into "does not apply to you".
+                      */}
+                      {anchor.weightNote && weightUnknown && (
+                        <p class="mt-1.5 inline-block rounded-md bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                          No GVWR on file, so this one stays on
+                        </p>
+                      )}
+                      {live && (
+                        <p class="mt-1.5 flex flex-wrap items-center gap-x-3 text-xs">
+                          <span class="text-emerald-700">On file: {formatDay(live.on)}</span>
+                          {/* Red, like the history table's Withdraw, because it
+                              is the same act and the same loss. */}
+                          <button
+                            type="submit"
+                            form="remove-date"
+                            name="record_id"
+                            value={live.id}
+                            class="btn btn-danger-text btn-sm -ml-3"
+                          >
+                            Remove this date
+                          </button>
+                        </p>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
-            ),
-        )
-      }
+            </div>
+          ),
+      )
+    }
 
-      {/*
-        STICKY, like the driver page's. This list runs to a dozen dates on a
-        tractor and the save button used to sit under the last of them — so on a
-        phone the way to save a date you had just typed at the top was to scroll
-        past everything you had not typed.
-      */}
-      <div
-        class="sticky bottom-0 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white/95 p-4 backdrop-blur"
-      >
-        <span class="flex-1 text-sm text-ink-500">
-          Saving adds a new entry. Nothing already saved is erased, and a box you leave blank
-          changes nothing.
-        </span>
-        <button type="submit" name="intent" value="save_dates" class="btn btn-primary">
-          Save dates
-        </button>
-      </div>
-      </form>
-    </details>
-  </section>
+    {/*
+      THE ROWS THE SIX BOXES ABOVE CANNOT ANSWER.
+
+      These are the questions the engine files under a rule code rather than an
+      anchor — "was the 2290 actually filed", not "when did this truck first
+      run". They appear only once he has answered enough for the schedule to be
+      computable, which is why an empty truck never shows this card and a fully
+      answered one shows three. Before this card they were three grey rows on
+      the timeline with nowhere on the page to type.
+
+      They are in THIS form and not on another screen. The dashboard has been
+      able to ask them all along, and sending him there would have been a
+      different page, a different save, and no way back to the truck. The
+      questions are read out of the same registry the dashboard reads, so the
+      two screens ask one question rather than two that can drift.
+    */}
+    {
+      unboxed.length > 0 && (
+        <div class={card}>
+          <h3 class={cardHeading}>{UNBOXED_HEADING}</h3>
+          <p class="mt-1 max-w-3xl text-sm text-ink-500">{UNBOXED_LEAD}</p>
+          <div class="mt-4 space-y-5">
+            {unboxed.map((q) => (
+              <div class="border-t border-ink-100 pt-4">
+                <label id={q.domId} class="block">
+                  <span class="field-label">{q.label}</span>
+                  <input
+                    type="date"
+                    name={q.field}
+                    value={q.on}
+                    min="1900-01-01"
+                    max={q.kind === 'last_done' ? today : undefined}
+                    class="field-input mt-1 max-w-xs tabular-nums"
+                  />
+                </label>
+                <p class="field-hint">{q.help}</p>
+                {q.on !== '' && (
+                  <p class="mt-1.5 flex flex-wrap items-center gap-x-3 text-xs">
+                    <span class="text-emerald-700">On file: {formatDay(q.on)}</span>
+                    {current.get(q.key) && (
+                      <button
+                        type="submit"
+                        form="remove-date"
+                        name="record_id"
+                        value={current.get(q.key)!.id}
+                        class="btn btn-danger-text btn-sm -ml-3"
+                      >
+                        Remove this date
+                      </button>
+                    )}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )
+    }
+
+    {/*
+      STICKY, like the driver page's. This list runs to a dozen dates on a
+      tractor and the save button used to sit under the last of them — so on a
+      phone the way to save a date you had just typed at the top was to scroll
+      past everything you had not typed.
+    */}
+    <div
+      class="sticky bottom-0 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white/95 p-4 backdrop-blur"
+    >
+      <span class="flex-1 text-sm text-ink-500">
+        Saving adds a new entry. Nothing already saved is erased, and a box you leave blank
+        changes nothing.
+      </span>
+      <button type="submit" name="intent" value="save_dates" class="btn btn-primary">
+        Save dates
+      </button>
+    </div>
+    </form>
+  </details>
 
   <!-- --------------------------------------------------------- documents -->
 
@@ -1554,7 +1894,14 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
                 {history.map((r) => {
                   const anchor = anchorByKey(r.anchor_key)
                   const inForce = current.get(r.anchor_key)?.id === r.id
-                  const collected = anchors.some((a) => a.key === r.anchor_key)
+                  // The rule-code dates are collected by this page too now, so
+                  // they get their name off the registry and never the note
+                  // below. Written as a raw key under "No rule uses this date",
+                  // a 2290 filing date he typed here would have read as a row
+                  // that does nothing — the opposite of the truth.
+                  const extra = unboxedSlotByKey.get(r.anchor_key)
+                  const collected = Boolean(anchor && boxKeys.has(r.anchor_key)) || Boolean(extra)
+                  const label = anchor?.label ?? extra?.label ?? r.anchor_key
                   return (
                     /* The block leads with WHAT the date is for, because that is
                        what an owner is looking down this list for. The date and
@@ -1562,7 +1909,7 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
                        it on the next line. */
                     <tr class="block py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
                       <td class={cell}>
-                        <span class="font-medium">{anchor?.label ?? r.anchor_key}</span>
+                        <span class="font-medium">{label}</span>
                         {/*
                           A date recorded before the kind was changed is not
                           wrong and is not deleted — it is simply not read by any
