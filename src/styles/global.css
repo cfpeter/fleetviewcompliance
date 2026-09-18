@@ -261,7 +261,7 @@
      a shadow is invisible in daylight on a phone at a truck stop.
 
      There is no loading variant. A loading button needs script to swap the
-     label and set aria-busy, and the only script in this app is the three
+     label and set aria-busy, and the only script in this app is the two
      print buttons. It does not need one: every form here is a POST and a 303,
      so the browser's own tab spinner is already the progress indicator, and it
      appears on a slow phone connection whether we ask it to or not. */
@@ -452,7 +452,7 @@
    Why every click still loads a whole page, and what this softens.
 
    There is no client-side router in this application and that is deliberate:
-   the site ships no JavaScript beyond three print buttons, so a link is a real
+   the site ships no JavaScript beyond two print buttons, so a link is a real
    document request and a form is a POST and a 303. It is what makes the app
    work on a phone with one bar at a truck stop, and what makes a refresh after
    a form submission harmless. The cost is the white flash between pages, which

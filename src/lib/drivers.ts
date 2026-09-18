@@ -88,6 +88,24 @@ export function isDriverStatus(value: string): value is DriverStatus {
 }
 
 /**
+ * The word a person reads, never the enum.
+ *
+ * The roster and the driver page were both printing the raw column — 'active',
+ * 'inactive', 'terminated', lowercase — inside the status badge, while the
+ * filter tabs directly above them printed 'Active' and 'Inactive' out of
+ * `DRIVER_STATUSES`. One screen, one status, two spellings. The trucks pages
+ * have had `statusLabel` in src/lib/vehicles.ts all along; this is the same
+ * function for the same reason, so the two halves of the fleet are named the
+ * same way.
+ *
+ * Falls back to the stored value rather than to an empty badge: a status we do
+ * not recognise is a thing to show, not a thing to hide.
+ */
+export function statusLabel(status: string): string {
+  return DRIVER_STATUSES.find((s) => s.value === status)?.label ?? status
+}
+
+/**
  * Terminated is grey, not red.
  *
  * Red is the loudest colour on the page and this product spends it on overdue

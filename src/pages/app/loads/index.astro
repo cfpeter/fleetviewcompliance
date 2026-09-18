@@ -588,19 +588,32 @@ const monthFigures = months
             p.count === 0 ? (
               /* Nothing to filter to, so it is not a link. It stays on the row
                  because "no breakdowns this week" is worth reading, and a
-                 control that comes and goes is one nobody learns. ink-700
-                 because the pill is a tint, and a count of zero is a fact to
-                 read rather than a greyed-out control. */
-              <span class="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-ink-50 px-3 text-sm font-medium text-ink-700">
+                 control that comes and goes is one nobody learns.
+
+                 `badge badge-neutral` — the same shared pair every other
+                 nothing-to-report state in the app wears, so the empty pill and
+                 the pills beside it are one shape. It carried its own
+                 `rounded-lg bg-ink-50 px-3 text-sm font-medium` before, which
+                 was a second badge construction sitting next to the real one. */
+              <span class="badge badge-neutral inline-flex min-h-11 items-center gap-1.5">
                 <span class="tabular-nums">0</span>
                 {p.label}
               </span>
             ) : (
+              /* `exceptionPillClass` hands back the shared `badge badge-*`
+                 pair and NOTHING here repeats its geometry. `rounded-lg`,
+                 `text-sm` and `font-medium` used to sit on top of it, and a
+                 utility outranks the components layer, so one exception drew
+                 as a rounded-full 12px semibold pill in the table below and as
+                 a rounded-lg 14px medium rectangle up here — one status, two
+                 shapes, on one screen. Only the 44px target and the gap are
+                 added. `aria-current="page"`, the same word every other filter
+                 row in the app uses. */
               <a
                 href={withParam('exception', exception === p.value ? '' : p.value)}
-                aria-current={exception === p.value ? 'true' : undefined}
+                aria-current={exception === p.value ? 'page' : undefined}
                 class:list={[
-                  'inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition hover:opacity-80',
+                  'inline-flex min-h-11 items-center gap-1.5 transition hover:opacity-80',
                   exceptionPillClass(p.value),
                   exception === p.value && 'ring-2 ring-brand-500 ring-offset-1',
                 ]}
@@ -1010,15 +1023,26 @@ const monthFigures = months
                 <span class="field-label">What do you want to make in one month?</span>
                 <div class="field-affix mt-1">
                   <span class="pl-3 text-ink-500" aria-hidden="true">$</span>
+                  {/* THE VISIBLE LABEL IS THE ACCESSIBLE NAME, not a second
+                      wording of it. `aria-label` used to read "Your goal for one
+                      month, in dollars" and REPLACED the words on screen, so a
+                      reader driving the page by voice said what he could see and
+                      hit nothing. The `$` beside the box is aria-hidden, so the
+                      unit is spelled out here rather than lost.
+
+                      Both ids on `aria-describedby` once the server has refused
+                      it: the error is read first, and the sentence saying we do
+                      not save the number does not disappear at the one moment he
+                      is retyping it. Same order as src/components/ui/Field.astro. */}
                   <input
                     type="text"
                     name="goal"
                     value={goalCents !== null ? centsToInput(goalCents) : goalRaw}
                     inputmode="decimal"
                     placeholder="25000"
-                    aria-label="Your goal for one month, in dollars"
+                    aria-label="What do you want to make in one month? In dollars."
                     aria-invalid={goalError ? 'true' : undefined}
-                    aria-describedby={goalError ? 'goal-error' : 'goal-note'}
+                    aria-describedby={goalError ? 'goal-error goal-note' : 'goal-note'}
                     class="field-affix-input w-36 tabular-nums"
                   />
                 </div>

@@ -16,6 +16,7 @@ import {
   DRIVER_STATUSES,
   formatDate,
   isDriverStatus,
+  statusLabel,
   statusPillClass,
   todayInCalifornia,
 } from '../../../lib/drivers.ts'
@@ -501,7 +502,7 @@ const said = 'text-ink-500 sm:hidden'
                         pair, so there is no padding or radius to repeat here —
                         the utilities that used to sit beside it were quietly
                         overriding the shared badge. */}
-                    <span class={statusPillClass(d.status)}>{d.status}</span>
+                    <span class={statusPillClass(d.status)}>{statusLabel(d.status)}</span>
                   </td>
                   {/* Last. The hire date is for the file, not for the roster. */}
                   <td class={`${cell} order-5 mt-1 whitespace-nowrap tabular-nums sm:mt-0`}>
