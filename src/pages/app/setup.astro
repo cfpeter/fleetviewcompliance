@@ -218,10 +218,60 @@ if (Astro.request.method === 'POST') {
     const refused = claimStartNotice(rowStatus(data))
     if (refused) return backToChannels(dot, refused)
 
+    // TELL A PERSON, because the screen this redirects to promises one.
+    //
+    // Before this, `start_carrier_claim` wrote a row and the handler stopped.
+    // The carrier was shown "Your request is with a person" and nothing
+    // notified anybody — there is no admin screen either, so the request sat in
+    // a table until somebody thought to query it. The page made a promise the
+    // system did not keep, and the carrier would wait the full thirty days
+    // before finding out.
+    //
+    // Sent through `send()` like everything else, so the guard decides the
+    // destination: our support address in production, the developer's inbox
+    // outside it. Manual review is a HUMAN letting a stranger take control of a
+    // carrier's federal number, so the mail carries the four things needed to
+    // judge it without opening the app.
+    const claimantEmail = (
+      await supabase.from('profiles').select('email').eq('id', userId).maybeSingle()
+    ).data?.email as string | null | undefined
+
+    const alert = await send(
+      {
+        channel: 'email',
+        to: site.email,
+        subject: `Manual review asked for USDOT ${dot}`,
+        body: [
+          `Somebody asked to be given USDOT ${dot} by hand.`,
+          '',
+          `USDOT: ${dot}`,
+          `Asked by: ${claimantEmail ?? 'no address on the account'}`,
+          `What they typed: ${note ?? 'nothing'}`,
+          `Held until: ${CLAIM_POLICY.manualDays} days from today.`,
+          '',
+          'Nothing is set up for them until somebody confirms the number is theirs.',
+        ].join('\n'),
+      },
+      {
+        mode: env('DEPLOY_ENV'),
+        redirectEmail: env('DEV_REDIRECT_EMAIL'),
+        redirectPhone: env('DEV_REDIRECT_PHONE'),
+      },
+      {
+        resendApiKey: env('RESEND_API_KEY'),
+        fromEmail: env('DIGEST_FROM_EMAIL'),
+      },
+    )
+
+    // The row SURVIVES a failed alert, unlike the code path above where the
+    // message is the whole point. The request is the carrier's and he did
+    // nothing wrong; deleting it would punish him for our mail provider. But he
+    // is not told it is "with a person" when it is not — see manual_unannounced.
+    //
     // Without ?verify the next render finds the open manual row and shows the
     // "it is with a person" state rather than the picker it was just submitted
     // from.
-    return go({ dot, notice: 'manual_queued' })
+    return go({ dot, notice: alert.status === 'sent' ? 'manual_queued' : 'manual_unannounced' })
   }
 
   // ------------------------------------------------------------ send a code
@@ -878,26 +928,26 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
 
             <dl class="mt-5 grid gap-4 border-t border-ink-100 pt-5 sm:grid-cols-3">
               <div>
-                <dt class="text-xs tracking-wide text-ink-500 uppercase">Power units</dt>
+                <dt class="text-xs tracking-wide text-ink-700 uppercase">Power units</dt>
                 <dd class="mt-1 text-2xl font-semibold tabular-nums">
                   {target.powerUnits === null ? '—' : target.powerUnits}
                 </dd>
               </div>
               <div>
-                <dt class="text-xs tracking-wide text-ink-500 uppercase">Drivers</dt>
+                <dt class="text-xs tracking-wide text-ink-700 uppercase">Drivers</dt>
                 <dd class="mt-1 text-2xl font-semibold tabular-nums">
                   {target.drivers === null ? '—' : target.drivers}
                 </dd>
-                <dd class="mt-1 text-xs text-ink-500">
+                <dd class="mt-1 text-xs text-ink-700">
                   {target.cdl === null ? 'CDL count not on file' : `${target.cdl} hold a CDL`}
                 </dd>
               </div>
               <div>
-                <dt class="text-xs tracking-wide text-ink-500 uppercase">Operation</dt>
+                <dt class="text-xs tracking-wide text-ink-700 uppercase">Operation</dt>
                 <dd class="mt-1 text-lg font-semibold">
                   {operationLabel(found.carrier_operation)}
                 </dd>
-                <dd class="mt-1 text-xs text-ink-500">
+                <dd class="mt-1 text-xs text-ink-700">
                   {found.hm_ind === 'Y' ? 'Hazmat flag on file' : 'No hazmat flag on file'}
                 </dd>
               </div>
@@ -905,18 +955,18 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
 
             <dl class="mt-5 grid gap-4 border-t border-ink-100 pt-5 sm:grid-cols-2">
               <div>
-                <dt class="text-xs tracking-wide text-ink-500 uppercase">Safety rating</dt>
+                <dt class="text-xs tracking-wide text-ink-700 uppercase">Safety rating</dt>
                 <dd class="mt-1">
                   <span class={badgeFor(rating.tone)}>{rating.label}</span>
                 </dd>
-                <dd class="mt-1.5 text-xs text-ink-500">{rating.note}</dd>
+                <dd class="mt-1.5 text-xs text-ink-700">{rating.note}</dd>
               </div>
               <div>
-                <dt class="text-xs tracking-wide text-ink-500 uppercase">Last MCS-150</dt>
+                <dt class="text-xs tracking-wide text-ink-700 uppercase">Last MCS-150</dt>
                 <dd class="mt-1 font-semibold tabular-nums">
                   {lastFiled ? fmt(lastFiled) : 'No date on file'}
                 </dd>
-                <dd class="mt-1.5 text-xs text-ink-500">
+                <dd class="mt-1.5 text-xs text-ink-700">
                   {lastFiled
                     ? 'We save this for you, so your two-year MCS-150 deadline is right from day one.'
                     : 'Without it we can say when the next one is due, but not whether you are up to date.'}
@@ -1065,7 +1115,7 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
                 decides to phone instead already has both in front of them.
               */}
               <p class="mt-2 text-sm text-ink-500">
-                {`We get this with USDOT ${dotParam}. We answer at `}
+                {`We get this with USDOT ${dotParam}. We write back to you at `}
                 <span class="font-medium text-ink-700">
                   {accountEmail ?? 'the email address on your account'}
                 </span>
@@ -1213,11 +1263,22 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
 
             <dl class="mt-5 grid gap-4 border-t border-ink-100 pt-5 sm:grid-cols-2">
               <div>
-                <dt class="text-xs tracking-wide text-ink-500 uppercase">USDOT number</dt>
+                <dt class="text-xs tracking-wide text-ink-700 uppercase">USDOT number</dt>
                 <dd class="mt-1 font-semibold tabular-nums">{dotParam}</dd>
               </div>
               <div>
-                <dt class="text-xs tracking-wide text-ink-500 uppercase">We answer at</dt>
+                {/*
+                  "We write back to you at", not "We answer at". This is the
+                  READER'S OWN address, and the old label read as ours — the
+                  person who built this page mistook his own account email for
+                  a company address exposed on a carrier-facing screen, and said
+                  so in those words. If the author reads it that way, a carrier
+                  reads it that way, and the misreading is the worse one: he
+                  thinks he is looking at who to contact rather than where his
+                  answer will land. Our address is the mailto below, and it is
+                  site.email.
+                */}
+                <dt class="text-xs tracking-wide text-ink-700 uppercase">We write back to you at</dt>
                 <dd class="mt-1 font-semibold break-all">
                   {accountEmail ?? 'the email address on your account'}
                 </dd>
@@ -1235,7 +1296,7 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
 
             {manualClaim.note && (
               <div class="mt-5 border-t border-ink-100 pt-5">
-                <p class="text-xs tracking-wide text-ink-500 uppercase">What you told us</p>
+                <p class="text-xs tracking-wide text-ink-700 uppercase">What you told us</p>
                 <p class="mt-1 text-sm whitespace-pre-line text-ink-700">{manualClaim.note}</p>
               </div>
             )}
@@ -1324,7 +1385,7 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
 
             <div class="mt-5 grid gap-4 sm:grid-cols-2">
               <div class="rounded-lg border border-ink-100 p-4">
-                <p class="text-xs tracking-wide text-ink-500 uppercase">Trucks</p>
+                <p class="text-xs tracking-wide text-ink-700 uppercase">Trucks</p>
                 <p class="mt-1 text-2xl font-semibold tabular-nums">{rosterCount(trucks)}</p>
                 <p class="mt-1 text-sm text-ink-500">{rosterLine(trucks, 'power-unit')}</p>
                 {/*
@@ -1340,7 +1401,7 @@ const tone = msg?.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-sky-50 
               </div>
 
               <div class="rounded-lg border border-ink-100 p-4">
-                <p class="text-xs tracking-wide text-ink-500 uppercase">Drivers</p>
+                <p class="text-xs tracking-wide text-ink-700 uppercase">Drivers</p>
                 <p class="mt-1 text-2xl font-semibold tabular-nums">{rosterCount(drivers)}</p>
                 <p class="mt-1 text-sm text-ink-500">{rosterLine(drivers, 'driver')}</p>
                 <a href="/app/drivers/new?from=setup" class={`${primary} mt-4 block text-center`}>

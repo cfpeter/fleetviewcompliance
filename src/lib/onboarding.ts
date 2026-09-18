@@ -99,7 +99,20 @@ const NOTICES: Record<string, Notice> = {
   },
   weak_password: { tone: 'error', text: 'Use a password of at least 8 characters.' },
   bad_email: { tone: 'error', text: 'That does not look like an email address.' },
-  rate_limited: { tone: 'error', text: 'Too many attempts. Wait a minute and try again.' },
+  // NOT "wait a minute". This code covers two different limits and one of them
+  // is measured in HOURS: Supabase caps how many emails a project may send, and
+  // a signup that trips that cap is not retryable in sixty seconds. Telling
+  // somebody to wait a minute sends them straight back into the same refusal,
+  // twice, and the third time they decide the product is broken.
+  //
+  // So the wording promises no number it cannot keep, and names the one thing
+  // that actually helps: come back later, and say something if it persists —
+  // because a real carrier hitting this on a first signup means the cap is set
+  // wrong, and that is our problem to fix, not theirs to wait out.
+  rate_limited: {
+    tone: 'error',
+    text: 'Too many tries. Wait a few minutes and try again. If it keeps happening, write to us.',
+  },
   signup_failed: {
     tone: 'error',
     text: 'We could not create that account just now. Try again in a moment.',
@@ -293,6 +306,22 @@ const NOTICES: Record<string, Notice> = {
   manual_failed: {
     tone: 'error',
     text: 'We could not record that request just now. Try again in a moment.',
+  },
+  // The request IS saved. What failed is us telling ourselves about it, and
+  // that is worth its own words rather than a cheerful "recorded".
+  //
+  // The screen this lands on says "Your request is with a person". If the
+  // notification did not go out, nobody has it — it is a row in a table waiting
+  // for somebody to happen to look. Saying "recorded" there would be true and
+  // useless: the carrier would wait thirty days on a queue nobody is watching.
+  // So he is told plainly, and pointed at the one control on that page that
+  // reaches a human without us in the middle.
+  manual_unannounced: {
+    // 'error' and not 'info', even though the request itself saved. The half
+    // that failed is the half the carrier needs, and a quiet blue note would be
+    // read as "fine" by somebody who then waits a month.
+    tone: 'error',
+    text: 'We saved your request, but our own alert did not go out. Use the email button below so somebody sees it today.',
   },
 }
 
