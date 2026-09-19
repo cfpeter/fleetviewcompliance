@@ -60,7 +60,7 @@ test('a handler that sends the reader elsewhere is a real navigation', () => {
   assert.match(code, /to\.origin === location\.origin && to\.pathname === location\.pathname/)
   assert.match(code, /if \(!sameDocument\(response\.url\)\) \{\s*location\.href = response\.url/)
   // And anything that comes back without a `<main>` is not something to swap.
-  assert.match(code, /if \(!next\) \{\s*location\.href = response\.url/)
+  assert.match(code, /if \(!page\) \{\s*location\.href = response\.url/)
 })
 
 test('every failure falls back to the form the browser already had', () => {
@@ -72,7 +72,47 @@ test('every failure falls back to the form the browser already had', () => {
   assert.match(code, /form\.setAttribute\(GAVE_UP, '1'\)/)
   // The address on screen has to match what is on screen, and REPLACE rather
   // than push, so Back does not re-offer a form that has already been sent.
-  assert.match(code, /history\.replaceState\(null, '', response\.url\)/)
+  assert.match(code, /history\.replaceState\(null, '', address\)/)
+})
+
+test('a link that stays on the page swaps; a link that leaves it does not', () => {
+  // The line is not form versus link, it is "am I still on the same page". A
+  // suggestion chip, a filter and a show/hide toggle are all `<a href>` that
+  // change only the query — the reader has not gone anywhere. A link to another
+  // driver has, and that stays a real document request.
+  assert.match(code, /if \(!sameDocument\(link\.href\)\) return/)
+  assert.match(code, /if \(to\.search === location\.search\) return/)
+  // A modified click belongs to the browser: it means a new tab or a saved file.
+  assert.match(code, /if \(event\.metaKey \|\| event\.ctrlKey \|\| event\.shiftKey \|\| event\.altKey\) return/)
+  assert.match(code, /if \(link\.hasAttribute\('download'\)\) return/)
+  assert.match(code, /if \(link\.target && link\.target !== '_self'\) return/)
+})
+
+test('an in-page anchor costs nothing, and Back still works', () => {
+  /*
+   * A BUG THE BROWSER TEST CAUGHT, and it is not obvious.
+   *
+   * Following a plain `#anchor` link is a same-document navigation, and
+   * browsers fire `popstate` for those as well as for the Back button. So
+   * every in-page jump was refetching and rebuilding the whole `<main>` — a
+   * round trip for nothing, and worse, it threw away anything typed into a
+   * form on that page.
+   *
+   * Measured after the fix: an in-page anchor makes 0 requests; Back makes 1
+   * and re-renders.
+   */
+  assert.match(code, /let rendered = location\.pathname \+ location\.search/)
+  assert.match(code, /if \(addressOnScreen\(\) === rendered\) return/)
+  // And the marker is updated everywhere a swap lands, or the guard goes stale
+  // and starts refusing real navigations.
+  assert.equal((code.match(/rendered = addressOnScreen\(\)/g) ?? []).length, 2)
+  // Back needs its own handler at all: `pushState` without one changes the
+  // address bar and not the page, so Back looks like it did nothing.
+  assert.match(code, /window\.addEventListener\('popstate'/)
+  // A link gets its own history entry; a form's answer replaces the page that
+  // submitted it, so Back does not re-offer a form already sent.
+  assert.match(code, /if \(options\.push\) history\.pushState/)
+  assert.match(code, /else history\.replaceState/)
 })
 
 test('the script ships only on a page that asked for it', () => {

@@ -1,42 +1,43 @@
 /**
- * Submitting a form without throwing the page away.
+ * Working a page without throwing it away.
  *
- * THE OWNER'S WORDS: "all i care is about the forms and buttons we click, i
- * just dont like the refresh on those... going from one page to another to
- * render from server is fine... but the actual content like updates, create,
- * done, finish, add date, add driver, mark done — this is what we need."
+ * THE OWNER'S WORDS, twice. First: "all i care is about the forms and buttons
+ * we click, i just dont like the refresh on those... i dont care if going from
+ * one page to another to render from server is fine... but the actual content
+ * like updates, create, done, finish, add date, add driver, mark done — this is
+ * what we need." Then, after the forms were done: "even like when clicking the
+ * option on the reminder it refresh the page, its so annoying."
  *
- * So links are untouched. A click that goes somewhere else is still a real
- * document request, which is what keeps the app honest on one bar of signal.
- * Only the submit of a form that posts back to the page it is standing on is
- * intercepted, and all that changes is that the answer arrives without the
- * white flash and without losing where he was on the page.
+ * THE LINE IS NOT FORM VERSUS LINK. It is "am I still on the same page". A
+ * suggestion chip, a filter, a show/hide toggle and a tab are all `<a href>`
+ * that change only the query string — the reader has not gone anywhere, and
+ * reloading the document under him is the same annoyance as reloading it after
+ * a save. A link to another driver IS going somewhere, and that stays a real
+ * document request, which is what keeps the app honest on one bar of signal
+ * and keeps the left-hand navigation pointing at the right thing.
  *
- * THIS WORKS BECAUSE OF THE ARCHITECTURE, NOT IN SPITE OF IT. Every form here
- * posts to its own address and the server answers with a whole page after a
- * 303. So there is nothing to invent: fetch the same POST, take the `<main>`
- * out of the page that comes back, and put it where the old one was. No JSON
- * endpoint, no client-side state, no second copy of any rule. The server is
- * still the only thing that decides what is true, and it is still the same
- * handler doing it — if this script never runs, the form works exactly as it
- * does today.
+ * So: same path, swap. Different path, let the browser go.
  *
- * OPT-IN, ONE PAGE AT A TIME. Nothing happens unless a form sits inside an
- * element carrying `data-live`, which the App layout puts on `<main>` when a
- * page asks for it. A mechanism that turned itself on for all 78 forms at once
- * would be 78 things to check at once.
+ * THIS WORKS BECAUSE OF THE ARCHITECTURE, NOT IN SPITE OF IT. Every form posts
+ * to its own address and every page answers with a whole document. There is
+ * nothing to invent — fetch the same address, take the `<main>` out of the
+ * answer, put it where the old one was. No JSON endpoint, no client-side state,
+ * no second copy of any rule. The server still decides everything, and if this
+ * script never runs the page behaves exactly as it does today.
+ *
+ * OPT-IN, ONE PAGE AT A TIME, on `data-live` from the App layout.
  */
 
 /**
  * Does `new FormData(form, submitter)` actually carry the button's own name?
  *
- * THIS CHECK IS NOT OPTIONAL AND IT IS NOT DEFENSIVE. Every write on this app
+ * THIS CHECK IS NOT OPTIONAL AND IT IS NOT DEFENSIVE. Every write in this app
  * is chosen by `name="intent"` on the BUTTON, not by a field in the form. A
  * browser that ignores the second argument does not throw — it quietly returns
- * a body with no `intent` in it, the handler falls through to its "unknown
- * intent" branch, and the owner watches a button do nothing at all. So the
- * capability is proved against a real form before anything is intercepted, and
- * where it is missing this file does nothing whatsoever.
+ * a body with no `intent`, the handler falls through to its "unknown intent"
+ * branch, and the owner watches Done do nothing at all. So the capability is
+ * proved against a real form before anything is intercepted, and where it is
+ * missing this file does nothing whatsoever.
  */
 const CARRIES_THE_BUTTON = (() => {
   try {
@@ -55,9 +56,27 @@ const CARRIES_THE_BUTTON = (() => {
 /** Marks a form we have already given up on, so the retry is not intercepted again. */
 const GAVE_UP = 'data-live-gave-up'
 
-function sameDocument(a: string): boolean {
+/**
+ * The address the `<main>` on screen was rendered for — path and query, never
+ * the fragment.
+ *
+ * THIS EXISTS BECAUSE OF A BUG THE TEST CAUGHT. Following a plain `#anchor`
+ * link is a same-document navigation, and browsers fire `popstate` for those
+ * as well as for the Back button. So every in-page jump — every "skip to the
+ * form" link on the page — was refetching and rebuilding the whole `<main>`:
+ * a wasted round trip, and worse, anything typed into a form on that page
+ * would have been thrown away by the swap.
+ *
+ * A fragment moves the reader inside the page we already have. Only a change
+ * of path or query is a different page.
+ */
+let rendered = location.pathname + location.search
+const addressOnScreen = () => location.pathname + location.search
+
+/** Still the same page: same origin, same path. Only the query may differ. */
+function sameDocument(href: string): boolean {
   try {
-    const to = new URL(a, location.href)
+    const to = new URL(href, location.href)
     return to.origin === location.origin && to.pathname === location.pathname
   } catch {
     return false
@@ -65,23 +84,87 @@ function sameDocument(a: string): boolean {
 }
 
 /**
- * Where to put the reader after the answer lands.
+ * Where to put the reader once the answer is on screen.
  *
- * A refusal has to be READ, so it takes the screen. Anything else leaves him
- * exactly where he was — which is the entire point of the exercise, and why
- * this restores the scroll position rather than jumping to an anchor.
+ * A refusal has to be READ, so it takes the screen and the keyboard. A link
+ * that named a place goes to that place. Everything else leaves him exactly
+ * where he was, which is the whole point of the exercise.
  */
-function settle(main: Element, previousY: number): void {
-  const refusal = main.querySelector<HTMLElement>('[role="alert"], [data-refusal]')
+function settle(main: Element, previousY: number, hash: string): void {
+  const refusal = main.querySelector<HTMLElement>('[role="alert"]')
   if (refusal) {
     refusal.scrollIntoView({ block: 'center' })
     // `tabindex="-1"` is already on the shared error summary, so this moves a
-    // screen reader to the sentence rather than leaving it at the top.
+    // screen reader to the sentence rather than leaving it where it was.
     refusal.focus?.()
     return
   }
+  if (hash) {
+    const target = document.getElementById(decodeURIComponent(hash.slice(1)))
+    // `scroll-padding-top` in global.css clears the sticky header for this.
+    if (target) {
+      target.scrollIntoView()
+      return
+    }
+  }
   window.scrollTo(0, previousY)
 }
+
+/** The `<main>` out of a whole page, and its title. Null if this is not one of ours. */
+async function pageFrom(response: Response): Promise<{ main: Element; title: string } | null> {
+  try {
+    const parsed = new DOMParser().parseFromString(await response.text(), 'text/html')
+    const main = parsed.querySelector('#main')
+    return main ? { main, title: parsed.title } : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Put an answer on screen.
+ *
+ * `push` is the one difference between following a link and submitting a form.
+ * A link is somewhere he can come Back from, so it gets its own history entry.
+ * A form's answer REPLACES the page that submitted it, so Back goes back a
+ * page rather than re-offering a form he has already sent.
+ */
+async function land(
+  response: Response,
+  options: { push: boolean; previousY: number; hash: string; address?: string },
+): Promise<void> {
+  const here = document.getElementById('main')
+  if (!here) {
+    location.href = response.url
+    return
+  }
+
+  // A handler that sends him somewhere else — deleted the row, started a
+  // checkout, signed him out — is a real navigation, and he asked for those to
+  // stay real.
+  if (!sameDocument(response.url)) {
+    location.href = response.url
+    return
+  }
+
+  const page = await pageFrom(response)
+  if (!page) {
+    location.href = response.url
+    return
+  }
+
+  here.replaceWith(page.main)
+  if (page.title) document.title = page.title
+  // The address has to match what is on screen, or a refresh shows something
+  // else. `response.url` drops the fragment, so a link's own hash is passed in.
+  const address = options.address ?? response.url
+  if (options.push) history.pushState(null, '', address)
+  else history.replaceState(null, '', address)
+  rendered = addressOnScreen()
+  settle(page.main, options.previousY, options.hash)
+}
+
+// --------------------------------------------------------------- the forms
 
 document.addEventListener('submit', (event) => {
   if (!CARRIES_THE_BUTTON) return
@@ -91,7 +174,7 @@ document.addEventListener('submit', (event) => {
   if (form.hasAttribute(GAVE_UP)) return
 
   // Opt-in, and a form that posts somewhere else is somebody leaving the page.
-  // `/logout` is the live example: it posts to its own address and answers with
+  // `/logout` is the live example: it posts to another address and answers with
   // the public site, and swapping that into the signed-in shell would leave a
   // logged-out page wearing the app's navigation.
   if (!form.closest('[data-live]')) return
@@ -130,7 +213,7 @@ document.addEventListener('submit', (event) => {
     try {
       // Same-origin, so the browser sends the Origin header that `checkOrigin`
       // checks and the `Sec-Fetch-Site` that `flashText` checks. Nothing about
-      // the request the handler sees is different from a real form post.
+      // the request the handler sees differs from a real form post.
       response = await fetch(form.action || location.href, {
         method: 'POST',
         body,
@@ -143,42 +226,87 @@ document.addEventListener('submit', (event) => {
       handOver()
       return
     }
+    await land(response, { push: false, previousY, hash: '' })
+  })()
+})
 
-    // A handler that sends him somewhere else — deleted the row, started a
-    // checkout, signed him out — is a real navigation, and he asked for those
-    // to stay real. This is also what keeps the left-hand navigation honest:
-    // swapping another page's `<main>` under this page's header would highlight
-    // the wrong thing.
-    if (!sameDocument(response.url)) {
-      location.href = response.url
-      return
-    }
+// --------------------------------------------------------------- the links
 
-    let next: Element | null = null
+document.addEventListener('click', (event) => {
+  if (event.defaultPrevented) return
+  if (event.button !== 0) return
+  // A modified click is a request for a new tab or a saved file, and it belongs
+  // to the browser.
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+
+  const target = event.target
+  const link = target instanceof Element ? target.closest('a') : null
+  if (!(link instanceof HTMLAnchorElement)) return
+  if (!link.closest('[data-live]')) return
+  if (link.hasAttribute('download')) return
+  if (link.target && link.target !== '_self') return
+  if (!sameDocument(link.href)) return
+
+  const to = new URL(link.href, location.href)
+  // Only the hash changed, so this is an in-page jump and the browser already
+  // does it better than we would — natively, and with no request at all.
+  if (to.search === location.search) return
+
+  event.preventDefault()
+
+  const main = document.getElementById('main')
+  if (!main) return
+  const previousY = window.scrollY
+  main.setAttribute('aria-busy', 'true')
+
+  void (async () => {
+    let response: Response
     try {
-      const html = await response.text()
-      next = new DOMParser().parseFromString(html, 'text/html').querySelector('#main')
-      if (next) {
-        const title = new DOMParser().parseFromString(html, 'text/html').title
-        if (title) document.title = title
-      }
+      response = await fetch(to.href, { credentials: 'same-origin' })
     } catch {
-      next = null
-    }
-
-    if (!next) {
-      location.href = response.url
+      location.href = to.href
       return
     }
+    await land(response, { push: true, previousY, hash: to.hash, address: to.href })
+  })()
+})
 
-    main.replaceWith(next)
-    // The address has to match what is on screen, or a refresh shows something
-    // else. `replaceState` and not `push`: the POST answer takes the place of
-    // the page that submitted it, so Back still goes back a page rather than
-    // re-offering a form that has already been sent.
-    history.replaceState(null, '', response.url)
-    next.removeAttribute('aria-busy')
-    settle(next, previousY)
+// -------------------------------------------------------------- going back
+
+/**
+ * The Back button, for the entries this script created.
+ *
+ * `pushState` without this is the bug it would have shipped: the address bar
+ * changes and the page does not, so Back looks like it did nothing. Only our
+ * own same-document entries reach here — an entry made by a real navigation is
+ * a real navigation again, and the browser handles it without telling us.
+ */
+window.addEventListener('popstate', () => {
+  const main = document.getElementById('main')
+  if (!main?.closest('[data-live]')) return
+  // Only the fragment moved, so the page on screen is already the right one and
+  // the browser has already scrolled it. Rebuilding it here would be a round
+  // trip for nothing and would throw away whatever is typed into a form.
+  if (addressOnScreen() === rendered) return
+  main.setAttribute('aria-busy', 'true')
+  void (async () => {
+    let response: Response
+    try {
+      response = await fetch(location.href, { credentials: 'same-origin' })
+    } catch {
+      location.reload()
+      return
+    }
+    // No history write: the browser has already moved the entry.
+    const page = await pageFrom(response)
+    if (!page) {
+      location.reload()
+      return
+    }
+    main.replaceWith(page.main)
+    if (page.title) document.title = page.title
+    rendered = addressOnScreen()
+    settle(page.main, window.scrollY, location.hash)
   })()
 })
 
@@ -190,5 +318,5 @@ document.addEventListener('submit', (event) => {
  * under it, and the button then does nothing with nothing on screen to say so.
  * When either page gets `live`, move its listener here as a delegated click on
  * `#print` and delete the inline one — both, in the same change, or the button
- * prints twice.
+ * prints twice. tests/live-forms.test.ts refuses the half of that change.
  */
