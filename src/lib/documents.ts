@@ -186,6 +186,14 @@ export const DRIVER_DOCUMENT_KINDS: readonly DocumentKind[] = [
   { key: 'intracity_exemption', label: 'Intracity zone exemption' },
   { key: 'medical_assessment', label: 'Medical assessment' },
   { key: 'training_certificate', label: 'Training certificate' },
+  // A photo sent in answer to one of the owner's OWN reminders — a tire check,
+  // an oil change. No regulation asks for it, so it is not a compliance paper
+  // and must not wear the name of one; but "Other paper" was the complaint that
+  // started this list growing, and a photo the owner specifically asked for is
+  // the last thing that should come back nameless. The reminder's own title is
+  // written into `file_name`, so the row reads "Photo for a reminder · Check
+  // the tires".
+  { key: 'reminder_photo', label: 'Photo for a reminder' },
   { key: 'other', label: 'Other paper' },
 ]
 

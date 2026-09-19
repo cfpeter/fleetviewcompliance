@@ -14,7 +14,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { anchorSlot, planAnchorWrites } from '../anchors/plan.ts'
 import { ACCEPTED_TYPES, documentBucket, NO_BUCKET_MESSAGE, newStorageKey } from '../documents.ts'
+import { nextCycle, parseDateOnly, toDateOnly } from '../reminders.ts'
 import { DRIVER_ASKS } from './asks.ts'
+import { reminderAskKey, reminderIdFromKey } from './reminder-asks.ts'
 
 export interface AcceptArgs {
   supabase: SupabaseClient
@@ -27,11 +29,45 @@ export interface AcceptArgs {
 }
 
 export type AcceptResult =
-  | { ok: true; dates: number; files: number }
+  | { ok: true; dates: number; files: number; reminders: number }
   | { ok: false; message: string }
+
+/** One of the owner's own reminders, as this module needs to see it. */
+interface ReminderRow {
+  id: string
+  title: string
+  due_on: string
+  repeat_months: number
+  subject_scope: string | null
+  driver_id: string | null
+  completed_at: string | null
+}
 
 export async function acceptSubmission(args: AcceptArgs): Promise<AcceptResult> {
   const asked = DRIVER_ASKS.filter((a) => typeof args.payload[a.key] === 'string')
+
+  // ----------------------------------------------------------- the reminders
+  //
+  // The owner's own errands — "check the tires", "engine oil" — answered the
+  // same way the federal papers are and landing somewhere entirely different.
+  // They are not compliance records and never become any: no rule reads them,
+  // the dashboard does not count them, and a DOT auditor is not shown them.
+  // What a date does here is move the owner's own reminder on.
+  const reminderIds = Object.keys(args.payload)
+    .map((k) => reminderIdFromKey(k))
+    .filter((id): id is string => id !== null)
+
+  let reminderRows: ReminderRow[] = []
+  if (reminderIds.length > 0) {
+    // RLS scopes this to the signed-in owner's carrier. No `.eq('carrier_id')`
+    // for the same reason the rest of this page has none.
+    const { data, error } = await args.supabase
+      .from('reminders')
+      .select('id, title, due_on, repeat_months, subject_scope, driver_id, completed_at')
+      .in('id', reminderIds)
+    if (error) return { ok: false, message: 'We could not save that. Try again.' }
+    reminderRows = (data ?? []) as unknown as ReminderRow[]
+  }
 
   // ------------------------------------------------------------- the columns
   //
@@ -105,6 +141,58 @@ export async function acceptSubmission(args: AcceptArgs): Promise<AcceptResult> 
     }
   }
 
+  // ------------------------------------------------- moving the reminders on
+  //
+  // ONLY A REMINDER THAT IS ABOUT THIS DRIVER IS MOVED. A reminder scoped to
+  // ALL DRIVERS (0032) is one row standing for every man on the roster, so one
+  // driver sending a tire photo has not done it — marking it done would clear
+  // it off the screen for the other six and the owner would never chase them.
+  // His photo and his date are still filed; the reminder is left for the owner
+  // to close when everybody has answered.
+  //
+  // The date used is THE ONE HE TYPED, not today. He is reporting the day he
+  // did the job, and a repeating reminder counts its next cycle from the date
+  // it was due — see `nextCycle`, which the reminders page uses for the Done
+  // button and which must not be reimplemented here.
+  let remindersMoved = 0
+  const today = new Date()
+  for (const row of reminderRows) {
+    const on = args.payload[reminderAskKey(row.id)]
+    if (!on) continue
+    if (row.completed_at !== null) continue
+    // Not his: either it names another driver, or it stands for all of them.
+    //
+    // Compared case-insensitively because the two uuids come from different
+    // places: this one is Postgres's own lower-case rendering, and the other is
+    // the id out of the URL, which the page accepts in either case. Compared
+    // raw, a driver page opened from a hand-typed upper-case link would file
+    // the photo and silently leave the reminder open.
+    if (row.driver_id?.toLowerCase() !== args.driverId.toLowerCase()) continue
+
+    const dueOn = parseDateOnly(row.due_on)
+    if (!dueOn) continue
+    const repeat = Number(row.repeat_months ?? 0)
+
+    const patch =
+      repeat > 0
+        ? { due_on: toDateOnly(nextCycle(dueOn, repeat, today)), last_done_on: on }
+        : {
+            completed_at: new Date().toISOString(),
+            completed_by: args.userId,
+            last_done_on: on,
+          }
+
+    const { error } = await args.supabase
+      .from('reminders')
+      .update(patch)
+      .eq('id', row.id)
+      .is('completed_at', null)
+    // A failure here is not worth losing the dates and the photo over: the
+    // reminder stays open, which is the safe direction — the owner sees it
+    // again and closes it himself. It is counted only when it moved.
+    if (!error) remindersMoved += 1
+  }
+
   // --------------------------------------------------------------- the files
   //
   // THE STAGED OBJECT IS COPIED TO A PROPER DOCUMENT KEY, not reused where it
@@ -154,16 +242,27 @@ export async function acceptSubmission(args: AcceptArgs): Promise<AcceptResult> 
       const from = DRIVER_ASKS.find((a) => a.key === object.customMetadata?.ask)
       const typed = from ? args.payload[from.key] : undefined
 
+      // A photo answering one of the owner's own reminders. It is not a
+      // compliance paper and must not wear the name of one — but "Other paper"
+      // is exactly the complaint that made this list grow, and the last thing
+      // that should come back nameless is the photo he specifically asked for.
+      // The reminder's own title becomes the file name, because "IMG_4417.jpg"
+      // off a phone carries nothing a person can read.
+      const forReminder = reminderRows.find(
+        (r) => r.id === reminderIdFromKey(object.customMetadata?.ask),
+      )
+      const reminderDate = forReminder ? args.payload[reminderAskKey(forReminder.id)] : undefined
+
       rows.push({
         carrier_id: args.carrierId,
         subject_type: 'driver',
         subject_id: args.driverId,
-        kind: from?.documentKind ?? 'other',
+        kind: from?.documentKind ?? (forReminder ? 'reminder_photo' : 'other'),
         storage_key: newStorageKey(args.carrierId, type.ext),
         // What he called it, carried on the staged object because there was no
         // other channel for it. Without this every accepted photo lands in the
         // document list as a nameless "File".
-        file_name: object.customMetadata?.name ?? null,
+        file_name: forReminder ? forReminder.title : (object.customMetadata?.name ?? null),
         // Measured from the bytes, not claimed by anybody. Without these the
         // row renders with no size beside it.
         content_type: type.mime,
@@ -181,7 +280,9 @@ export async function acceptSubmission(args: AcceptArgs): Promise<AcceptResult> 
          * assessment carry the day they happened.
          */
         expires_on: from?.dateIs === 'expires' ? (typed ?? null) : null,
-        issued_on: from?.dateIs === 'issued' ? (typed ?? null) : null,
+        // A reminder date is always the day the job was DONE. There is no card
+        // with an expiry printed on it behind a tire check.
+        issued_on: from?.dateIs === 'issued' ? (typed ?? null) : (reminderDate ?? null),
         uploaded_by: args.userId,
       })
 
@@ -200,5 +301,10 @@ export async function acceptSubmission(args: AcceptArgs): Promise<AcceptResult> 
     }
   }
 
-  return { ok: true, dates: inserted + Object.keys(columns).length, files }
+  return {
+    ok: true,
+    dates: inserted + Object.keys(columns).length,
+    files,
+    reminders: remindersMoved,
+  }
 }

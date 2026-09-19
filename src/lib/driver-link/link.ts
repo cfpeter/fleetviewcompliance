@@ -10,6 +10,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { isStorableDate } from '../anchors/plan.ts'
 import { hashProofToken, newProofToken } from '../proof/token.ts'
 import { type AskKey, askByKey, sameAsk } from './asks.ts'
+import { MAX_QUESTIONS } from './reminder-asks.ts'
 
 // ---------------------------------------------------------------- the clock
 
@@ -121,6 +122,8 @@ export interface MintArgs {
   carrierId: string
   driverId: string
   asks: AskKey[]
+  /** The owner's own reminders this link also asks about. See 0038. */
+  reminderIds: string[]
   hours: number
   userId: string | null
   sentTo: string | null
@@ -144,7 +147,16 @@ export type MintResult =
  * card and a link asking for a licence are two different errands.
  */
 export async function mintDriverLink(args: MintArgs): Promise<MintResult> {
-  if (args.asks.length === 0) return { ok: false, message: 'Pick at least one thing to ask for.' }
+  const reminderIds = args.reminderIds ?? []
+  if (args.asks.length + reminderIds.length === 0) {
+    return { ok: false, message: 'Pick at least one thing to ask for.' }
+  }
+  // The same ceiling as `driver_links_asks_something` in 0038, said here so the
+  // owner reads a sentence instead of a database error. Six boxes is what a man
+  // answers on a phone in a yard before he sends half of them or none.
+  if (args.asks.length + reminderIds.length > MAX_QUESTIONS) {
+    return { ok: false, message: `Ask for ${MAX_QUESTIONS} things at most. Send the rest in another link.` }
+  }
 
   const hours = clampExpiryHours(args.hours)
   const expiresAt = new Date(Date.now() + hours * 3_600_000).toISOString()
@@ -153,7 +165,7 @@ export async function mintDriverLink(args: MintArgs): Promise<MintResult> {
   // a failed mint, so it is checked rather than swallowed.
   const { data: live, error: readError } = await args.supabase
     .from('driver_links')
-    .select('id, asks')
+    .select('id, asks, reminder_ids')
     .eq('driver_id', args.driverId)
     .is('used_at', null)
     .is('revoked_at', null)
@@ -161,7 +173,16 @@ export async function mintDriverLink(args: MintArgs): Promise<MintResult> {
   if (readError) return { ok: false, message: 'We could not make that link. Try again.' }
 
   const replaced = (live ?? [])
-    .filter((r) => sameAsk((r.asks as string[]) ?? [], args.asks))
+    .filter(
+      (r) =>
+        sameAsk((r.asks as string[]) ?? [], args.asks) &&
+        // The reminders are half the errand now, so two links are only the same
+        // errand when both halves match. "Send your medical card" and "send your
+        // medical card and a tire photo" are two different messages, and
+        // retiring the first when the second is made would kill a link the
+        // driver may already have open.
+        sameAsk(((r.reminder_ids as string[]) ?? []).slice().sort(), reminderIds.slice().sort()),
+    )
     .map((r) => String(r.id))
   if (replaced.length > 0) {
     const { error } = await args.supabase
@@ -180,12 +201,26 @@ export async function mintDriverLink(args: MintArgs): Promise<MintResult> {
     driver_id: args.driverId,
     token_hash: await hashProofToken(token),
     asks: args.asks,
+    reminder_ids: reminderIds,
     expires_at: expiresAt,
     sent_to: args.sentTo,
     channel: args.channel,
     created_by: args.userId,
   })
-  if (error) return { ok: false, message: 'We could not make that link. Try again.' }
+  if (error) {
+    // `driver_links_reminders_belong` (0038) refuses a reminder that was
+    // finished, deleted or belongs to another driver between the page loading
+    // and the button being pressed. That is a real thing that happens on a
+    // screen somebody left open, and it deserves a sentence he can act on
+    // rather than the generic one.
+    const refused = /open reminders/i.test(error.message ?? '')
+    return {
+      ok: false,
+      message: refused
+        ? 'One of those reminders is no longer open. Refresh the page and try again.'
+        : 'We could not make that link. Try again.',
+    }
+  }
 
   // The raw token goes back to the caller and is never stored. It exists in the
   // link the owner sends and nowhere else.

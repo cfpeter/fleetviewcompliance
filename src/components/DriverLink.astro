@@ -22,14 +22,30 @@
  */
 import { DRIVER_ASKS } from '../lib/driver-link/asks.ts'
 import { EXPIRY_CHOICES, driverLinkMessage } from '../lib/driver-link/link.ts'
+import {
+  MAX_QUESTIONS,
+  reminderAskKey,
+  reminderIdFromKey,
+} from '../lib/driver-link/reminder-asks.ts'
 import { formatDate } from '../lib/drivers.ts'
 
 export interface LinkRow {
   id: string
   asks: string[]
+  /** The owner's own reminders this link also asks about. 0038. */
+  reminder_ids: string[]
   expires_at: string
   opened_at: string | null
   created_at: string
+}
+
+/** One of the owner's reminders, as the picker needs it. */
+export interface ReminderPick {
+  id: string
+  title: string
+  due_on: string
+  /** True for a reminder that stands for every driver, not only this one. */
+  everyDriver: boolean
 }
 
 export interface SubmissionRow {
@@ -50,8 +66,26 @@ interface Props {
   origin: string
   links: LinkRow[]
   submissions: SubmissionRow[]
+  /** Open reminders he may ask this driver about. Empty is a normal state. */
+  askable: ReminderPick[]
+  /**
+   * Titles for every reminder id this panel might have to name, including ones
+   * finished since the link went out. A submission that came back naming a
+   * reminder the owner has closed still has to read as something.
+   */
+  reminderTitles: Record<string, string>
 }
-const { firstName, phone, carrierName, minted, origin, links, submissions } = Astro.props
+const {
+  firstName,
+  phone,
+  carrierName,
+  minted,
+  origin,
+  links,
+  submissions,
+  askable,
+  reminderTitles,
+} = Astro.props
 
 /**
  * Waiting, and already answered.
@@ -73,7 +107,21 @@ const message = mintedUrl
 /** `?&body=` and not `?body=`: iOS wants the ampersand, Android tolerates it. */
 const smsHref = mintedUrl && phone ? `sms:${phone}?&body=${encodeURIComponent(message)}` : null
 
-const askLabel = (key: string) => DRIVER_ASKS.find((a) => a.key === key)?.label ?? key
+/**
+ * What one answered key is called, on the owner's screen.
+ *
+ * Two vocabularies meet here: the six federal papers, whose labels are written
+ * in the catalogue, and his own reminders, whose label is whatever he typed.
+ * A reminder he has since deleted falls through to a neutral phrase rather than
+ * printing a raw uuid at somebody.
+ */
+const askLabel = (key: string) => {
+  const paper = DRIVER_ASKS.find((a) => a.key === key)
+  if (paper) return paper.label
+  const id = reminderIdFromKey(key)
+  if (id) return reminderTitles[id] ?? 'One of your reminders'
+  return key
+}
 ---
 
 <section id="ask" class="mt-10">
@@ -175,7 +223,9 @@ const askLabel = (key: string) => DRIVER_ASKS.find((a) => a.key === key)?.label 
             <span class="min-w-0 flex-1 text-sm">
               <span class="block font-medium">Waiting for {firstName}</span>
               <span class="block text-xs text-ink-700">
-                {l.asks.map(askLabel).join(' · ')} — expires{' '}
+                {[...l.asks, ...(l.reminder_ids ?? []).map(reminderAskKey)]
+                  .map(askLabel)
+                  .join(' · ')} — expires{' '}
                 {formatDate(String(l.expires_at).slice(0, 10))}
                 {l.opened_at ? ' · opened' : ' · not opened yet'}
               </span>
@@ -260,6 +310,63 @@ const askLabel = (key: string) => DRIVER_ASKS.find((a) => a.key === key)?.label 
         ))}
       </div>
     </fieldset>
+
+    {/* -------------------------------------------------- his own reminders
+
+        NOT A LAW, and the line says so. The six above are federal papers with a
+        rule behind each one; these are the owner's own errands — a tire check,
+        an oil change — and mixing the two without a word between them would
+        teach him that the whole list is optional, or that the tire check is
+        something a DOT auditor asks for. Neither is true.
+
+        UNDER the papers, never above: a lapsed medical card puts a truck out of
+        service and a tire check does not.
+    */}
+    <fieldset class="mt-5">
+      <legend class="text-sm font-medium">Your own reminders</legend>
+      <p class="mt-1 max-w-2xl text-sm text-ink-500">
+        Things you track yourself, not a law. Tick one and {firstName} is asked for it on the same
+        page — a date, a photo, or both.
+      </p>
+      {askable.length > 0 ? (
+        <div class="mt-2 space-y-1">
+          {askable.map((r) => (
+            <label class="flex min-h-11 items-center gap-3">
+              <input
+                type="checkbox"
+                name="reminder"
+                value={r.id}
+                class="size-5 rounded border-ink-300"
+              />
+              <span class="text-sm">
+                {r.title}
+                <span class="text-ink-500 tabular-nums">
+                  {' '}
+                  — due {formatDate(String(r.due_on).slice(0, 10))}
+                </span>
+                {/* Said on the row, because accepting his answer does NOT close
+                    a reminder that stands for every driver — see
+                    src/lib/driver-link/accept.ts. */}
+                {r.everyDriver && <span class="text-ink-500"> · all drivers</span>}
+              </span>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <p class="mt-2 text-sm text-ink-700">
+          Nothing to ask for yet.{' '}
+          <a href="/app/reminders" class="link">
+            Make a reminder
+          </a>{' '}
+          for this driver or for all drivers, and it shows up here.
+        </p>
+      )}
+    </fieldset>
+
+    <p class="mt-4 text-sm text-ink-500">
+      <span class="tabular-nums">{MAX_QUESTIONS}</span> things at most in one link. More than that
+      and people send half of it.
+    </p>
 
     <div class="mt-4 max-w-xs">
       <label class="field-label" for="hours">How long should the link work?</label>

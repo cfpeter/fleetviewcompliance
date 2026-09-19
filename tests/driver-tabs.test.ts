@@ -154,6 +154,10 @@ test('the page loads only what the tab it is drawing needs', () => {
     ["from('documents')", 'papers'],
     ["from('driver_links')", 'papers'],
     ["from('driver_submissions')", 'papers'],
+    // The owner's own reminders, for the "ask the driver" picker. Read on the
+    // papers tab and nowhere else: the dates tab gets its reminders through
+    // `loadReminders`, which answers a different question.
+    ["from('reminders')", 'papers'],
   ] as const) {
     const at = loader.indexOf(call)
     assert.notEqual(at, -1, `${call} is still read`)

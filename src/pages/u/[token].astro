@@ -33,6 +33,13 @@ import {
   safeFileName,
 } from '../../lib/documents.ts'
 import { DRIVER_ASKS } from '../../lib/driver-link/asks.ts'
+import {
+  REMINDER_DATE_HINT,
+  REMINDER_DATE_LABEL,
+  REMINDER_PHOTO_HINT,
+  REMINDER_PHOTO_LABEL,
+  reminderAsks,
+} from '../../lib/driver-link/reminder-asks.ts'
 import { allowDriverSubmit } from '../../lib/driver-link/limit.ts'
 import { callerHash, newSubmissionKey, readAskDate } from '../../lib/driver-link/link.ts'
 import { hashProofToken, isProofToken } from '../../lib/proof/token.ts'
@@ -57,6 +64,12 @@ interface View {
   first_name: string
   asks: string[]
   on_file: string[]
+  /**
+   * The owner's own reminders this link asks about — "check the tires", "engine
+   * oil" — with the title he wrote. THE ONLY FREE TEXT ON THIS PAGE, and it is
+   * here because a question with no words cannot be answered. See 0039.
+   */
+  reminders: { id: string; title: string }[] | null
 }
 
 const readLink = async (): Promise<View | null> => {
@@ -124,6 +137,22 @@ if (shaped && Astro.request.method === 'POST') {
           if (read.value) payload[ask.key] = read.value
         }
 
+        // The owner's own reminders, read the same way and from the same place:
+        // the list comes back from the database with the link, never from the
+        // form, so a crafted POST naming a reminder nobody asked about is not
+        // refused — it is never looked at.
+        const askedReminders = reminderAsks(live.reminders ?? [])
+        if (!error) {
+          for (const r of askedReminders) {
+            const read = readAskDate(form.get(`date_${r.key}`), today)
+            if (!read.ok) {
+              error = `${r.title}: ${read.message}`
+              break
+            }
+            if (read.value) payload[r.key] = read.value
+          }
+        }
+
         // Each file remembers WHICH BOX it came out of. Without that the accept
         // step has a flat list of keys and has to guess, which it refuses to do
         // — so every photo filed as "Other paper", including the one the owner
@@ -133,6 +162,10 @@ if (shaped && Astro.request.method === 'POST') {
           for (const ask of asked) {
             const f = form.get(`file_${ask.key}`)
             if (f instanceof File && f.size > 0) files.push({ file: f, ask: ask.key })
+          }
+          for (const r of askedReminders) {
+            const f = form.get(`file_${r.key}`)
+            if (f instanceof File && f.size > 0) files.push({ file: f, ask: r.key })
           }
           // The ungated box. These genuinely have no rule behind them, and
           // 'other' is the honest answer rather than a guess.
@@ -215,6 +248,7 @@ if (shaped && Astro.request.method === 'POST') {
 if (shaped && !done) view = await readLink()
 
 const asked = view ? DRIVER_ASKS.filter((a) => view.asks.includes(a.key)) : []
+const askedReminders = view ? reminderAsks(view.reminders ?? []) : []
 const title = done ? 'Sent' : view ? 'Send your details' : 'Link not active'
 const field = 'field-input mt-1 w-full'
 ---
@@ -239,9 +273,14 @@ const field = 'field-input mt-1 w-full'
     ) : (
       <>
         <h1 class="text-2xl font-semibold tracking-tight">Hi {view.first_name}</h1>
+        {/* "The date printed on each card" is the right sentence for a medical
+            card and the wrong one for "check the tires" — there is no card. A
+            link can now carry only the owner's own errands, so the opening line
+            follows what is actually on the page. */}
         <p class="mt-2 text-ink-700">
-          Your office needs a couple of details. Type the date printed on each card, and add a photo
-          if you can. That is the whole job.
+          {asked.length > 0
+            ? 'Your office needs a couple of details. Type the date printed on each card, and add a photo if you can. That is the whole job.'
+            : 'Your office needs a couple of things. Put the date in, and add a photo if you can. That is the whole job.'}
         </p>
 
         {error && <p class="mt-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
@@ -289,6 +328,45 @@ const field = 'field-input mt-1 w-full'
               <span class="field-hint block">
                 Not required. A clear photo helps the office check the date.
               </span>
+            </fieldset>
+          ))}
+
+          {/*
+            THE OWNER'S OWN ERRANDS, under the federal papers and never above
+            them: a lapsed medical card puts a truck out of service and a tire
+            check does not, so the thing that stops a truck is the first box.
+
+            The legend is the owner's own sentence, exactly as he typed it on
+            his reminders screen. No rule name, no lead time, no due date —
+            those are his bookkeeping, and this page is a phone in a yard.
+          */}
+          {askedReminders.map((r) => (
+            <fieldset class="rounded-xl border border-ink-100 bg-white p-4">
+              <legend class="px-1 text-sm font-semibold tracking-tight">{r.title}</legend>
+
+              <label class="field-label mt-2 block" for={`date_${r.key}`}>
+                {REMINDER_DATE_LABEL}
+              </label>
+              <input
+                type="date"
+                id={`date_${r.key}`}
+                name={`date_${r.key}`}
+                class={`${field} tabular-nums`}
+              />
+              <span class="field-hint block">{REMINDER_DATE_HINT}</span>
+
+              <label class="field-label mt-4 block" for={`file_${r.key}`}>
+                {REMINDER_PHOTO_LABEL}
+              </label>
+              <input
+                type="file"
+                id={`file_${r.key}`}
+                name={`file_${r.key}`}
+                accept={ACCEPT_ATTRIBUTE}
+                capture="environment"
+                class="mt-1 block w-full text-sm"
+              />
+              <span class="field-hint block">{REMINDER_PHOTO_HINT}</span>
             </fieldset>
           ))}
 

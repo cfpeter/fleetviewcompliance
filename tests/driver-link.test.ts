@@ -35,12 +35,20 @@ import {
   newSubmissionKey,
   readAskDate,
 } from '../src/lib/driver-link/link.ts'
+import {
+  MAX_QUESTIONS,
+  REMINDER_DATE_LABEL,
+  readReminderIds,
+  reminderAskKey,
+  reminderIdFromKey,
+} from '../src/lib/driver-link/reminder-asks.ts'
 import { hashProofToken, newProofToken } from '../src/lib/proof/token.ts'
 import { resolveAnchor } from '../src/lib/rules/anchors.ts'
 import {
   actAs,
   actAsAnon,
   actAsOwner,
+  attempt,
   configured,
   makeUser,
   queryAsOwner,
@@ -260,7 +268,14 @@ test('a photo keeps the box it came out of, and only the loose ones are "other"'
 
   const accept = read('../src/lib/driver-link/accept.ts')
   assert.match(accept, /object\.customMetadata\?\.ask/, 'and the accept reads it back')
-  assert.match(accept, /kind: from\?\.documentKind \?\? 'other'/)
+  // Three answers, in order, and the middle one is newer than this test: a
+  // federal paper wears its own kind, a photo answering one of the owner's own
+  // reminders wears `reminder_photo` so it does not come back as a nameless
+  // "Other paper", and only a file out of the ungated box is genuinely other.
+  assert.match(
+    accept,
+    /kind: from\?\.documentKind \?\? \(forReminder \? 'reminder_photo' : 'other'\)/,
+  )
   // The date he typed goes on the paper as well as on the record.
   assert.match(accept, /expires_on: from\?\.dateIs === 'expires'/)
   assert.match(accept, /issued_on: from\?\.dateIs === 'issued'/)
@@ -368,6 +383,98 @@ test('the referrer policy protects the token WITHOUT breaking the form', () => {
 })
 
 // ---------------------------------------------------------------------------
+// The owner's own reminders, asked for on the same link
+// ---------------------------------------------------------------------------
+
+test('a reminder key is a uuid or it is nothing', () => {
+  const id = '11111111-2222-3333-4444-555555555555'
+  assert.equal(reminderAskKey(id), `reminder:${id}`)
+  assert.equal(reminderIdFromKey(`reminder:${id}`), id)
+  // Everything that is not one. A key is read back out of a jsonb column
+  // written on the anonymous side, so "it came from our own form" is not a
+  // thing this function is allowed to assume.
+  for (const junk of [
+    'reminder:',
+    'reminder:../../etc',
+    'reminder:select 1',
+    `reminder:${id} or 1=1`,
+    'medical',
+    '',
+    null,
+    undefined,
+    42,
+  ]) {
+    assert.equal(reminderIdFromKey(junk), null, `${String(junk)} is not a reminder key`)
+  }
+})
+
+test('a posted form cannot widen which reminders a link carries', () => {
+  const a = '11111111-2222-3333-4444-555555555555'
+  const b = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+  // Shape only, and that is deliberate: whether he MAY ask this driver about
+  // that reminder is settled by the trigger in 0038, inside the insert, where
+  // it cannot be raced by a page that loaded its list a minute ago.
+  assert.deepEqual(readReminderIds([a, 'nope', '', null, b]), [a, b])
+  // The same pick twice is one question, not two — otherwise one tick eats two
+  // of the six slots.
+  assert.deepEqual(readReminderIds([a, a.toUpperCase(), a]), [a])
+  assert.deepEqual(readReminderIds([]), [])
+})
+
+test('six questions is the ceiling, and the database says so too', () => {
+  assert.equal(MAX_QUESTIONS, 6)
+  const sql = read('../supabase/migrations/0038_driver_link_reminders.sql')
+  const ceiling = sql.replace(/\s+/g, ' ')
+  assert.match(
+    ceiling,
+    /coalesce\(array_length\(asks, 1\), 0\) \+ coalesce\(array_length\(reminder_ids, 1\), 0\) between 1 and 6/,
+    'the whole-link ceiling is in the database, not only in the form',
+  )
+})
+
+test('the closed set of asks stays closed', () => {
+  // The reason reminders are a SECOND COLUMN and not a seventh ask. 0034 calls
+  // `asks` the scope of an unauthenticated write; widening it to arbitrary text
+  // to fit "tire check" would throw that away for every link in the product,
+  // including the ones carrying nothing but federal papers.
+  const sql = read('../supabase/migrations/0038_driver_link_reminders.sql')
+  assert.match(sql, /asks <@ array\['medical', 'cdl', 'spe', 'intracity', 'diabetes', 'vision'\]/)
+  assert.match(sql, /reminder_ids uuid\[\]/)
+})
+
+test('the driver is asked when he DID it, never when it expires', () => {
+  // A reminder is a job, not a card. There is no expiry printed on a tire
+  // check, and asking for one is a question about nothing — the same mistake
+  // the six asks made before each one carried its own direction.
+  assert.equal(REMINDER_DATE_LABEL, 'Date you did it')
+  const page = read('../src/pages/u/[token].astro')
+  assert.match(page, /askedReminders\.map\(\(r\) => \(/, 'the reminders are drawn')
+  assert.match(page, /name=\{`date_\$\{r\.key\}`\}/, 'the date box is named by the reminder key')
+  assert.match(page, /name=\{`file_\$\{r\.key\}`\}/, 'and so is the photo box')
+  assert.match(page, /\{r\.title\}/, 'the legend is the title the owner typed')
+  // The list comes back with the link, from the database, and never from the
+  // form — a crafted POST naming a reminder nobody asked about is not refused,
+  // it is never looked at.
+  assert.match(page, /reminderAsks\(live\.reminders \?\? \[\]\)/)
+})
+
+test('accepting one driver’s answer does not close a reminder about all of them', () => {
+  // A reminder scoped to all drivers is ONE row standing for every man on the
+  // roster. Marking it done because one of them sent a tire photo clears it off
+  // the screen for the other six and the owner never chases them.
+  const accept = read('../src/lib/driver-link/accept.ts')
+  assert.match(
+    accept,
+    /if \(row\.driver_id\?\.toLowerCase\(\) !== args\.driverId\.toLowerCase\(\)\) continue/,
+    'an all-drivers reminder must not be completed by one driver',
+  )
+  // And a repeating one moves by the shared helper rather than a second
+  // implementation of the same arithmetic.
+  assert.match(accept, /nextCycle\(dueOn, repeat, today\)/)
+  assert.match(accept, /last_done_on: on/, 'the date he typed, not today')
+})
+
+// ---------------------------------------------------------------------------
 // The database, as the real anon role
 // ---------------------------------------------------------------------------
 
@@ -422,6 +529,139 @@ describe('the anonymous door', { skip: !configured() && 'no database configured'
         [carrier, driver],
       )
       await assert.rejects(bad, /driver_links_asks_known/)
+    })
+  })
+
+  /** One of the owner's own reminders, for the link to name. */
+  async function makeReminder(
+    c: pg.Client,
+    carrier: string,
+    title: string,
+    subject: { driver?: string; all?: boolean } = {},
+  ) {
+    const { rows } = await c.query(
+      `insert into reminders (carrier_id, title, due_on, driver_id, subject_scope)
+       values ($1,$2,current_date + 10,$3,$4) returning id`,
+      [carrier, title, subject.driver ?? null, subject.all ? 'all_drivers' : null],
+    )
+    return String(rows[0].id)
+  }
+
+  test('a link may only name an open reminder about this driver or about all of them', async () => {
+    await withRollback(async (c) => {
+      const { carrier, driver } = await carrierWithLink(c, 'rem', '9100010', ['medical'])
+      await actAsOwner(c)
+      const { rows: other } = await c.query(
+        `insert into drivers (carrier_id, first_name, last_name) values ($1,'Other','Driver')
+         returning id`,
+        [carrier],
+      )
+      const mine = await makeReminder(c, carrier, 'Check the tires', { driver })
+      const everyone = await makeReminder(c, carrier, 'Safety meeting', { all: true })
+      const someoneElse = await makeReminder(c, carrier, 'His own thing', {
+        driver: String(other[0].id),
+      })
+      const finished = await makeReminder(c, carrier, 'Already done', { driver })
+      await c.query(`update reminders set completed_at = now() where id = $1`, [finished])
+      const company = await makeReminder(c, carrier, 'Renew the DOT number')
+
+      // `attempt` and not a bare query: in Postgres a failed statement aborts
+      // the whole transaction, so four refusals in a row without savepoints
+      // fail on the second for a reason that has nothing to do with the code.
+      const mint = (ids: string[], hash: string) =>
+        attempt(
+          c,
+          `insert into driver_links (carrier_id, driver_id, token_hash, asks, reminder_ids, expires_at)
+           values ($1,$2,$3,array[]::text[],$4::uuid[],now() + interval '1 day')`,
+          [carrier, driver, hash, ids],
+        )
+
+      // The two that are legitimately his errand.
+      assert.equal(await mint([mine, everyone], 'b'.repeat(64)), null)
+
+      // A reminder about another driver names something this man has no
+      // standing to report on.
+      for (const [what, ids] of [
+        ['another driver’s', [someoneElse]],
+        ['one he already finished', [finished]],
+        ['a whole-company one', [company]],
+        ['an id that is nobody’s', ['11111111-2222-3333-4444-555555555555']],
+      ] as const) {
+        const e = await mint([...ids], 'c'.repeat(64))
+        assert.match(String(e?.message), /open reminders/, `${what} must be refused`)
+      }
+    })
+  })
+
+  test('six questions is the ceiling in the database, papers and reminders together', async () => {
+    await withRollback(async (c) => {
+      const { carrier, driver } = await carrierWithLink(c, 'cap', '9100011', ['medical'])
+      await actAsOwner(c)
+      const ids: string[] = []
+      for (let i = 0; i < 3; i++) ids.push(await makeReminder(c, carrier, `Job ${i}`, { driver }))
+
+      const tooMany = await attempt(
+        c,
+        `insert into driver_links (carrier_id, driver_id, token_hash, asks, reminder_ids, expires_at)
+         values ($1,$2,repeat('9',64),
+                 array['medical','cdl','spe','intracity'], $3::uuid[], now() + interval '1 day')`,
+        [carrier, driver, ids],
+      )
+      assert.match(String(tooMany?.message), /driver_links_asks_something/)
+
+      // And nothing at all is not an errand either.
+      const nothing = await attempt(
+        c,
+        `insert into driver_links (carrier_id, driver_id, token_hash, asks, reminder_ids, expires_at)
+         values ($1,$2,repeat('8',64), array[]::text[], array[]::uuid[], now() + interval '1 day')`,
+        [carrier, driver],
+      )
+      assert.match(String(nothing?.message), /driver_links_asks_something/)
+    })
+  })
+
+  test('the driver is shown the reminder title, and his answer survives the narrowing', async () => {
+    await withRollback(async (c) => {
+      const { carrier, driver } = await carrierWithLink(c, 'ask', '9100012', ['medical'])
+      await actAsOwner(c)
+      const tires = await makeReminder(c, carrier, 'Check the tires', { driver })
+      const unasked = await makeReminder(c, carrier, 'Engine oil', { driver })
+      const token = newProofToken()
+      await c.query(
+        `insert into driver_links (carrier_id, driver_id, token_hash, asks, reminder_ids, expires_at)
+         values ($1,$2,$3,array['medical'],array[$4]::uuid[],now() + interval '1 day')`,
+        [carrier, driver, await hashProofToken(token), tires],
+      )
+
+      await actAsAnon(c)
+      const view = await c.query('select * from driver_link_view($1)', [token])
+      assert.equal(view.rows.length, 1)
+      assert.deepEqual(view.rows[0].reminders, [{ id: tires, title: 'Check the tires' }])
+      // Still almost nothing else: the other reminder is not his business, and
+      // neither is anything about the carrier.
+      assert.doesNotMatch(JSON.stringify(view.rows[0]), /Engine oil|return_to_duty/)
+
+      const sent = await c.query(
+        `select driver_link_submit(
+           $1,
+           jsonb_build_object('medical','2027-04-15', 'reminder:' || $2, '2026-09-18',
+                              'reminder:' || $3, '2026-09-18', 'ssn', '123'),
+           '{}'::text[], null) as id`,
+        [token, tires, unasked],
+      )
+      assert.ok(sent.rows[0].id)
+
+      await actAsOwner(c)
+      const { rows } = await c.query(`select payload from driver_submissions where id = $1`, [
+        sent.rows[0].id,
+      ])
+      // What he was asked survives; what nobody asked for is not refused, it is
+      // never read — including a real reminder of the owner's that this link
+      // did not name.
+      assert.deepEqual(rows[0].payload, {
+        medical: '2027-04-15',
+        [`reminder:${tires}`]: '2026-09-18',
+      })
     })
   })
 

@@ -73,10 +73,12 @@ import {
 } from '../../../lib/anchors/unboxed.ts'
 import DriverLinkPanel, {
   type LinkRow,
+  type ReminderPick,
   type SubmissionRow,
 } from '../../../components/DriverLink.astro'
 import { acceptSubmission } from '../../../lib/driver-link/accept.ts'
 import { readAsks } from '../../../lib/driver-link/asks.ts'
+import { readReminderIds } from '../../../lib/driver-link/reminder-asks.ts'
 import { clampExpiryHours, mintDriverLink } from '../../../lib/driver-link/link.ts'
 import { isProofToken } from '../../../lib/proof/token.ts'
 import { answerLink, resolveAnchor } from '../../../lib/rules/anchors.ts'
@@ -155,6 +157,16 @@ interface AnchorRow {
   id: string
   anchor_key: string
   occurred_on: string
+}
+
+/** One of the owner's own reminders, as the ask panel needs it. */
+interface ReminderPickRow {
+  id: string
+  title: string
+  due_on: string
+  subject_scope: string | null
+  driver_id: string | null
+  completed_at: string | null
 }
 
 /** One entry in the log — every date ever recorded, withdrawn ones included. */
@@ -268,13 +280,21 @@ if (Astro.request.method === 'POST') {
    */
   if (intent === 'ask_driver') {
     const asks = readAsks(form.getAll('ask').map(String))
-    if (asks.length === 0) return fail('Pick at least one thing to ask for.', '#ask')
+    // His own reminders are the other half of the errand — "check the tires"
+    // is a thing an owner asks a driver every week and no federal rule tracks.
+    // Whether he may ask THIS driver about THAT reminder is settled inside the
+    // insert by the trigger in 0038, not here; see `readReminderIds`.
+    const reminderIds = readReminderIds(form.getAll('reminder'))
+    if (asks.length + reminderIds.length === 0) {
+      return fail('Pick at least one thing to ask for.', '#ask')
+    }
 
     const minted = await mintDriverLink({
       supabase,
       carrierId,
       driverId: id,
       asks,
+      reminderIds,
       hours: clampExpiryHours(form.get('hours')),
       userId,
       sentTo: null,
@@ -323,7 +343,10 @@ if (Astro.request.method === 'POST') {
       .select('id, driver_id, payload, storage_keys, state')
       .eq('id', submissionId)
       .maybeSingle()
-    if (!sub || sub.state !== 'pending' || String(sub.driver_id) !== id) {
+    // Case-insensitive: Postgres renders a uuid in lower case and the id in the
+    // URL is accepted in either, so a hand-typed upper-case address would
+    // refuse a submission that is genuinely this driver's.
+    if (!sub || sub.state !== 'pending' || String(sub.driver_id).toLowerCase() !== id.toLowerCase()) {
       return fail('That was already answered.', '#ask')
     }
 
@@ -337,6 +360,10 @@ if (Astro.request.method === 'POST') {
         storageKeys: (sub.storage_keys ?? []) as string[],
       })
       if (!written.ok) return fail(written.message, '#ask')
+      // How many of HIS OWN reminders this closed, said out loud below. A
+      // reminder that quietly leaves the picker and the dates tab with no word
+      // is the owner wondering whether he still has to chase it.
+      if (written.reminders > 0) return back(`accepted=${written.reminders}#ask`)
     } else {
       // The objects go, the row stays. "He says he sent it in March" has to
       // have an answer, and a deleted row cannot give one.
@@ -357,7 +384,7 @@ if (Astro.request.method === 'POST') {
       })
       .eq('id', submissionId)
     if (e) return fail('We could not save that. Try again.', '#ask')
-    return back(`${accept ? 'accepted' : 'rejected'}=1#ask`)
+    return back(`${accept ? 'accepted' : 'rejected'}=0#ask`)
   }
 
   if (intent === 'save_driver') {
@@ -659,6 +686,7 @@ const [
   reminders,
   { data: linkRows },
   { data: submissionRows },
+  { data: ownReminderRows },
 ] = await Promise.all([
   tab === 'dates' ? loadCurrentAnchors() : Promise.resolve(new Map<string, AnchorRow>()),
   // Every date ever recorded for this driver, not just the ones in force. The
@@ -711,7 +739,7 @@ const [
   tab === 'papers'
     ? supabase
         .from('driver_links')
-        .select('id, asks, expires_at, used_at, revoked_at, opened_at, created_at')
+        .select('id, asks, reminder_ids, expires_at, used_at, revoked_at, opened_at, created_at')
         .eq('driver_id', id)
         .is('used_at', null)
         .is('revoked_at', null)
@@ -730,6 +758,25 @@ const [
         .order('submitted_at', { ascending: false })
         .limit(25)
     : skip<SubmissionRow[]>([]),
+  // THE OWNER'S OWN REMINDERS, so he can ask the driver about them too — "check
+  // the tires", "engine oil", the things no federal rule tracks.
+  //
+  // FINISHED ONES ARE READ TOO, and deliberately. The picker below shows only
+  // the open ones, but a submission that came back last month may name a
+  // reminder he has since closed, and a row that reads "One of your reminders"
+  // where it could read "Check the tires" is a record that answers nothing.
+  //
+  // Whole-company reminders are not here for the same reason they are not on
+  // the dates tab: one is not a fact about this driver, and asking him to
+  // answer it would be asking him to do the office's job.
+  tab === 'papers'
+    ? supabase
+        .from('reminders')
+        .select('id, title, due_on, subject_scope, driver_id, completed_at')
+        .or(`driver_id.eq.${id},subject_scope.eq.all_drivers`)
+        .order('due_on', { ascending: true })
+        .limit(100)
+    : skip<ReminderPickRow[]>([]),
 ])
 
 const documents = (documentData ?? []) as unknown as DocumentRow[]
@@ -923,11 +970,42 @@ const carrierName = carrierRow?.legal_name ?? 'Your carrier'
 const mintedToken = isProofToken(params.get('minted')) ? params.get('minted') : null
 const driverLinks = (linkRows ?? []) as unknown as LinkRow[]
 const driverSubmissions = (submissionRows ?? []) as unknown as SubmissionRow[]
+
+/**
+ * The reminders he may ask this driver about, and the names of all of them.
+ *
+ * `askable` is the picker: still open, and either this driver's or standing for
+ * every driver. `reminderTitles` is wider on purpose — it names the finished
+ * ones too, because a submission from last month can point at a reminder he has
+ * since closed and that row still has to read as words.
+ */
+const ownReminders = (ownReminderRows ?? []) as unknown as ReminderPickRow[]
+const askableReminders: ReminderPick[] = ownReminders
+  .filter((r) => r.completed_at === null)
+  .map((r) => ({
+    id: String(r.id),
+    title: String(r.title),
+    due_on: String(r.due_on),
+    everyDriver: r.subject_scope === 'all_drivers',
+  }))
+const reminderTitles: Record<string, string> = Object.fromEntries(
+  ownReminders.map((r) => [String(r.id), String(r.title)]),
+)
 // Read only when the browser says the request came from this site.
 const error = flashText(Astro.url, Astro.request)
 const added = params.get('added') === '1'
 const saved = params.get('saved') === '1'
 const withdrew = params.get('withdrew') === '1'
+/**
+ * What became of a driver's submission, and how many of the owner's own
+ * reminders went with it.
+ *
+ * A count rather than a flag, because "saved" and "saved, and your tire check
+ * is marked done" are two different pieces of news and only one of them is
+ * about something leaving his screen.
+ */
+const accepted = params.has('accepted') ? Number(params.get('accepted')) : null
+const rejected = params.has('rejected')
 const datesSaved = params.has('dates') ? Number(params.get('dates')) : null
 
 /**
@@ -1178,6 +1256,23 @@ const ICONS = {
     )
   }
   {saved && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Saved.</p>}
+  {
+    accepted !== null && Number.isFinite(accepted) && (
+      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        Saved to this driver’s record.
+        {accepted === 1 && ' Your own reminder is marked done.'}
+        {accepted > 1 && ` ${accepted} of your own reminders are marked done.`}
+      </p>
+    )
+  }
+  {
+    rejected && (
+      <p class="mb-5 rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
+        Turned down. Nothing changed on the record, and the photos are deleted. What he sent is
+        still listed, so you can show you asked.
+      </p>
+    )
+  }
   {
     withdrew && (
       <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -1900,6 +1995,8 @@ const ICONS = {
         origin={Astro.url.origin}
         links={driverLinks}
         submissions={driverSubmissions}
+        askable={askableReminders}
+        reminderTitles={reminderTitles}
       />
     </Fragment>
   )}
