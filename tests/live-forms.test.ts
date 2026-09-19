@@ -41,6 +41,22 @@ test('the button that chooses the write is proved to survive, before anything is
   assert.match(code, /if \(!CARRIES_THE_BUTTON\) return/)
   // And the real submit carries it too.
   assert.match(code, /body = new FormData\(form, submitter\)/)
+
+  /*
+   * THE SECOND REASON IT MUST BE FormData AND NEVER A WALK OF THE FORM'S OWN
+   * CHILDREN. The dashboard collects one date from every section into a single
+   * save, and it does that with the HTML `form=` attribute — the inputs sit
+   * OUTSIDE the form they submit into, because a form per row would be one
+   * full page load per date. `new FormData(form)` includes controls associated
+   * that way; walking `form.children` does not, and the failure is silent: he
+   * types six dates, presses Save, and the server is handed none of them.
+   *
+   * Driven in a browser against that exact markup before this was written —
+   * two inputs outside the form, both arrived.
+   */
+  const dashboard = read('../src/pages/app/index.astro')
+  assert.match(dashboard, /form="row-dates"/, 'the dashboard still submits from outside the form')
+  assert.doesNotMatch(code, /form\.(children|elements)\b/, 'the body is never assembled by hand')
 })
 
 test('only a form that posts back to its own page is intercepted', () => {
@@ -199,7 +215,10 @@ test('one page at a time, and today that is one page', () => {
     }
   }
   walk(pages)
-  assert.deepEqual(live, ['./../src/pages/app/reminders/index.astro'])
+  assert.deepEqual(live.sort(), [
+    './../src/pages/app/index.astro',
+    './../src/pages/app/reminders/index.astro',
+  ])
 })
 
 test('a page with a print button does not go live while its listener is inline', () => {

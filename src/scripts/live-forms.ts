@@ -171,10 +171,17 @@ function settle(main: Element, previousY: number, hash: string): void {
  */
 const TOAST_LIFE = 6000
 
-function hoistFlash(root: ParentNode): void {
+function hoistFlash(): void {
   const region = document.getElementById('toasts')
   if (!region) return
-  for (const flash of Array.from(root.querySelectorAll<HTMLElement>('[data-flash]'))) {
+  // Scanned from the document rather than from the swapped fragment, and not
+  // only to keep the Workers `Element` type out of a DOM signature: by the
+  // time this runs the new `<main>` is already in the page, and a confirmation
+  // has no business being anywhere else.
+  for (const flash of Array.from(document.querySelectorAll<HTMLElement>('[data-flash]'))) {
+    // Already lifted — a second swap must not restart its clock or bind a
+    // second dismiss to it.
+    if (flash.parentElement === region) continue
     // The inline spacing belongs to the top of a page, not to a stack in a
     // corner; the region's own CSS does the gaps.
     flash.classList.remove('mb-5')
@@ -240,7 +247,7 @@ async function land(
 
   here.replaceWith(page.main)
   if (page.title) document.title = page.title
-  hoistFlash(page.main)
+  hoistFlash()
   // The address has to match what is on screen, or a refresh shows something
   // else. `response.url` drops the fragment, so a link's own hash is passed in.
   const address = options.address ?? response.url
@@ -397,7 +404,7 @@ window.addEventListener('popstate', () => {
     }
     main.replaceWith(page.main)
     if (page.title) document.title = page.title
-    hoistFlash(page.main)
+    hoistFlash()
     rendered = addressOnScreen()
     settle(page.main, window.scrollY, location.hash)
   })()
@@ -416,4 +423,4 @@ window.addEventListener('popstate', () => {
 
 // A page reached the ordinary way — a real navigation with `?saved=1` on it —
 // carries its confirmation too, and it belongs in the same corner as the rest.
-hoistFlash(document)
+hoistFlash()

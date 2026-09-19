@@ -23,6 +23,7 @@ import Donut from '../../components/charts/Donut.astro'
 import Figure from '../../components/charts/Figure.astro'
 import Runway from '../../components/charts/Runway.astro'
 import App from '../../layouts/App.astro'
+import Flash from '../../components/ui/Flash.astro'
 import { flashText } from '../../lib/flash.ts'
 import {
   buildHealth,
@@ -1045,7 +1046,17 @@ const nudge =
 const backOut = 'btn btn-secondary'
 ---
 
+{/*
+  `live` — the date boxes in the sections save without reloading the page.
+
+  The owner asked for this page by name, and it is the page the whole product
+  is for: he works down the list typing dates into the sections, and a reload
+  after each save threw him back to the top of a list he was halfway through.
+  Nothing on the server changed; every intent still posts here and still 303s,
+  so with no JavaScript it behaves exactly as it did.
+*/}
 <App
+  live
   title={carrier?.legal_name ?? 'Dashboard'}
   subtitle={carrier?.dot_number ? `USDOT ${carrier.dot_number}` : undefined}
 >
@@ -1065,12 +1076,18 @@ const backOut = 'btn btn-secondary'
   */}
   {
     errorMessage && view !== 'unknown' && (
-      <p class="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</p>
+      <p
+        role="alert"
+        tabindex="-1"
+        class="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700"
+      >
+        {errorMessage}
+      </p>
     )
   }
   {
     rowsSaved !== null && Number.isFinite(rowsSaved) && (
-      <p class="mb-4 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+      <Flash tone={rowsSaved > 0 ? 'ok' : 'note'} class="mb-4">
         {rowsSaved > 0
           ? /* The count is the number of DATES, and the sentence says so. Rows
                can move by more than that — one periodic inspection settles two
@@ -1078,7 +1095,7 @@ const backOut = 'btn btn-secondary'
                is a number he stops trusting. */
             `${rowsSaved} ${rowsSaved === 1 ? 'date' : 'dates'} saved. The list below is already using ${rowsSaved === 1 ? 'it' : 'them'}.`
           : 'Nothing was typed in, so nothing changed.'}
-      </p>
+      </Flash>
     )
   }
 
@@ -1475,16 +1492,22 @@ const backOut = 'btn btn-secondary'
 
   {
     view === 'unknown' && errorMessage && (
-      <p class="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</p>
+      <p
+        role="alert"
+        tabindex="-1"
+        class="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700"
+      >
+        {errorMessage}
+      </p>
     )
   }
 
   {
     view === 'unknown' && withdrawn && (
-      <p class="mt-4 rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
+      <Flash tone="note" class="mt-4">
         Date withdrawn. We keep it in the history, so you can still see what was on file and
         when. The next most recent date is now the one we use.
-      </p>
+      </Flash>
     )
   }
 
