@@ -267,12 +267,20 @@ describe('anchor registry', () => {
     // link itself is a page that can ship '/app/drivers/:id' to a real user.
     const hire = resolveAnchor('hire_date')
     assert.ok(hire)
-    assert.equal(answerLink(hire, 'abc'), '/app/drivers/abc')
+    // The tab is part of the address, the same way the carrier link below names
+    // its tab: the driver page is four tabs and the record form is on one of
+    // them, so a bare `/app/drivers/abc` lands the owner on a checklist after
+    // reading a sentence that told him to fix a box on the record.
+    assert.equal(answerLink(hire, 'abc'), '/app/drivers/abc?tab=record#record')
     assert.equal(answerLink(hire, null), null, 'no id means no link, not a broken one')
 
     const dot = resolveAnchor('dot_number')
     assert.ok(dot)
-    assert.equal(answerLink(dot, null), '/app/settings', 'the carrier link needs no subject id')
+    assert.equal(
+      answerLink(dot, null),
+      '/app/settings?tab=company',
+      'the carrier link needs no subject id, and it names the tab the box is on',
+    )
 
     // Everything else is answerable here, and must not carry a dead end.
     for (const entry of ANCHORS) {

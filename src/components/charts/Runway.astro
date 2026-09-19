@@ -60,10 +60,14 @@ const behind = runway.overdue + runway.undated
         ) : (
           <div class="flex h-full flex-col justify-center rounded-lg border border-red-200 bg-red-50/60 px-2.5 py-2">
             <div class="text-[10px] tracking-wide text-red-700 uppercase">Behind you</div>
+            {/* Each count is a link, so each is a 44px target and the two are
+                8px apart — they were 28px tall and 4px apart, in the one box
+                on the dashboard that says what is already wrong. Underlined
+                at rest like every other link in the app. */}
             {runway.overdue > 0 && (
               <a
                 href={overdueHref}
-                class="mt-1 block text-xs leading-tight text-red-700 tabular-nums hover:underline"
+                class="mt-1 flex min-h-11 items-center gap-1 text-xs leading-tight text-red-700 tabular-nums underline underline-offset-2 hover:text-red-800"
               >
                 <span class="text-lg font-semibold">{runway.overdue}</span> overdue
               </a>
@@ -75,7 +79,7 @@ const behind = runway.overdue + runway.undated
                  identical; a calmer colour here would quietly overrule that. */
               <a
                 href={undatedHref}
-                class="mt-1 block text-xs leading-tight text-red-700 tabular-nums hover:underline"
+                class="mt-2 flex min-h-11 items-center gap-1 text-xs leading-tight text-red-700 tabular-nums underline underline-offset-2 hover:text-red-800"
               >
                 <span class="text-lg font-semibold">{runway.undated}</span> no date
               </a>

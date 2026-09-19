@@ -16,13 +16,92 @@
   /* 4.74:1 on white — the lowest ink allowed for text on a white surface. */
   --color-ink-500: #6b7480;
   /* 10.32:1 on white — the lowest ink allowed for text on a tinted surface
-     (bg-ink-50, bg-blue-100, any card fill) or at 12px and under. */
+     (bg-ink-50, bg-champagne, any card fill) or at 12px and under. */
   --color-ink-700: #39414c;
   --color-ink-900: #171b21;
 
-  --color-brand-500: #1d63d1;
-  --color-brand-600: #1750ac;
-  --color-brand-700: #123f88;
+  /* THE BRAND: Emerald Ink, #064E3B, chosen by the owner. It is brand-700, and
+     the other steps are the same hue (OKLCH 169°) at other lightnesses:
+
+       brand-500  #0e8264  4.78:1 on white  the focus ring, chart bars, dots
+       brand-600  #00694f  6.70:1 on white  links, borders, the wordmark accent
+       brand-700  #064e3b  9.72:1 on white  Ink: buttons, selected text, headings
+       brand-800  #003f2c 12.02:1 on white  an Ink button under the cursor
+
+     Ink is a dark, low-chroma blue-green. That is why the STATUS green below is
+     not an emerald at all: see the note above the emerald scale. */
+  --color-brand-500: #0e8264;
+  --color-brand-600: #00694f;
+  --color-brand-700: #064e3b;
+  --color-brand-800: #003f2c;
+
+  /* THE WARM SURFACE: Champagne, #F8E7C9, also the owner's. It is the tint the
+     brand sits on — the selected pill, the app's "we are telling you something"
+     cards, the marketing panels — and it is the ONLY tint chrome ever uses, so
+     no brand surface is ever green and no brand surface is ever yellow.
+     champagne-50 is Champagne at half strength over white, for hover washes
+     and card fills where the full tint would shout.
+
+     Ink on Champagne is 7.99:1; ink-700 on it is 8.49:1; ink-500 on it is
+     3.89:1 and is therefore not a text colour on this surface. */
+  --color-champagne: #f8e7c9;
+  --color-champagne-50: #fcf3e4;
+
+  /* THE STATUS PALETTE, pinned in hex so the four state colours cannot drift
+     when Tailwind's defaults do, and moved apart from the brand on purpose.
+
+     Red = overdue, amber = due within 45 days, green = on track, grey = we do
+     not have the date. Four colours, each always beside its word.
+
+     GREEN. Tailwind's emerald scale sits on the same hue as Emerald Ink, and
+     emerald-800 against Ink measured 1.28:1 — the same colour to the eye. So a
+     green Save button would have read as "everything is fine". The scale below
+     keeps the `emerald-*` class names every page already uses and moves the
+     colour to a grass green: hue 146-150° against Ink's 169°, and about twice
+     Ink's chroma. Two dark text colours can never be told apart by contrast
+     ratio alone under a 7:1 floor, so what keeps them apart is (1) the hue and
+     (2) the surfaces: a status green only ever sits on a green tint or beside
+     a green swatch, and brand text only ever sits on white or on Champagne.
+
+       emerald-100 #d2fdda  the tint    emerald-800 on it is 7.00:1
+       emerald-500 #11be41  bars, rings, swatches  (1.93:1 against brand-500,
+                            3.92:1 against Ink: not the same colour)
+       emerald-700 #007925  text on white, 5.58:1
+       emerald-800 #006017  text on the tint, 7.82:1 on white
+       emerald-900 #004c17  headings on the tint, 10.26:1 on white
+
+     AMBER. amber-100 measured 1.09:1 against Champagne — a champagne page would
+     have read as a warning. Contrast cannot separate two light tints either,
+     so the warning tints are pushed to a clear yellow: about 2.6× Champagne's
+     chroma, hue 100° against Champagne's 82°. Cream and yellow, not two creams.
+
+       amber-50   #fff9bf  panels       amber-900 on it is 8.43:1
+       amber-100  #ffef93  the tint     amber-800 on it is 7.33:1
+       amber-800  #823501  text on the tint, 8.54:1 on white
+       amber-900  #7b3306  headings on the tint, 9.06:1 on white
+
+     Red and the ink greys are unchanged. Blue is the INFO status, not the
+     brand: `.badge-info` is blue-800 on blue-100 (7.23:1) and nothing in the
+     chrome uses it. */
+  --color-emerald-50: #e7feeb;
+  --color-emerald-100: #d2fdda;
+  --color-emerald-200: #a7f4b4;
+  --color-emerald-300: #7dea90;
+  --color-emerald-500: #11be41;
+  --color-emerald-600: #009b2f;
+  --color-emerald-700: #007925;
+  --color-emerald-800: #006017;
+  --color-emerald-900: #004c17;
+
+  --color-amber-50: #fff9bf;
+  --color-amber-100: #ffef93;
+  --color-amber-200: #ffe474;
+  --color-amber-300: #ffd230;
+  --color-amber-500: #fe9a00;
+  --color-amber-600: #e17100;
+  --color-amber-700: #bb4d00;
+  --color-amber-800: #823501;
+  --color-amber-900: #7b3306;
 
   /* The input error state. Written as hex rather than borrowed from the
      installed red scale, which is OKLCH in Tailwind v4 and does not land on
@@ -44,11 +123,11 @@
    a thumb on a phone never sees it. A ring that fires on mouse-down is noise,
    and noise is what teaches people to stop looking at the ring.
 
-   2px solid brand-500 is 5.59:1 against white, 5.21:1 against ink-50 and
-   4.72:1 against ink-100 — the three surfaces this app puts controls on. WCAG
-   2.2 asks for 3:1. The 2px offset draws the ring in the page behind the
-   control rather than on the control, so it survives on a solid brand button
-   and on the dark marketing header alike.
+   2px solid brand-500 is 4.78:1 against white, 4.45:1 against ink-50, 4.04:1
+   against ink-100 and 3.93:1 against Champagne — the four surfaces this app
+   puts controls on. WCAG 2.2 asks for 3:1. The 2px offset draws the ring in
+   the page behind the control rather than on the control, so it survives on
+   a solid Ink button and on the marketing header alike.
 
    THESE RULES ARE DELIBERATELY OUTSIDE @layer. Unlayered CSS outranks every
    cascade layer, so a stray `outline-none` left on an input somewhere cannot
@@ -240,7 +319,7 @@
   }
 
   /* Each line in the summary jumps to the field it is about. The links stay
-     the red of the box rather than turning brand blue, so the box reads as one
+     the red of the box rather than turning brand green, so the box reads as one
      thing; the underline is what says they are links. */
   .error-summary a {
     @apply underline underline-offset-2;
@@ -274,21 +353,24 @@
     @apply cursor-not-allowed opacity-60;
   }
 
-  /* One per screen. White on brand-600 is 7.56:1. */
+  /* One per screen. Ink itself, so the main button is the brand and not a
+     lighter green that could pass for "on track". White on brand-700 is
+     9.72:1; white on brand-800, the pressed state, is 12.02:1. */
   .btn-primary {
-    @apply bg-brand-600 text-white hover:bg-brand-700 active:translate-y-px active:bg-brand-700;
+    @apply bg-brand-700 text-white hover:bg-brand-800 active:translate-y-px active:bg-brand-800;
   }
 
-  /* The action beside the action. brand-700 on white is 10.04:1, and the
-     1px brand-600 border is 7.56:1 against the page. */
+  /* The action beside the action. brand-700 on white is 9.72:1, and the
+     1px brand-600 border is 6.70:1 against the page. The hover wash is
+     Champagne, the brand's own tint — never a green and never a yellow. */
   .btn-secondary {
-    @apply border border-brand-600 bg-white text-brand-700 hover:border-brand-700 hover:bg-blue-50 active:bg-blue-100;
+    @apply border border-brand-600 bg-white text-brand-700 hover:border-brand-700 hover:bg-champagne-50 active:bg-champagne;
   }
 
   /* Repeated and inline actions — "Change", "Edit", a row action. No fill at
      rest, full 44px target always. */
   .btn-tertiary {
-    @apply px-3 text-brand-700 hover:bg-blue-50 hover:text-brand-600 hover:underline hover:underline-offset-2 active:bg-blue-100;
+    @apply px-3 text-brand-700 hover:bg-champagne-50 hover:text-brand-600 hover:underline hover:underline-offset-2 active:bg-champagne;
   }
 
   /* Irreversible only. "Close" and "Cancel" are tertiary, not red. */
@@ -300,10 +382,12 @@
     @apply px-3 text-red-700 hover:bg-red-50 hover:underline hover:underline-offset-2 active:bg-red-100;
   }
 
-  /* Marketing chrome only. Inside /app the action colour is brand blue, so a
-     dark button there is a second primary competing with the first. */
+  /* Marketing chrome. It was ink-900; it is now Emerald Ink, the same fill as
+     `.btn-primary`, so the one button on a marketing page is the brand and the
+     product has one action colour inside /app and out. The class stays so the
+     marketing pages keep naming their button by role. */
   .btn-dark {
-    @apply bg-ink-900 text-white hover:bg-ink-700;
+    @apply bg-brand-700 text-white hover:bg-brand-800;
   }
 
   /* Dense tables may drop to 14px type. They may not drop below 44px: pad
@@ -319,7 +403,7 @@
 
   /* ------------------------------------------------------------------- links
 
-     Underlined at rest, always. A link that is only a different blue is a link
+     Underlined at rest, always. A link that is only a different colour is a link
      a reader in a hurry does not see, and half this audience is reading a
      second language on a phone in the sun.
 
@@ -335,8 +419,10 @@
   /* The record name in a table row is the link, and it is the full row height
      to tap. The row itself is not a link: wrapping a <tr> breaks the table
      navigation a screen reader user moves through the list with. */
+  /* `min-w-11` as well as `min-h-11`: a truck whose unit number is "12" was a
+     15px-wide target, and a fleet numbers its trucks with one or two digits. */
   .link-row {
-    @apply inline-flex min-h-11 items-center font-medium text-ink-900 underline-offset-2 hover:text-brand-700 hover:underline;
+    @apply inline-flex min-h-11 min-w-11 items-center font-medium text-ink-900 underline-offset-2 hover:text-brand-700 hover:underline;
   }
 
   /* "← Back to loads". The arrow is decoration inside the label; the word
@@ -344,7 +430,7 @@
      back so the text still lines up with the heading under it — add `ml-0`
      where the link is not the first thing in its column. */
   .link-back {
-    @apply -ml-3 inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 font-medium text-brand-700 underline-offset-2 hover:bg-blue-50 hover:underline;
+    @apply -ml-3 inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 font-medium text-brand-700 underline-offset-2 hover:bg-champagne-50 hover:underline;
   }
 
   /* ------------------------------------------------- navigation and selection
@@ -389,21 +475,30 @@
   }
 
   /* After .nav-item and .filter-tab on purpose: same specificity, later rule,
-     so the selected pill keeps its colours under the cursor too. */
+     so the selected pill keeps its colours under the cursor too.
+
+     Champagne under Ink, 7.99:1. The pill is chrome, so it wears the brand's
+     tint and not a status one: it cannot be read as "on track" (green) or as
+     "due soon" (yellow) because it is neither colour. */
   .is-current,
   .is-current:hover {
-    @apply bg-blue-100 font-semibold text-brand-700;
+    @apply bg-champagne font-semibold text-brand-700;
   }
 
   /* ------------------------------------------------------------------ badges
 
-     One construction, five pairs, all at or above 4.5:1. A badge is a label,
-     not a control, so it is not a 44px target — but the padding is the same
-     everywhere so a column of them reads as a column.
+     One construction, five pairs, all at or above 6.8:1 on their own tint. A
+     badge is a label, not a control, so it is not a 44px target — but the
+     padding is the same everywhere so a column of them reads as a column.
 
      Every badge carries a word. Colour is the second signal, never the first:
      Overdue → danger, Due soon → warning, On track and Paid → success,
-     Draft and Unknown → neutral. */
+     Draft and Unknown → neutral, a standing fact → info.
+
+     No badge uses a brand token. Info is blue-800 on blue-100 (7.23:1) — it
+     used to borrow brand-700, which was fine while the brand was blue and
+     would have made it the brand's pill now that the brand is green. Success
+     is 7.00:1, warning 7.33:1, danger 6.85:1, neutral 8.72:1. */
   .badge {
     @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold leading-none whitespace-nowrap;
   }
@@ -413,7 +508,7 @@
   }
 
   .badge-info {
-    @apply bg-blue-100 text-brand-700;
+    @apply bg-blue-100 text-blue-800;
   }
 
   .badge-success {

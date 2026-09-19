@@ -96,12 +96,13 @@ const faqs = [
   title="Pricing"
   description={`$${site.pricing.perTruck} per truck per month, $${site.pricing.floor} minimum, unlimited users. No contract, ${site.pricing.trialDays} days free, no card needed.`}
 >
-  <section class="border-b border-ink-100 bg-ink-50">
+  <section class="border-b border-ink-100 bg-champagne-50">
     <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-20">
       <h1 class="text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
         ${site.pricing.perTruck} a truck, a month. That is the whole price.
       </h1>
-      <p class="mt-4 max-w-2xl text-lg text-ink-500">
+      {/* ink-700: on `bg-champagne-50`, where ink-500 is 4.30:1. */}
+      <p class="mt-4 max-w-2xl text-lg text-ink-700">
         The minimum is ${site.pricing.floor} a month, so small fleets can afford it. Unlimited
         users. No contract. {site.pricing.trialDays} days free, and you do not need a card to
         start.
@@ -140,7 +141,9 @@ const faqs = [
               class="field-input mt-1 tabular-nums"
             />
           </label>
-          <button type="submit" class="btn btn-primary">Show me</button>
+          {/* Secondary: the one Primary on this page is "Start with your DOT
+              number", and both are on screen at once on a desktop. */}
+          <button type="submit" class="btn btn-secondary">Show me</button>
         </form>
       </div>
 
@@ -173,7 +176,7 @@ const faqs = [
 
       {
         estimate.state === 'priced' && (
-          <div class="mt-5 rounded-xl border border-brand-500/30 bg-brand-500/[0.04] p-5 sm:p-6">
+          <div class="mt-5 rounded-xl border border-brand-500/30 bg-champagne p-5 sm:p-6">
             <div class="flex flex-wrap items-center justify-between gap-5">
               <div class="flex items-center gap-2">
                 {fewer ? (
@@ -198,11 +201,11 @@ const faqs = [
               </div>
               <p>
                 <span class="text-5xl font-semibold tabular-nums">${estimate.monthly}</span>
-                <span class="text-ink-500"> a month</span>
+                <span class="text-ink-700"> a month</span>
               </p>
             </div>
 
-            <p class="mt-4 text-sm text-ink-500">
+            <p class="mt-4 text-sm text-ink-700">
               <span class="tabular-nums">${estimate.effectivePerTruck.toFixed(2)}</span> per truck.
               {estimate.onFloor
                 ? ` You pay the $${site.pricing.floor} minimum until your fifth truck. The fifth
@@ -283,13 +286,14 @@ const faqs = [
     </div>
 
     <div class="mt-10 grid gap-6 lg:grid-cols-[1fr_1.2fr]">
-      <div class="rounded-2xl border border-brand-500/30 bg-brand-500/[0.04] p-6 sm:p-8">
+      {/* Champagne, the brand's tint; ink-700 on it because ink-500 is 3.89:1. */}
+      <div class="rounded-2xl border border-brand-500/30 bg-champagne p-6 sm:p-8">
         <p class="text-sm font-medium tracking-widest text-brand-600 uppercase">One plan</p>
         <p class="mt-3">
           <span class="text-5xl font-semibold tabular-nums">${site.pricing.perTruck}</span>
-          <span class="text-ink-500"> per truck, per month</span>
+          <span class="text-ink-700"> per truck, per month</span>
         </p>
-        <p class="mt-2 text-sm text-ink-500">
+        <p class="mt-2 text-sm text-ink-700">
           Billed monthly. Minimum ${site.pricing.floor}/month.
         </p>
         <a href="/check" class="btn btn-primary mt-6 rounded-xl px-7 py-3.5 font-semibold">
@@ -320,14 +324,15 @@ const faqs = [
                   // function, and clicking a row just asks it the question.
                   const here = estimate.state === 'priced' && estimate.trucks === n
                   return (
-                    <tr class:list={[here && 'bg-brand-500/[0.06]']}>
+                    <tr class:list={[here && 'bg-champagne-50']}>
                       <td class="py-2.5 tabular-nums">
                         {/* Underlined at rest, and the full row height to tap.
                             A blue number with no underline is a link half this
                             audience never sees. */}
+                        {/* `min-w-11` as well: a one-digit link is 9px wide. */}
                         <a
                           href={pricingHref(n, { fromBelow: true })}
-                          class="link inline-flex min-h-11 items-center font-medium"
+                          class="link inline-flex min-h-11 min-w-11 items-center font-medium"
                         >
                           {n}
                         </a>
@@ -401,7 +406,7 @@ const faqs = [
     </div>
   </section>
 
-  <section class="border-t border-ink-100 bg-ink-50">
+  <section class="border-t border-ink-100 bg-champagne-50">
     <div class="mx-auto max-w-3xl px-4 py-14 sm:px-6">
       <h2 class="text-3xl font-semibold tracking-tight">Questions about the price</h2>
       <dl class="mt-8 space-y-4">

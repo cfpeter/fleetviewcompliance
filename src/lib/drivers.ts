@@ -182,3 +182,28 @@ export const US_STATE_CODES: readonly string[] = [
   'WV',
   'WY',
 ]
+
+/**
+ * Who a recorded date came from, in words.
+ *
+ * `record_source` gained 'driver' with 0037, when a driver could first send a
+ * date in from his phone. Before that every screen wrote the same ternary —
+ * fmcsa, import, else "You" — and an `else` is exactly the shape that turns a
+ * new enum member into a quiet lie: an accepted driver submission rendered as
+ * "You", on the one screen whose job is saying where a date came from.
+ *
+ * `who` is the driver's or truck's own name where the caller has one, because
+ * "Aram sent this" is what an owner is actually asking when he looks.
+ */
+export function sourceLabel(source: string | null | undefined, who?: string | null): string {
+  switch (source) {
+    case 'fmcsa':
+      return 'Federal record'
+    case 'import':
+      return 'Import'
+    case 'driver':
+      return who ? `${who} sent it` : 'The driver sent it'
+    default:
+      return 'You'
+  }
+}

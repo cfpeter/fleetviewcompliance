@@ -16,6 +16,7 @@ import Columns from '../../../components/charts/Columns.astro'
 import Figure from '../../../components/charts/Figure.astro'
 import Funnel from '../../../components/charts/Funnel.astro'
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import { funnelHeadline, moneyFunnel } from '../../../lib/charts/funnel.ts'
 import { revenueByMonth } from '../../../lib/charts/revenue.ts'
 import { ceilingFor, compactMoney, widthPercent } from '../../../lib/charts/scale.ts'
@@ -140,7 +141,11 @@ const [{ data, error }, { count: totalCount }, { data: problemRows, count: probl
   ])
 
 const rows = (data ?? []) as unknown as LoadRow[]
-const notice = params.get('error') ?? (error ? error.message : null)
+// Read only when the browser says the request came from this site; a
+// database failure is said in plain words, never in its own.
+const notice =
+  flashText(Astro.url, Astro.request) ??
+  (error ? 'We could not load your loads. Reload the page.' : null)
 
 /** Survives PostgREST handing back either an object or a one-element array. */
 function customerName(value: LoadRow['customers']): string | null {
@@ -294,7 +299,7 @@ const revenueCoverage = months
   ? [
       'These are booked rates, grouped by the month you entered the load. This is not money you received. A load does not record the day it delivered or the day it was paid.',
       months.window.unpricedLoads > 0 &&
-        `${months.window.unpricedLoads} ${loadWord(months.window.unpricedLoads)} here have no rate yet, so they are in no column. A load with no rate is not a $0 load.`,
+        `${months.window.unpricedLoads} ${loadWord(months.window.unpricedLoads)} here ${months.window.unpricedLoads === 1 ? 'has' : 'have'} no rate yet, so ${months.window.unpricedLoads === 1 ? 'it is' : 'they are'} in no column. A load with no rate is not a $0 load.`,
       months.window.quotedLoads + months.window.cancelledLoads > 0 &&
         `${months.window.quotedLoads + months.window.cancelledLoads} quoted or cancelled ${loadWord(months.window.quotedLoads + months.window.cancelledLoads)} are left out. Nobody owes you money on those.`,
       months.window.writtenOffCents > 0 &&
@@ -547,9 +552,19 @@ const monthFigures = months
     colour blindness and a phone screen in the sun. aria-current is what a screen
     reader gets, so the colour never carries it alone.
   */}
+  {/*
+    ELEVEN TABS SCROLL SIDEWAYS ON A PHONE, AND THE STRIP HAS TO SAY SO. At
+    375px "Assigned" ended at pixel 367 and "Dispatched" began at 375, so the
+    row looked finished with seven tabs off the right edge and nothing on
+    screen to suggest them. The right edge now fades to the page over the last
+    40px, which is the cue every phone user already knows, and the strip carries
+    48px of trailing padding so that when it is scrolled to the end the fade
+    sits over padding and never over the last word. From `sm` the tabs wrap and
+    the mask goes. No script: the fade is a mask-image on the scroll box.
+  */}
   <nav
     aria-label="Filter loads by status"
-    class="-mx-4 mb-4 flex items-center gap-2 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0"
+    class="-mx-4 mb-4 flex items-center gap-2 overflow-x-auto pr-12 pl-4 [mask-image:linear-gradient(to_right,black_calc(100%-2.5rem),transparent)] sm:mx-0 sm:flex-wrap sm:px-0 sm:[mask-image:none]"
   >
     {
       tabs.map((t) => {
@@ -651,7 +666,9 @@ const monthFigures = months
             Add the load you just booked. The broker's number from the rate confirmation is enough
             to start. You can add the rate and the stops later.
           </p>
-          <a href="/app/loads/new" class="btn btn-primary btn-sm mt-4">Add a load</a>
+          {/* Secondary: the one Primary on this screen is the "Add a load" at the
+              top, which is on screen at the same time as this card. */}
+          <a href="/app/loads/new" class="btn btn-secondary btn-sm mt-4">Add a load</a>
           {/* The goal line needs months of priced loads before it can be drawn,
               so this says what the board will be able to answer rather than
               offering a box that would draw nothing today. */}
@@ -849,7 +866,7 @@ const monthFigures = months
         */}
         <Figure
           title={funnelHeadline(funnel)}
-          subtitle="Every load with a rate, by where its money is. Only one row uses the truck: Delivered, not invoiced."
+          subtitle="Every load with a rate, by where its money is. One row also looks at where the truck is: Delivered, not invoiced."
           coverage={funnelCoverage}
         >
           <Funnel
@@ -998,8 +1015,9 @@ const monthFigures = months
                 {formatCents(months.window.totalCents)}
               </span>{' '}
               booked on {months.window.countedLoads}{' '}
-              {loadWord(months.window.countedLoads)} that have a rate. The last column is the month
-              we are in now, so it is not a full month.
+              {loadWord(months.window.countedLoads)} that{' '}
+              {months.window.countedLoads === 1 ? 'has' : 'have'} a rate. The last column is the
+              month we are in now, so it is not a full month.
             </p>
           )}
 

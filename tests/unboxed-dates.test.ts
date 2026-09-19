@@ -282,16 +282,20 @@ test('the driver page sends a row to one named box on this driver', () => {
     DRIVER_PAGE.indexOf('/** Which date box a link asked for'),
   )
   assert.ok(answerHref.length > 0, 'answerHref is gone — this test is checking nothing')
+  // THE TAB IS PART OF THE ADDRESS NOW. The driver page is four tabs, and the
+  // date boxes are on one of them — a link with only the fold parameter opens
+  // the fold on a tab the reader is not looking at, which is the same failure
+  // as a bare `#fragment` one layer up.
   assert.match(
     answerHref,
-    /\/app\/drivers\/\$\{id\}\?edit=dates&box=\$\{key\}#date_\$\{key\}/,
-    'the driver row link no longer carries the driver, the fold parameter and the key',
+    /\/app\/drivers\/\$\{id\}\?tab=dates&edit=dates&box=\$\{key\}#date_\$\{key\}/,
+    'the driver row link no longer carries the driver, the tab, the fold parameter and the key',
   )
   // The deny-list half: `hire_date` and `cdl_expires` must reach the record
   // form, never a date box and never a link back to the page he is standing on.
   assert.match(
     answerHref,
-    /\/app\/drivers\/\$\{id\}\?edit=record#record/,
+    /\/app\/drivers\/\$\{id\}\?tab=record&edit=record#record/,
     'a key answered on the driver record no longer opens the record',
   )
   assert.match(answerHref, /answeredElsewhere/, 'the deny-list route is no longer registry-driven')

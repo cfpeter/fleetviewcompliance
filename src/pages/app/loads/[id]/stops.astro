@@ -15,6 +15,7 @@
  * control that does nothing on one bar of signal.
  */
 import App from '../../../../layouts/App.astro'
+import { flashText } from '../../../../lib/flash.ts'
 import { formatPhone, parsePhone } from '../../../../lib/phone.ts'
 import {
   APPOINTMENT_TYPES,
@@ -277,6 +278,10 @@ if (Astro.request.method === 'POST') {
       .from('load_stops')
       .update(fields.value)
       .eq('id', stopId)
+      // The stop must be on THIS load. RLS already keeps it inside the carrier;
+      // this keeps a stop id pasted from another load's page from being edited
+      // under this load's heading.
+      .eq('load_id', loadId)
       .select('id')
 
     if (error) return fail(error.message, stopId)
@@ -309,6 +314,7 @@ if (Astro.request.method === 'POST') {
       .from('load_stops')
       .update({ arrived_at: arrived, departed_at: departed })
       .eq('id', stopId)
+      .eq('load_id', loadId)
       .select('id')
 
     if (error) return fail(error.message, stopId)
@@ -372,7 +378,8 @@ if (Astro.request.method === 'POST') {
 const { rows: stops, error: stopsError } = await fetchStops()
 
 const params = Astro.url.searchParams
-const error = params.get('error') ?? stopsError
+// Only honoured when the request came from our own 303. See src/lib/flash.ts.
+const error = flashText(Astro.url, Astro.request) ?? stopsError
 const added = params.get('added') === '1'
 const saved = params.get('saved') === '1'
 const removed = params.get('removed') === '1'
@@ -480,7 +487,7 @@ const arrow = 'btn btn-secondary btn-icon'
   {
     renumbered !== null &&
       (renumbered === 0 ? (
-        <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+        <p class="mb-5 rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
           Nothing to renumber. The stops were already 1 to {stops.length}.
         </p>
       ) : (
@@ -579,7 +586,7 @@ const arrow = 'btn btn-secondary btn-icon'
     }
     {
       (load.free_hours_pickup === null || load.free_hours_delivery === null) && (
-        <p class="mt-4 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+        <p class="mt-4 rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
           This load has no free hours on it, so the stops below cannot show when a wait becomes
           detention. The free hours are on the rate confirmation.
         </p>
@@ -718,7 +725,7 @@ const arrow = 'btn btn-secondary btn-icon'
                     />
                   </label>
                   {/* Secondary, not the dark fill this used to be. Inside /app
-                      the action colour is brand blue, and a dark button here
+                      the action colour is Emerald Ink, and a second Ink button here
                       reads as a second Primary against "Save stop" in the
                       editor below it. Dark is marketing chrome. */}
                   <button type="submit" name="intent" value="record_times" class="btn btn-secondary">
@@ -769,7 +776,14 @@ const arrow = 'btn btn-secondary btn-icon'
                     )}
                     {clock.over && clock.billableCents !== null && (
                       <span class="tabular-nums text-ink-500">
-                        · {formatCents(clock.billableCents)} at the rate on this load
+                        {/* Whole hours, said out loud. The clock floors on
+                            purpose (a broker pays $100 for 2h 24m, not $120) and
+                            an owner who sees 1h 30m become $50 with no words
+                            beside it reads that as half an hour thrown away. */}
+                        · {formatCents(clock.billableCents)} for{' '}
+                        <span class="tabular-nums">{Math.floor(clock.overMinutes / 60)}</span>{' '}
+                        whole {Math.floor(clock.overMinutes / 60) === 1 ? 'hour' : 'hours'} at the
+                        rate on this load. Part of an hour is not billed.
                       </span>
                     )}
                   </div>
@@ -857,6 +871,8 @@ const arrow = 'btn btn-secondary btn-icon'
                       name="zip"
                       value={s.zip ?? ''}
                       inputmode="numeric"
+                      autocomplete="postal-code"
+                      maxlength="10"
                       class={`${field} tabular-nums`}
                     />
                   </label>
@@ -884,6 +900,8 @@ const arrow = 'btn btn-secondary btn-icon'
                     */}
                     <input
                       type="tel"
+                      inputmode="tel"
+                      autocomplete="tel"
                       name="phone"
                       value={formatPhone(s.phone)}
                       placeholder="(818) 334-0168"

@@ -20,6 +20,7 @@
 import Bars from '../../../components/charts/Bars.astro'
 import Figure from '../../../components/charts/Figure.astro'
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import { truckMilesFigure } from '../../../lib/charts/ifta.ts'
 import { jurisdictionMilesBars } from '../../../lib/charts/ifta-readiness.ts'
 import { quarterLabel, returnDueOn } from '../../../lib/ifta/compute.ts'
@@ -363,7 +364,9 @@ if (!quarters.some((q) => isoDay(q) === periodIso)) {
 }
 
 const params = Astro.url.searchParams
-const error = params.get('error') ?? mileError?.message ?? vehicleError?.message ?? null
+// Only honoured when the request came from our own 303. See src/lib/flash.ts.
+const error =
+  flashText(Astro.url, Astro.request) ?? mileError?.message ?? vehicleError?.message ?? null
 const removed = params.get('removed') === '1'
 // Number() of a hand-typed ?saved=soon is NaN, which renders as the word NaN
 // inside an otherwise reassuring green banner.
@@ -418,7 +421,7 @@ const quarterHref = (p: Date) =>
           {saved === 1 ? ' jurisdiction saved.' : ' jurisdictions saved.'}
         </p>
       ) : (
-        <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+        <p class="mb-5 rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
           Nothing changed, so nothing was saved.
         </p>
       ))

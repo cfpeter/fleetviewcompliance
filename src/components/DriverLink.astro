@@ -1,0 +1,282 @@
+---
+/**
+ * "Ask the driver" — the owner's half of the driver-link feature.
+ *
+ * WHERE IT LIVES AND WHY. On the driver's own page, under his documents,
+ * because that is where somebody stands when they notice a card is about to
+ * lapse. The alternative was a row action on the Deadlines list; that can come
+ * later, but the driver page is where the question "what is missing for Aram"
+ * gets asked.
+ *
+ * THREE STATES, in the order they happen:
+ *   1. Ask — tick what to request, pick how long the link lives, create it.
+ *   2. The link, shown ONCE. We keep only a digest, so this is the only moment
+ *      it exists anywhere we control.
+ *   3. What came back — his claim, beside what is on file, with Accept and
+ *      Reject. Nothing he sent has touched the compliance board yet.
+ *
+ * NO SERVER SEND IN V1. The button opens the owner's OWN messaging app with the
+ * text already written. That works today, needs no carrier registration, and —
+ * the part that actually matters — the text arrives from a number the driver
+ * already has in his phone, rather than from a shortcode he has never seen.
+ */
+import { DRIVER_ASKS } from '../lib/driver-link/asks.ts'
+import { EXPIRY_CHOICES, driverLinkMessage } from '../lib/driver-link/link.ts'
+import { formatDate } from '../lib/drivers.ts'
+
+export interface LinkRow {
+  id: string
+  asks: string[]
+  expires_at: string
+  opened_at: string | null
+  created_at: string
+}
+
+export interface SubmissionRow {
+  id: string
+  payload: Record<string, string>
+  storage_keys: string[]
+  submitted_at: string
+  state: 'pending' | 'accepted' | 'rejected'
+  decided_at: string | null
+}
+
+interface Props {
+  firstName: string
+  phone: string | null
+  carrierName: string
+  /** The freshly minted link, shown once and never again. */
+  minted: string | null
+  origin: string
+  links: LinkRow[]
+  submissions: SubmissionRow[]
+}
+const { firstName, phone, carrierName, minted, origin, links, submissions } = Astro.props
+
+/**
+ * Waiting, and already answered.
+ *
+ * The answered ones are kept and SHOWN, which they were not at first. A queue
+ * that empties itself on the way past cannot answer "he says he sent it in
+ * March" — and that is the question an owner asks months later, when a card has
+ * lapsed and nobody agrees whose fault it is. The row survives a rejection for
+ * the same reason: "we asked, he sent the wrong thing, we told him" is a real
+ * answer and a deleted row is not.
+ */
+const waiting = submissions.filter((s) => s.state === 'pending')
+const answered = submissions.filter((s) => s.state !== 'pending')
+
+const mintedUrl = minted ? `${origin.replace(/\/+$/, '')}/u/${minted}` : null
+const message = mintedUrl
+  ? driverLinkMessage({ carrierName, firstName, url: mintedUrl })
+  : ''
+/** `?&body=` and not `?body=`: iOS wants the ampersand, Android tolerates it. */
+const smsHref = mintedUrl && phone ? `sms:${phone}?&body=${encodeURIComponent(message)}` : null
+
+const askLabel = (key: string) => DRIVER_ASKS.find((a) => a.key === key)?.label ?? key
+---
+
+<section id="ask" class="mt-10">
+  <h2 class="text-lg font-semibold tracking-tight">Ask {firstName} to update their details</h2>
+  <p class="mt-1 max-w-2xl text-sm text-ink-700">
+    Make a one-time link. {firstName} opens it on their phone, types the dates off their cards and
+    sends photos. You check it before anything is saved.
+  </p>
+
+  {/* -------------------------------------------------- what came back */}
+  {
+    waiting.length > 0 && (
+      <div class="mt-4 space-y-3">
+        {waiting.map((s) => (
+          <div class="rounded-xl border border-brand-500/30 bg-champagne-50 p-4">
+            <p class="font-medium">
+              {firstName} sent this {formatDate(String(s.submitted_at).slice(0, 10))}
+            </p>
+            <dl class="mt-2 divide-y divide-ink-100 text-sm">
+              {Object.entries(s.payload).map(([key, value]) => (
+                <div class="flex justify-between gap-4 py-2">
+                  <dt class="text-ink-700">{askLabel(key)}</dt>
+                  <dd class="text-right font-medium tabular-nums">{formatDate(String(value))}</dd>
+                </div>
+              ))}
+              {s.storage_keys.length > 0 && (
+                <div class="flex justify-between gap-4 py-2">
+                  <dt class="text-ink-700">Photos</dt>
+                  <dd class="text-right font-medium tabular-nums">{s.storage_keys.length}</dd>
+                </div>
+              )}
+            </dl>
+            <p class="mt-2 text-xs text-ink-700">
+              Check it against the card before you accept. Once accepted, this is what your record
+              stands on.
+            </p>
+            <div class="mt-3 flex flex-wrap items-center gap-3">
+              <form method="POST">
+                <input type="hidden" name="submission_id" value={s.id} />
+                <input type="hidden" name="decision" value="accept" />
+                <button type="submit" name="intent" value="decide_submission" class="btn btn-primary">
+                  Accept
+                </button>
+              </form>
+              <form method="POST">
+                <input type="hidden" name="submission_id" value={s.id} />
+                <input type="hidden" name="decision" value="reject" />
+                {/* Rejecting deletes the photos. Said on the button's own line
+                    rather than in a dialog, because there is no dialog without
+                    script and a surprise is worse than a sentence. */}
+                <button type="submit" name="intent" value="decide_submission" class="btn btn-tertiary">
+                  Reject and delete the photos
+                </button>
+              </form>
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  {/* -------------------------------------------------- the minted link */}
+  {
+    mintedUrl && (
+      <div class="mt-4 rounded-xl border border-ink-100 bg-white p-4">
+        <p class="font-medium">Here is the link. Send it now.</p>
+        <p class="mt-1 text-sm text-ink-700">
+          We show it one time and keep no copy. If you lose it, turn it off below and make another.
+        </p>
+        {/* readonly, not disabled: a disabled input cannot be selected, and
+            selecting it is the whole job. */}
+        <input
+          type="text"
+          readonly
+          value={mintedUrl}
+          class="field-input mt-3 w-full"
+          aria-label="The link to send"
+        />
+        <div class="mt-3 flex flex-wrap items-center gap-3">
+          {smsHref ? (
+            <a href={smsHref} class="btn btn-primary">Open in Messages</a>
+          ) : (
+            <p class="text-sm text-ink-700">
+              No mobile number on file for {firstName}. Copy the link and send it however you
+              already reach them.
+            </p>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  {/* -------------------------------------------------- links still out */}
+  {
+    links.length > 0 && (
+      <div class="mt-4 space-y-2">
+        {links.map((l) => (
+          <div class="flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white p-4">
+            <span class="min-w-0 flex-1 text-sm">
+              <span class="block font-medium">Waiting for {firstName}</span>
+              <span class="block text-xs text-ink-700">
+                {l.asks.map(askLabel).join(' · ')} — expires{' '}
+                {formatDate(String(l.expires_at).slice(0, 10))}
+                {l.opened_at ? ' · opened' : ' · not opened yet'}
+              </span>
+            </span>
+            <form method="POST" class="shrink-0">
+              <input type="hidden" name="link_id" value={l.id} />
+              <button type="submit" name="intent" value="cancel_link" class="btn btn-tertiary btn-sm">
+                Turn this link off
+              </button>
+            </form>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  {/* -------------------------------------------------- what he has sent before
+
+      THE RECORD, not a feed. Every submission is kept — accepted, rejected, all
+      of them — because the question this answers is asked months later: a card
+      has lapsed, the driver says he sent it in March, and somebody has to know.
+      A rejected row is an answer too: we asked, he sent the wrong thing, and
+      here is the day we told him.
+  */}
+  {
+    answered.length > 0 && (
+      <details class="mt-4 rounded-xl border border-ink-100 bg-white">
+        <summary class="flex min-h-11 cursor-pointer items-center px-4 text-sm font-medium">
+          What {firstName} has sent before
+          <span class="ml-2 text-ink-500 tabular-nums">{answered.length}</span>
+        </summary>
+        <ul class="border-t border-ink-100">
+          {answered.map((s) => (
+            <li class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-ink-100 px-4 py-3 text-sm last:border-b-0">
+              <span class="tabular-nums">{formatDate(String(s.submitted_at).slice(0, 10))}</span>
+              <span class="min-w-0 flex-1 text-ink-700">
+                {Object.entries(s.payload)
+                  .map(([key, value]) => `${askLabel(key)} ${formatDate(String(value))}`)
+                  .join(' · ') || 'No dates'}
+                {s.storage_keys.length > 0 &&
+                  ` · ${s.storage_keys.length} ${s.storage_keys.length === 1 ? 'file' : 'files'}`}
+              </span>
+              {/* The word carries it, not the colour: "accepted" is not a
+                  compliance standing and must not borrow the green that means
+                  on track. */}
+              <span class={s.state === 'accepted' ? 'badge badge-success' : 'badge badge-neutral'}>
+                {s.state === 'accepted' ? 'You accepted' : 'You rejected'}
+              </span>
+              {s.decided_at && (
+                <span class="text-xs text-ink-500 tabular-nums">
+                  {formatDate(String(s.decided_at).slice(0, 10))}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      </details>
+    )
+  }
+
+  {/* -------------------------------------------------- the ask form */}
+  <form method="POST" class="mt-4 rounded-xl border border-ink-100 bg-white p-5">
+    <fieldset>
+      <legend class="text-sm font-medium">What should they send?</legend>
+      <div class="mt-2 space-y-1">
+        {DRIVER_ASKS.map((ask) => (
+          <label class="flex min-h-11 items-center gap-3">
+            <input
+              type="checkbox"
+              name="ask"
+              value={ask.key}
+              checked={ask.key === 'medical'}
+              class="size-5 rounded border-ink-300"
+            />
+            <span class="text-sm">
+              {ask.label}
+              {/* Said on the row, so nobody ticks "SPE certificate" for a driver
+                  who has never had one. */}
+              {ask.conditional && <span class="text-ink-500"> — only some drivers</span>}
+            </span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+
+    <div class="mt-4 max-w-xs">
+      <label class="field-label" for="hours">How long should the link work?</label>
+      <select id="hours" name="hours" class="field-input mt-1">
+        {EXPIRY_CHOICES.map((c) => (
+          <option value={c.hours} selected={c.hours === 72}>
+            {c.label}
+          </option>
+        ))}
+      </select>
+      <span class="field-hint block">
+        A driver often reads the message hours later at a fuel stop. Three days is usually right.
+      </span>
+    </div>
+
+    <button type="submit" name="intent" value="ask_driver" class="btn btn-primary mt-5">
+      Make the link
+    </button>
+  </form>
+</section>

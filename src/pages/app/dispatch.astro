@@ -17,6 +17,7 @@
 import Columns from '../../components/charts/Columns.astro'
 import Figure from '../../components/charts/Figure.astro'
 import App from '../../layouts/App.astro'
+import { flashText } from '../../lib/flash.ts'
 import { bucketValues, ceilingFor, weekBuckets, weekStart } from '../../lib/charts/scale.ts'
 import { loadDeadlines } from '../../lib/deadlines.ts'
 import { eligibility, isBlocked } from '../../lib/dispatch/eligibility.ts'
@@ -28,6 +29,7 @@ import {
   exceptionPillClass,
   loadStatusLabel,
   statusPillClass,
+  totalRateCents,
 } from '../../lib/loads.ts'
 import type { DeadlineItem } from '../../lib/rules/index.ts'
 import { formatCents } from '../../lib/stops.ts'
@@ -70,6 +72,8 @@ interface LoadRow {
   exception: string | null
   /** Integer cents, or null when nobody has typed a rate yet. Never a float. */
   linehaul_cents: number | null
+  fuel_surcharge_cents: number | null
+  accessorials_cents: number | null
   created_at: string
 }
 
@@ -113,7 +117,7 @@ interface VehicleRow {
 const { data: loadData, error: loadError } = await supabase
   .from('loads')
   .select(
-    'id, load_number, broker_reference, customer_id, status, exception, linehaul_cents, created_at',
+    'id, load_number, broker_reference, customer_id, status, exception, linehaul_cents, fuel_surcharge_cents, accessorials_cents, created_at',
   )
   .in('status', BOARD_STATUSES)
   // `.neq('exception', 'cancelled')` looks equivalent and is not: in SQL
@@ -460,8 +464,13 @@ interface BoardRow {
   driverOffRoster: boolean
   /** What the dot on the card says. Derived from the two flags above. */
   readiness: Readiness
-  /** The linehaul in integer cents, or null when nobody has typed a rate. */
-  linehaulCents: number | null
+  /**
+   * What the load pays all in — linehaul, fuel surcharge and accessorials — in
+   * integer cents, or null when nobody has typed any of the three. The same
+   * `totalRateCents` /app/loads and the load page print, so one load is one
+   * figure on every board.
+   */
+  rateCents: number | null
   sortKey: number
 }
 
@@ -513,9 +522,9 @@ const rows: BoardRow[] = loads.map((l) => {
         : driver
           ? 'ready'
           : 'nobody',
-    // Straight through as cents. It is formatted once, at the point it is
+    // Integer cents all the way. It is formatted once, at the point it is
     // printed, and never divided into a float on the way here.
-    linehaulCents: l.linehaul_cents ?? null,
+    rateCents: totalRateCents(l),
     sortKey: pickup?.window_start ? Date.parse(pickup.window_start) : Number.POSITIVE_INFINITY,
   }
 })
@@ -531,7 +540,11 @@ const notQualified = running.filter((r) => r.blocked || r.driverOffRoster)
 const params = Astro.url.searchParams
 const assigned = params.get('assigned')
 const released = params.get('released')
-const error = params.get('error') ?? (loadError ? loadError.message : null)
+// The message is read only when the browser says the request came from this
+// site, and a database failure is said in plain words, never in its own.
+const error =
+  flashText(Astro.url, Astro.request) ??
+  (loadError ? 'We could not load the board. Reload the page.' : null)
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
 
@@ -578,9 +591,9 @@ const rowAction =
  * is the kind of number an owner repeats to a broker and then has to take back.
  */
 function columnMoney(rowsIn: BoardRow[]) {
-  const priced = rowsIn.filter((r) => r.linehaulCents !== null)
+  const priced = rowsIn.filter((r) => r.rateCents !== null)
   return {
-    cents: priced.reduce((sum, r) => sum + (r.linehaulCents ?? 0), 0),
+    cents: priced.reduce((sum, r) => sum + (r.rateCents ?? 0), 0),
     priced: priced.length,
     unpriced: rowsIn.length - priced.length,
   }
@@ -592,11 +605,11 @@ const sections = [
     title: 'Needs a driver',
     blurb: 'No driver on these yet. This is the list to work first.',
     rows: needsDriver,
-    wrapper: 'overflow-x-auto rounded-xl border border-brand-500/30 bg-brand-500/[0.04]',
+    wrapper: 'overflow-x-auto rounded-xl border border-brand-500/30 bg-champagne-50',
     action: 'Assign',
     // Same tint the tile at the top of the page uses for this column, so the
     // big number up there and the big number down here read as one count.
-    countClass: 'bg-brand-500/10 text-brand-700',
+    countClass: 'bg-champagne text-brand-700',
     money: columnMoney(needsDriver),
   },
   {
@@ -633,7 +646,7 @@ const sections = [
     <div
       class:list={[
         'rounded-xl border p-5',
-        needsDriver.length > 0 ? 'border-brand-500/40 bg-brand-500/[0.04]' : 'border-ink-100 bg-white',
+        needsDriver.length > 0 ? 'border-brand-500/40 bg-champagne-50' : 'border-ink-100 bg-white',
       ]}
     >
       {/* A real heading, not a styled div. The label on a tile is the name of
@@ -743,7 +756,7 @@ const sections = [
                 ]}
               >
                 {section.rows.length}
-              </span>
+              </span>{' '}
               {section.title}
             </h2>
             {/*
@@ -763,8 +776,14 @@ const sections = [
               carry a rate, and the ones that do not are counted beside it
               rather than folded in at zero.
             */}
+            {/* The same figure /app/loads prints for the same load: linehaul,
+                fuel surcharge and accessorials added, through `totalRateCents`.
+                This column used to sum linehaul alone — $1,850 here against
+                $2,010.45 there for one load, with nothing on either screen
+                saying which was which. ink-700, not ink-500: these lines sit on
+                the page tint. */}
             {section.money.priced > 0 && (
-              <span class="text-sm text-ink-500">
+              <span class="text-sm text-ink-700">
                 <span class="font-semibold text-ink-900 tabular-nums">
                   {formatCents(section.money.cents)}
                 </span>{' '}
@@ -772,12 +791,12 @@ const sections = [
               </span>
             )}
             {section.money.unpriced > 0 && (
-              <span class="text-sm text-ink-500 tabular-nums">
+              <span class="text-sm text-ink-700 tabular-nums">
                 {section.money.unpriced} with no rate typed
               </span>
             )}
           </div>
-          <p class="mt-1.5 mb-3 text-sm text-ink-500">{section.blurb}</p>
+          <p class="mt-1.5 mb-3 text-sm text-ink-700">{section.blurb}</p>
 
           <div class={section.wrapper}>
             <table class="w-full text-sm sm:min-w-[68rem]">
@@ -844,11 +863,11 @@ const sections = [
                         {/* A load nobody has priced is not a $0 load, and
                             printing one as $0.00 is the kind of number that ends
                             up in a conversation with a broker. */}
-                        {r.linehaulCents === null ? (
+                        {r.rateCents === null ? (
                           <span class="text-xs text-ink-700 italic">No rate typed</span>
                         ) : (
                           <span class="text-sm font-semibold tabular-nums">
-                            {formatCents(r.linehaulCents)}
+                            {formatCents(r.rateCents)}
                           </span>
                         )}
                       </div>

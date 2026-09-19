@@ -56,7 +56,7 @@ export const CHECK_TONES: Record<CheckTone, { pill: string; icon: string }> = {
   nodate: { pill: 'bg-ink-100 text-ink-500', icon: 'bg-ink-100 text-ink-500' },
   soon: { pill: 'bg-amber-100 text-amber-800', icon: 'bg-amber-100 text-amber-800' },
   ok: { pill: 'bg-emerald-100 text-emerald-800', icon: 'bg-emerald-100 text-emerald-800' },
-  read: { pill: 'bg-brand-500/10 text-brand-700', icon: 'bg-brand-500/10 text-brand-700' },
+  read: { pill: 'bg-blue-100 text-blue-800', icon: 'bg-blue-100 text-blue-800' },
 }
 
 /** Worst first. Grey sits WITH red, for the reason `STANDING_RANK` gives. */

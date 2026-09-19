@@ -37,7 +37,7 @@ const features = [
   },
   {
     title: 'Loads and trips',
-    body: 'Book a load, give it a driver and a truck, and track the stops. Loads with many stops are normal here. You do not pay extra for them. We count deadhead miles on their own, so your revenue per mile is the real number.',
+    body: 'Book a load, give it a driver and a truck, and track the stops. Loads with many stops are normal here. You do not pay extra for them.',
   },
   {
     title: 'Dispatch checks the rules',
@@ -80,7 +80,7 @@ const faqs = [
   },
   {
     q: 'What if I already use an ELD?',
-    a: 'Keep it. We are not an ELD and we will not become one. We read hours and trip data from Motive, Samsara and others, so dispatch knows if a driver has enough hours to finish a run.',
+    a: 'Keep it. We are not an ELD and we will not become one. We do not read hours from your ELD yet, so dispatch does not check hours of service. It checks the dates: the medical card, the CDL and the rest.',
   },
 ]
 ---
@@ -90,7 +90,7 @@ const faqs = [
   description="Deadline tracking, loads and trips for small US trucking fleets. Federal rules in every state, plus the California rules. Type your DOT number and see what expires next."
 >
   <!-- Hero -->
-  <section class="border-b border-ink-100 bg-ink-50">
+  <section class="border-b border-ink-100 bg-champagne-50">
     <div class="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
       <p class="text-sm font-medium tracking-widest text-brand-600 uppercase">
         For small US fleets
@@ -98,7 +98,8 @@ const faqs = [
       <h1 class="mt-4 max-w-3xl text-4xl font-semibold tracking-tight text-balance sm:text-6xl">
         See what expires next, before it costs you money.
       </h1>
-      <p class="mt-5 max-w-2xl text-lg text-ink-500">
+      {/* ink-700: the hero sits on `bg-champagne-50`, where ink-500 is 4.30:1. */}
+      <p class="mt-5 max-w-2xl text-lg text-ink-700">
         A fleet with 12 trucks has more than 100 deadlines every year. Miss one and you can get
         a fine over $10,000, a hold on your registration, or a truck stopped at the scale. Type
         your DOT number and see your dates in about 10 seconds.
@@ -136,7 +137,9 @@ const faqs = [
             class="field-affix-input px-4 py-3.5 tabular-nums"
             aria-describedby="hero-dot-hint"
           />
-          <button type="submit" class="btn btn-primary m-1 shrink-0">
+          {/* `ml-2`: 8px between the box he types in and the button, the floor
+              between two targets. It was 4px. */}
+          <button type="submit" class="btn btn-primary m-1 ml-2 shrink-0">
             Check
           </button>
         </div>
@@ -209,14 +212,14 @@ const faqs = [
   </section>
 
   <!-- How it works -->
-  <section class="border-y border-ink-100 bg-ink-50">
+  <section class="border-y border-ink-100 bg-champagne-50">
     <div class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
       <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">Three steps. One evening.</h2>
       <div class="mt-8 grid gap-4 sm:grid-cols-3">
         {
           steps.map((s) => (
             <div class="rounded-xl border border-ink-100 bg-white p-5">
-              <div class="flex size-8 items-center justify-center rounded-full bg-brand-500/10 text-sm font-semibold text-brand-700">
+              <div class="flex size-8 items-center justify-center rounded-full bg-champagne text-sm font-semibold text-brand-700">
                 {s.n}
               </div>
               <p class="mt-3 font-medium">{s.title}</p>
@@ -308,7 +311,7 @@ const faqs = [
   </section>
 
   <!-- FAQ -->
-  <section class="border-t border-ink-100 bg-ink-50">
+  <section class="border-t border-ink-100 bg-champagne-50">
     <div class="mx-auto max-w-3xl px-4 py-16 sm:px-6">
       <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">Straight answers</h2>
       <dl class="mt-8 space-y-4">
@@ -326,11 +329,12 @@ const faqs = [
 
   <!-- Closing CTA -->
   <section class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
-    <div class="rounded-2xl border border-brand-500/30 bg-brand-500/[0.04] p-8 sm:p-12">
+    <div class="rounded-2xl border border-brand-500/30 bg-champagne p-8 sm:p-12">
       <h2 class="max-w-2xl text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
         See your own deadlines first.
       </h2>
-      <p class="mt-4 max-w-xl text-ink-500">
+      {/* ink-700: Champagne is a tint, and ink-500 on it is 3.89:1. */}
+      <p class="mt-4 max-w-xl text-ink-700">
         Type your DOT number. If it is not useful, close the page. You gave us nothing.
       </p>
       <form method="GET" action="/check" class="mt-6 flex max-w-md flex-col gap-3 sm:flex-row">
@@ -348,8 +352,8 @@ const faqs = [
           aria-label="Your USDOT number"
           class="field-input rounded-xl px-4 py-3.5 tabular-nums"
         />
-        {/* Dark is the marketing chrome variant and stays dark out here. Inside
-            /app the action colour is brand blue; this page is not /app. */}
+        {/* `.btn-dark` is the marketing chrome variant. It is Emerald Ink, the
+            same fill as the app's primary button: one action colour. */}
         <button type="submit" class="btn btn-dark shrink-0 rounded-xl px-7 py-3.5 font-semibold">
           Check my fleet
         </button>

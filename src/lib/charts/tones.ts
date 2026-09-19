@@ -16,6 +16,13 @@
  * 2. `unknown` is not a colour, it is an absence, and it renders as a hatched
  *    outline rather than a filled bar. A grey bar still looks like a
  *    measurement; the whole point is that it is not one.
+ *
+ * The `emerald-*` classes are not Tailwind's emerald: src/styles/global.css
+ * pins them to a grass green, because the brand (Emerald Ink, brand-700) is a
+ * dark blue-green and Tailwind's emerald-800 measured 1.28:1 against it. The
+ * `good` bar is emerald-500, 1.93:1 against the `brand` bar and on a hue 22°
+ * away from it. `brand` is the only tone that may use a brand token, and the
+ * four status tones may not — tests/brand-tokens.test.ts holds both.
  */
 export type Tone = 'brand' | 'overdue' | 'soon' | 'good' | 'neutral'
 

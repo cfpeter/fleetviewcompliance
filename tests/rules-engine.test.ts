@@ -20,6 +20,10 @@ const base = {
   warningDays: [30, 7],
   evidence: 'a document',
   consequence: 'a penalty',
+  // These tests are about the SHAPE of an answer, so the value here is
+  // arbitrary — but the field is required and has no default, which is the
+  // point of it. See `RuleDefinition.impact`.
+  impact: 'audit',
 } satisfies Omit<RuleDefinition, 'code' | 'recurrence'>
 
 const iso = (d: Date) => d.toISOString().slice(0, 10)

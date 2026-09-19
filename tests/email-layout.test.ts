@@ -54,6 +54,9 @@ function rule(code: string, title: string, citation: string): RuleDefinition {
     warningDays: [30, 7, 1, -1],
     evidence: 'the card itself',
     consequence: 'the driver may not drive',
+    // Every rule row this helper stands in for is a medical certificate, which
+    // stops the person and not the fleet.
+    impact: 'driver',
   }
 }
 

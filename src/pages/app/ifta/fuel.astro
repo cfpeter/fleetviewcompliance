@@ -14,6 +14,7 @@
  * the tax-paid checkbox. It is labelled as plainly as it can be said.
  */
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import { formText, formatDate } from '../../../lib/drivers.ts'
 import { gallons, quarterLabel, returnDueOn } from '../../../lib/ifta/compute.ts'
 import {
@@ -226,7 +227,9 @@ if (!quarters.some((q) => isoDay(q) === periodIso)) {
 }
 
 const params = Astro.url.searchParams
-const error = params.get('error') ?? purchaseError?.message ?? vehicleError?.message ?? null
+// Only honoured when the request came from our own 303. See src/lib/flash.ts.
+const error =
+  flashText(Astro.url, Astro.request) ?? purchaseError?.message ?? vehicleError?.message ?? null
 const added = params.get('added') === '1'
 const removed = params.get('removed') === '1'
 /** Which row is asking to be removed. Carried in the URL because a dialog needs JavaScript. */

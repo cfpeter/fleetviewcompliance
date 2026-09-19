@@ -53,6 +53,17 @@ export function registerComputed(name: string, fn: ComputedFn | ComputedSchedule
   computed.set(name, typeof fn === 'function' ? { next: fn } : fn)
 }
 
+/**
+ * Saturday to Monday, Sunday to Monday, anything else untouched. Mirrors
+ * `returnDueOn` in src/lib/ifta/compute.ts exactly; a test pins the two equal.
+ */
+function rollOffWeekend(on: Date): Date {
+  const day = on.getUTCDay()
+  if (day === 6) return new Date(on.getTime() + 2 * 86_400_000)
+  if (day === 0) return new Date(on.getTime() + 86_400_000)
+  return on
+}
+
 export function nextDue(rule: RuleDefinition, ctx: RuleContext): Outcome {
   // Applicability first. 'unknown' deliberately proceeds: a rule we cannot rule
   // out is a rule we track, because failing open costs a reminder and failing
@@ -71,7 +82,8 @@ export function nextDue(rule: RuleDefinition, ctx: RuleContext): Outcome {
       for (let yearOffset = 0; yearOffset <= 1; yearOffset++) {
         const y = today.getUTCFullYear() + yearOffset
         for (const m of [...r.months].sort((a, b) => a - b)) {
-          const on = r.day === 'last' ? lastDayOfMonth(y, m) : utcDate(y, m, r.day)
+          const nominal = r.day === 'last' ? lastDayOfMonth(y, m) : utcDate(y, m, r.day)
+          const on = r.rollWeekend ? rollOffWeekend(nominal) : nominal
           if (on >= today) return { kind: 'due', on }
         }
       }
@@ -151,7 +163,11 @@ function previousDue(rule: RuleDefinition, ctx: RuleContext, next: Date, today: 
       for (let yearOffset = 0; yearOffset >= -1; yearOffset--) {
         const y = today.getUTCFullYear() + yearOffset
         for (const m of r.months) {
-          const on = r.day === 'last' ? lastDayOfMonth(y, m) : utcDate(y, m, r.day)
+          const nominal = r.day === 'last' ? lastDayOfMonth(y, m) : utcDate(y, m, r.day)
+          // Rolled here too, or a return due Monday 2 Nov would read as overdue
+          // on Sunday 1 Nov — the false accusation the IFTA screen already
+          // refuses to make.
+          const on = r.rollWeekend ? rollOffWeekend(nominal) : nominal
           if (on < today && (!best || on > best)) best = on
         }
       }

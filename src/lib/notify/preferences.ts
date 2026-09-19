@@ -22,6 +22,31 @@
 export const DEFAULT_LEAD_DAYS: readonly number[] = [30, 7, 1, -1]
 
 /**
+ * Whether an array is still the shipped default — nobody has moved it.
+ *
+ * This is the whole precedence question between a rule's own warning window and
+ * the owner's settings, and it has to be answered from the VALUE, because the
+ * row's existence answers nothing. The alerts form upserts a lead-time row for
+ * every category on every save, so a person who ticked an SMS box and pressed
+ * save owns a row holding 30, 7, 1, -1 that he never typed. Reading that row as
+ * a choice would freeze him on the flat ladder forever.
+ *
+ * Order-insensitive. `parseLeadDays` sorts largest-first and so does the column
+ * default, but a row written by hand or by a future migration need not, and a
+ * sort order is not a preference.
+ *
+ * An absent array is the same answer: somebody who has never opened the screen
+ * has not chosen anything either.
+ */
+export function isDefaultLeadDays(days: readonly number[] | null | undefined): boolean {
+  if (!days) return true
+  if (days.length !== DEFAULT_LEAD_DAYS.length) return false
+  const mine = [...days].sort((a, b) => a - b)
+  const theirs = [...DEFAULT_LEAD_DAYS].sort((a, b) => a - b)
+  return mine.every((v, i) => v === theirs[i])
+}
+
+/**
  * A warning further out than a year is not a warning.
  *
  * `reachedWindow` fires as soon as `daysUntil <= lead`, so a lead time longer

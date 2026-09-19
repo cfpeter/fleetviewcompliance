@@ -6,6 +6,7 @@ import { test } from 'node:test'
 import { nextDue } from '../src/lib/rules/compute.ts'
 import { utcDate } from '../src/lib/rules/dates.ts'
 import { allRules, compareDeadlines, type DeadlineItem, evaluate } from '../src/lib/rules/index.ts'
+import { IMPACT_LABEL, type Impact } from '../src/lib/rules/types.ts'
 
 const TODAY = utcDate(2026, 9, 15)
 
@@ -41,9 +42,14 @@ test('no rule claims to have been verified by a person', () => {
   assert.equal(allRules.filter((r) => r.verifiedBy).length, 0)
 })
 
-const item = (standing: string, days: number | undefined, label = 'x'): DeadlineItem =>
+const item = (
+  standing: string,
+  days: number | undefined,
+  label = 'x',
+  impact: Impact = 'audit',
+): DeadlineItem =>
   ({
-    rule: { code: 'r', title: 't' },
+    rule: { code: 'r', title: 't', impact },
     subjectType: 'driver',
     subjectId: null,
     subjectLabel: label,
@@ -279,4 +285,276 @@ test('a recurring rule still gets a real future date, however long it has been r
   const annual = items.find((i) => i.rule.code === 'mvr_inquiry_annual')
   assert.ok(annual?.status.nextDue, 'an annual MVR must keep its next date')
   assert.ok((annual.daysUntil ?? -1) > 0, 'and it must be ahead of us')
+})
+
+// ---------------------------------------------------------------- impact (B2)
+
+const IMPACTS: readonly Impact[] = ['company', 'driver', 'truck', 'money', 'audit', 'record']
+
+test('EVERY rule says what a lapse stops — no rule may be silent', () => {
+  // A rule with no impact is a rule that sorts wrong, and it sorts wrong
+  // silently: the row still renders, still shows the right date, and is simply
+  // in the wrong place on the page. This is the test that stops a rule added
+  // next year from doing that.
+  const silent = allRules.filter((r) => !r.impact)
+  assert.deepEqual(
+    silent.map((r) => r.code),
+    [],
+    'these rules carry no impact and will sort wrong',
+  )
+
+  for (const r of allRules) {
+    assert.ok(
+      IMPACTS.includes(r.impact),
+      `${r.code} has impact '${r.impact}', which is not one of the six`,
+    )
+  }
+
+  // The catalogue is 51 rules. If that number moves, somebody added or removed
+  // an obligation, and the ranking in docs/product/DATE-PRIORITY.md needs the
+  // same edit — so this assertion is a prompt, not a lock.
+  assert.equal(allRules.length, 52, 'the catalogue changed size; re-check the ranking document')
+})
+
+test('every impact value has a sentence a screen can print', () => {
+  // `impact` is shown to Los Angeles fleet owners, many of whom do not read
+  // English fluently. A value with no plain sentence behind it is a value that
+  // reaches a page as the bare word 'record'.
+  for (const i of IMPACTS) {
+    assert.ok(IMPACT_LABEL[i]?.length > 0, `${i} has no printable label`)
+  }
+  assert.equal(Object.keys(IMPACT_LABEL).length, IMPACTS.length)
+})
+
+test('the rules the ranking document is emphatic about carry the tier it gives them', () => {
+  // Spot checks, not a full re-listing: these are the rows whose placement the
+  // document argues for explicitly, so a change to one of them should have to
+  // argue back.
+  const impactOf = (code: string) => allRules.find((r) => r.code === code)?.impact
+
+  // Tier 1 — the whole company stops.
+  assert.equal(impactOf('fed.387.9.liability-insurance-filing'), 'company')
+  assert.equal(impactOf('fed.usc.13906.operating-authority'), 'company')
+  assert.equal(impactOf('fed.390.19T.mcs150-biennial-update'), 'company')
+  assert.equal(impactOf('ca_mcp_renewal'), 'company')
+
+  // Tier 2 — one driver stops. All five medical rules and the CDL.
+  for (const code of allRules.map((r) => r.code).filter((c) => c.startsWith('medical_'))) {
+    assert.equal(impactOf(code), 'driver', `${code} stops a driver`)
+  }
+  assert.equal(impactOf('cdl_expiry'), 'driver')
+
+  // Tier 5 — retention floors. These are the rows that were outranking the
+  // medical card inside the Overdue section, which is the whole reason for B2.
+  for (const code of [
+    'fed.396.21.inspection-report-retention.power-unit',
+    'fed.396.21.inspection-report-retention.trailer',
+    'fed.390.15.accident-register-retention',
+    'fed.395.8.rods-retention',
+    'fed.395.11.supporting-documents-retention',
+    'fed.395.22.eld-backup-retention',
+  ]) {
+    assert.equal(impactOf(code), 'record', `${code} is a retention floor, not a deadline`)
+  }
+})
+
+test('where the ranking disagrees with a rule’s own consequence, the ranking wins', () => {
+  const impactOf = (code: string) => allRules.find((r) => r.code === code)?.impact
+
+  // § 5.1 — the row's sentence reads like bookkeeping; an unlisted truck
+  // cannot pass Clean Truck Check and so cannot be registered.
+  assert.equal(impactOf('ca_ctc_vis_listing'), 'truck')
+
+  // § 5.3 — the rows say "drivers placed out of service"; the only citation
+  // they carry is an employer penalty, so they are ranked as audit findings.
+  assert.equal(impactOf('random_controlled_substances_testing_rate'), 'audit')
+  assert.equal(impactOf('random_alcohol_testing_rate'), 'audit')
+
+  // § 5.4 — the row says "CHP-initiated MCP suspension"; one missed 90-day
+  // inspection suspends no permit, and the aggregate is a different problem.
+  assert.equal(impactOf('ca_bit_inspection'), 'money')
+})
+
+test('inside one standing, what a lapse stops beats how late it is', () => {
+  // The bug B2 exists to fix, in one line: an ELD back-up retention row 90 days
+  // past sat above a medical certificate that expired yesterday, because 90 is
+  // more than 1. Days late measures how long we have been wrong, not what being
+  // wrong costs.
+  const sorted = [
+    item('overdue', -90, 'eld backup', 'record'),
+    item('overdue', -1, 'medical card', 'driver'),
+  ].sort(compareDeadlines)
+
+  assert.deepEqual(
+    sorted.map((i) => i.subjectLabel),
+    ['medical card', 'eld backup'],
+  )
+})
+
+test('impact orders the whole scale, worst first', () => {
+  const sorted = [
+    item('overdue', -1, 'record', 'record'),
+    item('overdue', -1, 'audit', 'audit'),
+    item('overdue', -1, 'money', 'money'),
+    item('overdue', -1, 'truck', 'truck'),
+    item('overdue', -1, 'driver', 'driver'),
+    item('overdue', -1, 'company', 'company'),
+  ].sort(compareDeadlines)
+
+  assert.deepEqual(
+    sorted.map((i) => i.subjectLabel),
+    ['company', 'driver', 'truck', 'money', 'audit', 'record'],
+  )
+})
+
+test('STANDING STAYS PRIMARY — an overdue row never sorts below a green one', () => {
+  // The line impact is not allowed to cross. A current insurance filing is the
+  // most consequential obligation in the catalogue and it is not wrong today;
+  // an overdue retention floor is the least consequential and it IS wrong
+  // today. Overdue still comes first, and the same holds for `unknown`, which
+  // ranks with overdue.
+  const sorted = [
+    item('current', 5, 'green company row', 'company'),
+    item('unknown', undefined, 'unknown company row', 'company'),
+    item('overdue', -1, 'overdue record row', 'record'),
+  ].sort(compareDeadlines)
+
+  assert.deepEqual(
+    sorted.map((i) => i.status.standing),
+    ['overdue', 'unknown', 'current'],
+  )
+})
+
+test('an overdue INTERVAL row with a POSITIVE day count still outranks a current one', () => {
+  // The trap that has shipped four times here. An overdue interval rule carries
+  // a positive `daysUntil` — the cycle it missed is behind it and the next one
+  // is ahead — so anything that bucketed on the sign of that number would file
+  // it as fine. Standing decides the bucket; impact and days only order inside
+  // it. Adding a second key ahead of days must not have changed that.
+  const sorted = [
+    item('current', 2, 'current row', 'driver'),
+    item('overdue', 300, 'overdue row', 'record'),
+  ].sort(compareDeadlines)
+
+  assert.deepEqual(
+    sorted.map((i) => i.subjectLabel),
+    ['overdue row', 'current row'],
+  )
+})
+
+test('within one impact, soonest still first, and undated still last', () => {
+  // Impact is inserted ABOVE the day count, not instead of it.
+  const sorted = [
+    item('overdue', -3, 'c', 'truck'),
+    item('overdue', undefined, 'd', 'truck'),
+    item('overdue', -90, 'a', 'truck'),
+  ].sort(compareDeadlines)
+
+  assert.deepEqual(
+    sorted.map((i) => i.daysUntil),
+    [-90, -3, undefined],
+  )
+})
+
+test('a real evaluation buries the retention floor under the rows that stop people', () => {
+  // The bug as it actually reaches a page, through `evaluate` and the real
+  // catalogue rather than hand-built rows.
+  //
+  // This carrier's inspection-report retention floor passed 683 days ago, which
+  // is the largest negative day count anywhere on his dashboard. Sorted on days
+  // alone it was the FIRST thing he saw, above the expired CDL date and the
+  // expired medical card — a row that means "you may now shred this" leading a
+  // page whose other rows mean "this man cannot drive".
+  //
+  // Note the retention row's standing: `unknown`, not `overdue`. No tier-5 row
+  // in this catalogue can reach `overdue` — they are computed schedules with no
+  // previous occurrence — so they collect in the `unknown` bucket alongside
+  // every date the owner has not typed yet, and they collect the biggest
+  // numbers in it.
+  const items = evaluate(
+    [
+      {
+        type: 'driver',
+        id: 'd1',
+        label: 'A Driver',
+        context: { carrierOperation: 'A', cdl: true },
+        // Expired eleven months ago.
+        anchors: { medical_certificate_expires: utcDate(2025, 10, 1) },
+      },
+      {
+        type: 'power_unit',
+        id: 'v1',
+        label: 'Truck 1',
+        context: { gvwrLbs: 33_000, registrationState: 'CA' },
+        // Inspected two years ago, so the 14-month retention floor is long past.
+        anchors: { periodic_inspection_date: utcDate(2023, 9, 1) },
+      },
+    ],
+    TODAY,
+  )
+
+  const at = (code: string) => items.findIndex((i) => i.rule.code === code)
+  const retention = items[at('fed.396.21.inspection-report-retention.power-unit')]
+  assert.ok(retention, 'the retention row must be on the page')
+  assert.ok(
+    (retention.daysUntil ?? 0) < -300,
+    'this test is only meaningful while the retention floor is the most negative row',
+  )
+
+  // Inside its own bucket it is now last, under every row the owner can act on.
+  const unknown = items.filter((i) => i.status.standing === 'unknown')
+  assert.equal(
+    unknown[unknown.length - 1]?.rule.code,
+    'fed.396.21.inspection-report-retention.power-unit',
+    'the retention floor must sit at the bottom of its bucket, not the top',
+  )
+  assert.ok(at('cdl_expiry') < at('fed.396.21.inspection-report-retention.power-unit'))
+
+  // And the two overdue rows still lead the page, with the driver above the
+  // truck. The annual inspection here is the positive-`daysUntil` overdue case:
+  // it missed last year's cycle and the next one is 351 days ahead of it.
+  const annual = items[at('fed.396.17.periodic-inspection.power-unit')]
+  assert.equal(annual?.status.standing, 'overdue')
+  assert.ok((annual.daysUntil ?? 0) > 0, 'an overdue interval rule can carry positive days')
+  assert.equal(items[0]?.rule.code, 'medical_certificate_general')
+  assert.equal(items[1]?.rule.code, 'fed.396.17.periodic-inspection.power-unit')
+})
+
+// ------------------------------------------------- for-hire insurance gate (B15)
+
+test('the insurance filing still shows when we do not know if the carrier is for-hire', () => {
+  // The state of the data today, and the state this test protects. Nothing in
+  // the application populates `forHire`, so every carrier reaches this rule
+  // with the fact unanswered — and an unanswered question must never turn into
+  // "you are private, you owe nothing". Telling a for-hire carrier it owes no
+  // filing is far worse than showing a private one a row it does not owe.
+  const items = evaluate(
+    [{ type: 'carrier', id: 'c1', label: 'A Carrier', context: {}, anchors: {} }],
+    TODAY,
+  )
+  assert.ok(
+    items.some((i) => i.rule.code === 'fed.387.9.liability-insurance-filing'),
+    'a carrier with no for-hire fact must still be shown the filing',
+  )
+})
+
+test('the filing drops off only when for-hire AND hazmat are both known and negative', () => {
+  const shown = (context: Record<string, unknown>) =>
+    evaluate([{ type: 'carrier', id: 'c1', label: 'A Carrier', context, anchors: {} }], TODAY).some(
+      (i) => i.rule.code === 'fed.387.9.liability-insurance-filing',
+    )
+
+  // Both facts known and negative: a private, non-hazmat carrier.
+  assert.equal(shown({ forHire: false, hazmat: false }), false)
+
+  // Every other combination keeps the row. `forHire: false` with hazmat
+  // unknown or true is the important one: Part 387's reach over a private
+  // carrier of hazardous materials is not something this catalogue has
+  // verified, and an unverified exemption takes an obligation away from
+  // somebody who may owe it.
+  assert.equal(shown({ forHire: false }), true)
+  assert.equal(shown({ forHire: false, hazmat: true }), true)
+  assert.equal(shown({ forHire: true, hazmat: false }), true)
+  assert.equal(shown({ hazmat: false }), true)
+  assert.equal(shown({}), true)
 })

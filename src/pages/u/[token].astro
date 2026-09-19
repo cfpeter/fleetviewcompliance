@@ -1,0 +1,332 @@
+---
+/**
+ * The page a driver opens from a text message. No account, no password, no
+ * session — the token in the path is the whole of the authentication.
+ *
+ * DELIBERATELY ALMOST EMPTY OF PERSONAL DATA. A first name, the things the
+ * office asked for, and nothing else. This URL arrives in a message that may be
+ * forwarded, screenshotted, read over a shoulder at a fuel stop, or left on a
+ * phone somebody else picks up. Echoing back his licence number, the dates
+ * already on file, or even the carrier's legal name would turn a lost phone
+ * into a data leak, and none of it helps the person typing one date. The
+ * company name is in the MESSAGE, which arrived from a number or an address he
+ * recognises.
+ *
+ * NOTHING HERE WRITES TO A COMPLIANCE RECORD. `driver_link_submit` (0036) puts
+ * one row in `driver_submissions` and stamps the link spent. The owner accepts
+ * it later, signed in, and that is when a date reaches the board. So the worst a
+ * forwarded link can do is put a claim in a queue a person reads: it cannot move
+ * a deadline, and it cannot change what a DOT auditor is shown.
+ *
+ * The shape follows src/pages/proof/[token].astro — `anonClient()`, no-store,
+ * one indistinguishable page for every dead end. What it adds is the shape
+ * pre-check that page has written and never used, a throttle, and a POST.
+ */
+import Driver from '../../layouts/Driver.astro'
+import {
+  ACCEPT_ATTRIBUTE,
+  checkFile,
+  documentBucket,
+  MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_LABEL,
+  requestTooLarge,
+  safeFileName,
+} from '../../lib/documents.ts'
+import { DRIVER_ASKS } from '../../lib/driver-link/asks.ts'
+import { allowDriverSubmit } from '../../lib/driver-link/limit.ts'
+import { callerHash, newSubmissionKey, readAskDate } from '../../lib/driver-link/link.ts'
+import { hashProofToken, isProofToken } from '../../lib/proof/token.ts'
+import { anonClient } from '../../lib/supabase/server.ts'
+
+const { token = '' } = Astro.params
+
+// The shape check comes first, and this is the one place it is actually used.
+// `isProofToken` has existed and been tested since proof links shipped and is
+// imported by nothing — /proof takes a database round trip on every hand-typed
+// URL. Not here.
+const shaped = isProofToken(token)
+
+const db = anonClient()
+
+// Outside /app, so src/middleware.ts sets no headers for us. A page that names a
+// driver must not sit in a shared cache.
+Astro.response.headers.set('Cache-Control', 'private, no-store')
+
+/** What `driver_link_view` hands back. No carrier, no dates, no id. */
+interface View {
+  first_name: string
+  asks: string[]
+  on_file: string[]
+}
+
+const readLink = async (): Promise<View | null> => {
+  const { data } = await db.rpc('driver_link_view', { p_token: token })
+  return (Array.isArray(data) ? data[0] : data) ?? null
+}
+
+/**
+ * The one dead end.
+ *
+ * Never existed, expired, withdrawn, already used — one page, one sentence.
+ * "Already used" confirms to somebody guessing that they found a real link, and
+ * "withdrawn" tells the holder a carrier changed their mind about them. There is
+ * nothing useful he can do with the difference anyway: the answer is always
+ * "ask the office for another".
+ */
+const DEAD = 'This link is no longer active. Ask whoever sent it for a new one.'
+
+let view: View | null = null
+let error: string | null = null
+/** Kept across the submit so the thank-you can still use his name. */
+let sentName = ''
+let done = false
+
+const today = new Date()
+
+if (shaped && Astro.request.method === 'POST') {
+  // Refused on the header, before the body is read, so an enormous upload costs
+  // nothing to turn away.
+  const tooBig = requestTooLarge(Astro.request)
+  if (tooBig) {
+    error = tooBig
+  } else {
+    const hash = await hashProofToken(token)
+    // The salt is the back half of the digest: per-link, never stored anywhere,
+    // and useless for correlating one driver across two links.
+    const caller = await callerHash(Astro.request.headers, hash.slice(32))
+    const allowed = await allowDriverSubmit({ tokenHashPrefix: hash.slice(0, 16), callerHash: caller })
+
+    // A throttled attempt gets the dead-end sentence rather than "slow down" —
+    // the second tells somebody probing that they found something worth probing.
+    if (!allowed) {
+      error = DEAD
+    } else {
+      const form = await Astro.request.formData()
+
+      // What this link may carry, read back from the database and never from the
+      // form. A crafted POST naming a field the owner did not tick is not
+      // refused — it is never looked at, which is the only version of that
+      // defence with no list to keep up to date.
+      const live = await readLink()
+      if (!live) {
+        error = DEAD
+      } else {
+        sentName = live.first_name
+        const asked = DRIVER_ASKS.filter((a) => live.asks.includes(a.key))
+        const payload: Record<string, string> = {}
+
+        for (const ask of asked) {
+          const read = readAskDate(form.get(`date_${ask.key}`), today)
+          if (!read.ok) {
+            error = `${ask.driverLabel}: ${read.message}`
+            break
+          }
+          if (read.value) payload[ask.key] = read.value
+        }
+
+        // Each file remembers WHICH BOX it came out of. Without that the accept
+        // step has a flat list of keys and has to guess, which it refuses to do
+        // — so every photo filed as "Other paper", including the one the owner
+        // had specifically asked for.
+        const files: { file: File; ask: string }[] = []
+        if (!error) {
+          for (const ask of asked) {
+            const f = form.get(`file_${ask.key}`)
+            if (f instanceof File && f.size > 0) files.push({ file: f, ask: ask.key })
+          }
+          // The ungated box. These genuinely have no rule behind them, and
+          // 'other' is the honest answer rather than a guess.
+          for (const f of form.getAll('file_other')) {
+            if (f instanceof File && f.size > 0) files.push({ file: f, ask: '' })
+          }
+          if (files.length > 6) {
+            error = 'That is a lot at once. Send the important ones and ask for another link.'
+          }
+        }
+
+        if (!error && Object.keys(payload).length === 0 && files.length === 0) {
+          error = 'Fill in at least one date, or add a photo, before you send.'
+        }
+
+        // The objects go to R2 BEFORE the row exists, so a failure leaves files
+        // nobody references rather than a row pointing at nothing. The Worker
+        // writes them on its own binding: no anonymous credential touches
+        // storage, and nothing sent here can be read back through this page.
+        const keys: string[] = []
+        if (!error && files.length > 0) {
+          const bucket = await documentBucket()
+          if (!bucket) {
+            error = 'We could not save that photo just now. Try sending the dates on their own.'
+          } else {
+            for (const { file, ask } of files) {
+              if (file.size > MAX_UPLOAD_BYTES) {
+                error = `One of those is over ${MAX_UPLOAD_LABEL}. Take a new photo.`
+                break
+              }
+              const bytes = new Uint8Array(await file.arrayBuffer())
+              // The magic bytes, never the filename and never the Content-Type
+              // the browser claimed. The predecessor trusted that header and
+              // derived the stored extension from it.
+              const check = checkFile({
+                name: file.name,
+                size: bytes.byteLength,
+                head: bytes.slice(0, 32),
+              })
+              if (!check.ok) {
+                error = check.message
+                break
+              }
+              const key = newSubmissionKey(check.type.ext)
+              await bucket.put(key, bytes, {
+                httpMetadata: { contentType: check.type.mime, contentDisposition: 'attachment' },
+                // THE NAME RIDES ON THE OBJECT. It has to reach the accept step
+                // somehow, and the two channels that already exist cannot carry
+                // it: `payload` is narrowed to the asked-for keys by 0036, and
+                // `storage_keys` is a validated key shape. R2 metadata needs no
+                // migration and no second column, and it is thrown away with
+                // the staged object if the owner rejects.
+                //
+                // `safeFileName` first: a filename is attacker-controlled, and
+                // this one is typed on a phone by somebody with no account.
+                customMetadata: { name: safeFileName(file.name) ?? 'photo', ask },
+              })
+              keys.push(key)
+            }
+          }
+        }
+
+        if (!error) {
+          // Spends the link and records the claim in ONE statement, so a link
+          // withdrawn between the read above and this line writes nothing.
+          const { data: id } = await db.rpc('driver_link_submit', {
+            p_token: token,
+            p_payload: payload,
+            p_keys: keys,
+            p_ip_hash: caller,
+          })
+          if (id) done = true
+          else error = DEAD
+        }
+      }
+    }
+  }
+}
+
+if (shaped && !done) view = await readLink()
+
+const asked = view ? DRIVER_ASKS.filter((a) => view.asks.includes(a.key)) : []
+const title = done ? 'Sent' : view ? 'Send your details' : 'Link not active'
+const field = 'field-input mt-1 w-full'
+---
+
+<Driver title={title}>
+  {
+    done ? (
+      <div role="status">
+        <h1 class="text-2xl font-semibold tracking-tight">
+          Thanks{sentName ? `, ${sentName}` : ''}
+        </h1>
+        <p class="mt-2 text-ink-700">
+          That has gone to the office. There is nothing else to do — you can close this page. This
+          link will not open again.
+        </p>
+      </div>
+    ) : !view ? (
+      <div>
+        <h1 class="text-2xl font-semibold tracking-tight">This link is not active</h1>
+        <p class="mt-2 text-ink-700">{DEAD}</p>
+      </div>
+    ) : (
+      <>
+        <h1 class="text-2xl font-semibold tracking-tight">Hi {view.first_name}</h1>
+        <p class="mt-2 text-ink-700">
+          Your office needs a couple of details. Type the date printed on each card, and add a photo
+          if you can. That is the whole job.
+        </p>
+
+        {error && <p class="mt-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+
+        <form method="POST" enctype="multipart/form-data" class="mt-6 space-y-5">
+          {asked.map((ask) => (
+            <fieldset class="rounded-xl border border-ink-100 bg-white p-4">
+              <legend class="px-1 text-sm font-semibold tracking-tight">{ask.driverLabel}</legend>
+
+              {/* The question follows the paper. Three of the six carry the day
+                  the thing HAPPENED, not an expiry, and asking a man to read an
+                  "expiry" off an assessment form gets the wrong date or a phone
+                  call to the office. */}
+              <label class="field-label mt-2 block" for={`date_${ask.key}`}>
+                {ask.dateLabel}
+              </label>
+              <input
+                type="date"
+                id={`date_${ask.key}`}
+                name={`date_${ask.key}`}
+                class={`${field} tabular-nums`}
+              />
+              <span class="field-hint block">{ask.hint}</span>
+
+              {/* Said out loud so he does not assume the office is missing it. A
+                  yes or no, never the date — that would be reading his own file
+                  off a forwarded link. */}
+              {view?.on_file.includes(ask.key) && (
+                <span class="field-hint block">
+                  The office has one already. Send it again only if it changed.
+                </span>
+              )}
+
+              <label class="field-label mt-4 block" for={`file_${ask.key}`}>
+                {ask.photoLabel}
+              </label>
+              <input
+                type="file"
+                id={`file_${ask.key}`}
+                name={`file_${ask.key}`}
+                accept={ACCEPT_ATTRIBUTE}
+                capture="environment"
+                class="mt-1 block w-full text-sm"
+              />
+              <span class="field-hint block">
+                Not required. A clear photo helps the office check the date.
+              </span>
+            </fieldset>
+          ))}
+
+          {/*
+            ALWAYS OFFERED, never gated on what was asked for. The whole point is
+            that the driver knows about something the office did not think to ask
+            for — a new insurance card, a certificate from a class he just took.
+            The office asks for two dates; his filing cabinet is a camera roll.
+          */}
+          <fieldset class="rounded-xl border border-ink-100 bg-white p-4">
+            <legend class="px-1 text-sm font-semibold tracking-tight">Anything else to send?</legend>
+            <label class="field-label mt-2 block" for="file_other">
+              Photos or papers
+            </label>
+            <input
+              type="file"
+              id="file_other"
+              name="file_other"
+              multiple
+              accept={ACCEPT_ATTRIBUTE}
+              class="mt-1 block w-full text-sm"
+            />
+            <span class="field-hint block">
+              Photos or PDFs, up to {MAX_UPLOAD_LABEL} each. The office files these on your record.
+            </span>
+          </fieldset>
+
+          <div>
+            <button type="submit" class="btn btn-primary w-full">
+              Send to the office
+            </button>
+            <p class="mt-3 text-sm text-ink-700">
+              You can only send once, so check it before you tap. Nothing changes on your record
+              until the office looks at it.
+            </p>
+          </div>
+        </form>
+      </>
+    )
+  }
+</Driver>

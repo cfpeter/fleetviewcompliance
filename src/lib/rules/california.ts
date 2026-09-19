@@ -49,6 +49,41 @@ function intrastate(ctx: RuleContext): Applicability {
   return ctx.carrierOperation !== 'A'
 }
 
+/**
+ * A POSITIVE intrastate code, and nothing else. Used by one rule: the medical
+ * certificate below. Read the whole comment before changing it.
+ *
+ * Every other rule in this file uses `intrastate` above, which answers
+ * 'unknown' for a carrier whose operation code we have not got and therefore
+ * fails open. This one deliberately does not, and the reason is that the
+ * federal medical rules and this rule are two halves of ONE partition rather
+ * than two independent gates:
+ *
+ *   carrierOperation 'A'        federal medical rules fire, this one does not
+ *   carrierOperation 'B' / 'C'  this one fires, the federal ones do not
+ *   carrierOperation undefined  the federal ones fire ('unknown' fails open)
+ *
+ * `interstateDriver` in ./federal-driver.ts is what makes the third line true:
+ * it answers 'unknown' on a missing code, so an unasked question still leaves
+ * the driver's certificate tracked. Answering 'unknown' here as well would put
+ * TWO rows about the same card on every driver whose carrier has no code on
+ * file — every carrier that signed up before 0031 added `carriers.
+ * carrier_operation`, until the backfill or the settings form fills it — and
+ * two rows disagreeing about one certificate in an audit binder is the
+ * double-count that ./federal-driver.ts already refuses once for the exam-date
+ * rule.
+ *
+ * So this returning `false` on a missing code is not an exemption and must not
+ * be read as one. It is this half of the partition standing aside while the
+ * other half covers that case. The moment the federal gate stops failing open,
+ * this becomes a hole with a driver in it — which is why the partition is
+ * asserted directly in tests/rules-california.test.ts, over every value the
+ * code can take, rather than left to the two files to keep in step by hand.
+ */
+function intrastateOnly(ctx: RuleContext): Applicability {
+  return ctx.carrierOperation === 'B' || ctx.carrierOperation === 'C'
+}
+
 /** The rule rows' `fn` names, kept next to the functions that satisfy them. */
 const CTC_VIS_FN = 'carb_ctc_vis_listing_current'
 const BIT_TERMINAL_FN = 'chp_bit_terminal_selection'
@@ -128,6 +163,139 @@ registerCaliforniaSchedules()
 
 export const californiaRules: RuleDefinition[] = [
   // ---------------------------------------------------------------------------
+  // The medical certificate for a driver the federal rules do not reach
+  // ---------------------------------------------------------------------------
+  {
+    /**
+     * THE GAP THIS CLOSES, AND WHY IT IS THE ONE WITH A SAFETY EDGE.
+     *
+     * All five federal medical rules in ./federal-driver.ts gate on
+     * `interstateDriver`, which returns `false` for a carrier whose operation
+     * code is 'B' or 'C'. This file carried no replacement. So an intrastate
+     * carrier got NO medical certificate tracking of any kind — and because
+     * src/lib/dispatch/eligibility.ts blocks a dispatch on exactly those five
+     * rule codes, the block for an expired card could never fire for him
+     * either. A driver with a lapsed certificate was dispatched with nothing
+     * said. The federal file's own comment predicted this: it says returning
+     * `false` for an intrastate carrier "is only safe because the CA ruleset is
+     * expected to carry the intrastate analogue of the medical card".
+     *
+     * THIS IS NOT THE FEDERAL RULE WITH THE WORD CHANGED. California's
+     * requirement sits on the DRIVER'S LICENCE, not on the carrier's operation,
+     * and it is statutory rather than adopted from 49 CFR 391.45:
+     *
+     *  - The authority is Veh. Code 12804.9, NOT Veh. Code 34501 and not the
+     *    CHP regulations in 13 CCR Chapter 6.5. 34501(a)(1) lists what CHP may
+     *    regulate — testing, hours of service, equipment, inspection,
+     *    recordkeeping, accident reports — and driver medical qualification is
+     *    not among them.
+     *  - The cadence is two years, and it is TWO separate two-year clocks:
+     *    12804.9(a)(2)(A) requires the examination report to have been "given
+     *    not more than two years before the date of the application", and
+     *    12804.9(c) separately requires a certificate "issued within two years
+     *    of the date of the operation of that vehicle".
+     *  - WHO IS COVERED IS WIDER THAN THE CDL. 12804.9(a)(2)(A) reaches "a
+     *    class A or class B driver's license, or class C driver's license with
+     *    a commercial endorsement" — which takes in non-commercial class A and
+     *    B holders too. So this rule deliberately does NOT gate on `ctx.cdl`
+     *    the way the Part 382 rules do.
+     *  - THE CERTIFICATE HAS TO BE FILED, not merely held. 12804.9(c) requires
+     *    the certificate and "a copy of the medical examination report from
+     *    which the certificate was issued" to be "on file with the department".
+     *    A perfect card in the driver's folder and nothing sent to the DMV is
+     *    the California failure mode, and it has no federal equivalent.
+     *  - The examiner list in the statute is wider than the federal one:
+     *    doctors of medicine, doctors of osteopathy, physician assistants,
+     *    registered advanced practice nurses, and doctors of chiropractic who
+     *    are clinically competent. The statute names no National Registry
+     *    requirement. This row does NOT tell an owner that any of those will
+     *    do, because 13 CCR 28.18 brings 49 CFR 391.41 in as the physical
+     *    standard and 49 CFR 391.43 federally requires a National Registry
+     *    examiner. Those two readings are in tension and nobody here has
+     *    resolved it, so `evidence` below states the safe practice and says
+     *    that the wider list is the statute's, not our advice.
+     *
+     * WHAT IS DELIBERATELY NOT IN THIS ROW, because it could not be confirmed:
+     *  - Form DL 51. Trade sources describe it as California's own commercial
+     *    medical examination report. No current page on dmv.ca.gov names it,
+     *    and the DMV's live medical examination page names only MCSA-5875 and
+     *    MCSA-5876. Treated as superseded; not cited, because "superseded" is
+     *    an inference from its absence rather than something we read.
+     *  - Form DL 51B, the "intrastate restricted" certificate. No primary
+     *    source found at all. Not cited.
+     *  - The 13 CCR 28.19 state-issued restricted certificate for a driver who
+     *    fails a federal physical standard but may still drive intrastate. The
+     *    regulation is real and was read, but its shorter certificate terms are
+     *    reported only by trade sources and its own subsection (b) has a
+     *    transcription problem in the mirror it was read from. A separate rule,
+     *    once somebody reads it on the official CCR.
+     *  - Any downgrade TIMELINE. 12804.9(c) states no grace period, no notice
+     *    and no number of days. The federal 60-day CDL downgrade is a different
+     *    mechanism on a different population and is not asserted here.
+     *
+     * Verified 2026-09-18 against leginfo.legislature.ca.gov (the statute) and
+     * dmv.ca.gov (the filing channel). `verifiedBy`/`verifiedOn` stay unset, as
+     * everywhere else in this catalogue: reading a primary source is not the
+     * same as a qualified person signing off.
+     */
+    code: 'ca_intrastate_medical_certificate',
+    title: 'Medical certificate — California intrastate driver',
+    jurisdiction: 'CA',
+    /**
+     * `based`. The obligation attaches to a California commercial driver
+     * licence, and `RuleContext` has no field for where a DRIVER is licensed —
+     * src/lib/deadlines.ts puts the CARRIER's state on every driver subject.
+     * So this reaches the drivers of a California-based carrier, which is who
+     * the product sells to, and misses a California-licensed driver working for
+     * an out-of-state carrier. Stated rather than hidden. `employs` would catch
+     * that driver and would also show a Texas carrier with Texas drivers a
+     * California Vehicle Code row, which is the exact failure `nexus` exists to
+     * stop.
+     */
+    nexus: 'based',
+    subject: 'driver',
+    citation: 'Veh. Code 12804.9(a)(2)(A), (c)',
+    sourceUrl:
+      'https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=VEH&sectionNum=12804.9',
+    /**
+     * `expiry` on the SAME anchor the federal general rule uses, on purpose.
+     *
+     * The printed date governs and the owner types it once, whichever half of
+     * the partition his carrier falls in — one question on one screen, one
+     * `compliance_records.anchor_key`, no second field that can disagree with
+     * the first. It also inherits the reasoning in ./federal-driver.ts: an
+     * examiner may certify for any period up to the ceiling, three-month and
+     * one-year cards are routine, and encoding the ceiling as the schedule
+     * would be up to 21 months too generous for exactly the drivers a doctor
+     * was worried about.
+     *
+     * No interval, so there is no cycle to step: the next date is read off the
+     * next certificate, and until one exists the honest answer is `missing_data`.
+     */
+    recurrence: { type: 'expiry', anchor: 'medical_certificate_expires' },
+    // The statutory ceiling in 12804.9(a)(2)(A) and (c). A card printed longer
+    // than this is not a late reminder, it is an invalid certificate.
+    maxTermMonths: 24,
+    // 90 days for the same reason as the federal card: a physical is an
+    // appointment, not an errand, and California adds a filing step after it.
+    warningDays: [90, 45, 14, -1],
+    evidence:
+      'The examination report (MCSA-5875) and the certificate (MCSA-5876) — California ' +
+      'uses the federal forms. THE PART PEOPLE MISS: both have to be ON FILE WITH THE ' +
+      'DMV, not just in your driver file. An intrastate (NA) driver still sends paper — ' +
+      "in person, by mail, or by email to the DMV's Virtual Field Office. Use an examiner " +
+      'on the FMCSA National Registry. Veh. Code 12804.9 itself allows a wider list, but ' +
+      'the physical standard California applies is the federal one, and nobody here has ' +
+      'settled which reading wins — the Registry is the answer that is safe either way.',
+    consequence:
+      'His licence stops being good for your truck. It keeps working only for an ordinary ' +
+      'car. Veh. Code 12804.9(c) gives no grace days and sends no warning: it happens on ' +
+      'the day the two years are up.',
+    impact: 'driver',
+    applies: intrastateOnly,
+  },
+
+  // ---------------------------------------------------------------------------
   // CARB Clean Truck Check (Heavy-Duty Inspection and Maintenance)
   // ---------------------------------------------------------------------------
   {
@@ -172,6 +340,7 @@ export const californiaRules: RuleDefinition[] = [
     evidence: 'Passing OBD or smoke-opacity/ECS test report filed to the CTC account',
     consequence:
       'DMV registration hold under SB 210, placed automatically; roadside and port enforcement',
+    impact: 'truck',
     /**
      * Scope is GVWR over 14,000 lb, non-gasoline, including out-of-state plates
      * operating in California. RuleContext carries no fuel type, so a heavy
@@ -207,6 +376,7 @@ export const californiaRules: RuleDefinition[] = [
     warningDays: [60, 30, 14, -1, -7],
     evidence: 'Paid fee receipt in the CARB Clean Truck Check account',
     consequence: 'Vehicle reads non-compliant; DMV registration hold; certificate denied',
+    impact: 'truck',
     applies: (ctx) => {
       if (ctx.gvwrLbs === undefined) return 'unknown'
       return ctx.gvwrLbs > 14_000
@@ -236,6 +406,15 @@ export const californiaRules: RuleDefinition[] = [
     consequence:
       'Fees and deadlines keep running against a vehicle you sold; a bought vehicle sits ' +
       'unreported and non-compliant',
+    /**
+     * `truck`, NOT `money`, and this is one of the places where
+     * docs/product/DATE-PRIORITY.md § 5.1 disagrees with the sentence directly
+     * above it. That sentence reads like bookkeeping. The chain is worse: a
+     * truck bought and never listed in CTC-VIS cannot pass Clean Truck Check,
+     * and a Clean Truck Check failure is an automatic DMV registration hold, so
+     * the truck cannot be registered and cannot run. The document wins.
+     */
+    impact: 'truck',
     applies: (ctx) => {
       if (ctx.gvwrLbs === undefined) return 'unknown'
       return ctx.gvwrLbs > 14_000
@@ -271,10 +450,26 @@ export const californiaRules: RuleDefinition[] = [
      * months is 92 days — two days LATE. Day-granularity intervals are the fix
      * and are reported; until then, treat the shown date as the outside edge.
      */
-    recurrence: { type: 'rolling', anchor: 'bit_last_inspection', intervalMonths: 3 },
+    // 90 DAYS, not three months. The cycle is a count of days (13 CCR 1234),
+    // and three calendar months is up to two days longer — so the app told an
+    // owner inspected on 20 Aug that he had until 20 Nov when the law says
+    // 18 Nov. The error ran in the dangerous direction: it gave him time he did
+    // not have.
+    recurrence: { type: 'rolling', anchor: 'bit_last_inspection', intervalDays: 90 },
     warningDays: [30, 14, 7, -1, -7],
     evidence: 'Dated inspection record per unit, retained and available at the terminal',
     consequence: 'Unsatisfactory terminal rating and CHP-initiated MCP suspension',
+    /**
+     * `money`, NOT `company`, and docs/product/DATE-PRIORITY.md § 5.4 disagrees
+     * with the sentence above on the SPEED, not on the end state. One missed
+     * 90-day inspection suspends no permit. A pattern of them, found whenever
+     * CHP chooses to visit, is what reaches the suspension the sentence names.
+     * The document ranks the individual row at tier 3 and the AGGREGATE much
+     * higher, which is why its § 3.6 asks for a per-truck counter rather than a
+     * louder row. A per-row `impact` cannot express an aggregate, so the row
+     * takes the row's rank.
+     */
+    impact: 'money',
     /**
      * At or above 26,001 lb the 90-day cycle is certain. BELOW it we return
      * 'unknown' rather than false: CVC 34500 also reaches lighter trucks pulling
@@ -312,6 +507,7 @@ export const californiaRules: RuleDefinition[] = [
     warningDays: [],
     evidence: 'Terminal designated on the MCP, with vehicles, drivers and records available there',
     consequence: 'Unsatisfactory rating, re-inspection fees, and MCP suspension initiated by CHP',
+    impact: 'money',
   },
 
   // ---------------------------------------------------------------------------
@@ -341,6 +537,7 @@ export const californiaRules: RuleDefinition[] = [
     consequence:
       'Operating without a valid MCP; delinquency penalties from +60% at 31 days to +160% ' +
       'after two years',
+    impact: 'company',
     /**
      * THE MOST EXPENSIVE FALSE POSITIVE IN THE CALIFORNIA SET.
      *
@@ -384,6 +581,7 @@ export const californiaRules: RuleDefinition[] = [
     warningDays: [60, 30, 14, 7, -1],
     evidence: 'Current registration card, CVRA and ACTM year stickers, weight decal on the unit',
     consequence: 'Expired registration, citation and impound exposure; PYR does not cure a lapse',
+    impact: 'truck',
     /**
      * CVRA fees replace weight fees at GVW/CGW of 10,001 lb and above. Below
      * that a truck pays ordinary registration, so false here is safe to assert.
@@ -422,12 +620,18 @@ export const californiaRules: RuleDefinition[] = [
      * filing, and the penalty is $50 or 10% of net tax due, whichever is greater
      * — so it bites a carrier who owes nothing at all.
      */
-    recurrence: { type: 'fixed_calendar', months: [1, 4, 7, 10], day: 'last' },
+    // `rollWeekend` because the return is due the next business day when the
+    // last of the month is a Saturday or Sunday — which 31 Oct 2026 and
+    // 31 Jan 2027 both are. The IFTA screens already rolled (returnDueOn in
+    // src/lib/ifta/compute.ts); this rule did not, so one return carried two
+    // due dates depending on which page the owner was reading.
+    recurrence: { type: 'fixed_calendar', months: [1, 4, 7, 10], day: 'last', rollWeekend: true },
     warningDays: [30, 14, 7, 1, -1, -7],
     evidence: 'Filed quarterly return confirmation from CDTFA online services',
     consequence:
       '$50 or 10% of net tax due, whichever is greater, plus per-jurisdiction interest; CDTFA ' +
       'bills on industry-average MPG with your fuel-tax credits excluded',
+    impact: 'money',
     // A carrier that never leaves California cannot hold an IFTA licence and has
     // nothing to file. Unknown operation still tracks the deadline.
     applies: interstate,
@@ -459,6 +663,7 @@ export const californiaRules: RuleDefinition[] = [
     consequence:
       'No valid licence for the new year; prior-year decals stop being honoured and the ' +
       'February grace period does not apply to an unfiled renewal',
+    impact: 'money',
     applies: interstate,
   },
   {
@@ -485,6 +690,7 @@ export const californiaRules: RuleDefinition[] = [
     warningDays: [30, 14, 7, -1],
     evidence: 'Current-year decals affixed to both cab doors; new licence carried in the cab',
     consequence: 'Roadside citation for running on expired credentials once the grace period ends',
+    impact: 'money',
     applies: interstate,
   },
 
@@ -523,6 +729,7 @@ export const californiaRules: RuleDefinition[] = [
     consequence:
       'Apportioned plates expire; billing balance is due within 20 days of the invoice date; ' +
       'only a Certificate of Non-Operation filed within 90 days waives penalties',
+    impact: 'truck',
     // Apportioned registration is for vehicles based in CA and operated in at
     // least one other jurisdiction. Intrastate-only carriers register normally.
     applies: interstate,
@@ -561,6 +768,7 @@ export const californiaRules: RuleDefinition[] = [
     warningDays: [30, 14, 7, -1, -14],
     evidence: 'Signed Form 300A posted in a visible common area; the 300 log retained 5 years',
     consequence: 'Cal/OSHA citation for the posting violation, independent of the injury record',
+    impact: 'audit',
   },
   {
     code: 'ca_harassment_training',
@@ -588,6 +796,7 @@ export const californiaRules: RuleDefinition[] = [
     warningDays: [60, 30, 14, -1, -30],
     evidence: 'Per-person training certificate with date and duration, retained 2 years',
     consequence: 'CRD enforcement; the failure becomes evidence in any harassment claim',
+    impact: 'audit',
   },
   {
     code: 'ca_wvpp_annual_review',
@@ -612,6 +821,7 @@ export const californiaRules: RuleDefinition[] = [
     warningDays: [60, 30, 14, -1, -30],
     evidence: 'Dated plan revision with the violent-incident log and the review record',
     consequence: 'Cal/OSHA citation; the plan is the first document requested after an incident',
+    impact: 'audit',
   },
   {
     code: 'ca_wvpp_annual_training',
@@ -636,5 +846,6 @@ export const californiaRules: RuleDefinition[] = [
     warningDays: [60, 30, 14, -1, -30],
     evidence: 'Per-person training record with date, trainer and topics covered',
     consequence: 'Cal/OSHA citation; untrained staff after an incident is the aggravating fact',
+    impact: 'audit',
   },
 ]

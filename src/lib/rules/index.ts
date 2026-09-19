@@ -8,7 +8,7 @@ import { type Standing, type Status, status } from './compute.ts'
 import { daysBetween, toUtcMidnight } from './dates.ts'
 import { federalCarrierRules } from './federal-carrier.ts'
 import { federalDriverRules } from './federal-driver.ts'
-import type { RuleContext, RuleDefinition, Subject } from './types.ts'
+import type { Impact, RuleContext, RuleDefinition, Subject } from './types.ts'
 
 export const allRules: readonly RuleDefinition[] = [
   ...federalDriverRules,
@@ -52,13 +52,54 @@ const STANDING_RANK: Record<Standing, number> = {
   not_applicable: 4,
 }
 
+/**
+ * How bad a lapse is, for ordering INSIDE a standing. See `RuleDefinition.impact`.
+ *
+ * This is the second key and it can never become the first. Standing answers
+ * "is this wrong today?"; impact answers "and how much does it cost?". A green
+ * insurance filing must not outrank an overdue records item just because
+ * insurance is the more serious obligation — it is not wrong today.
+ */
+const IMPACT_RANK: Record<Impact, number> = {
+  company: 0,
+  driver: 1,
+  truck: 2,
+  money: 3,
+  audit: 4,
+  record: 5,
+}
+
 export function compareDeadlines(a: DeadlineItem, b: DeadlineItem): number {
   const rank = STANDING_RANK[a.status.standing] - STANDING_RANK[b.status.standing]
   if (rank !== 0) return rank
 
-  // Within a standing, soonest first. Rows with no date sort last among their
-  // peers rather than first — an item we cannot date is not more urgent than a
-  // dated one in the same bucket.
+  // SECOND, what a lapse stops. Inside one standing, an expired medical
+  // certificate comes before a retention floor however many days each is past,
+  // because 200 days late on a record you may not shred yet is not worse than
+  // one day late on the card that lets a man drive.
+  //
+  // Placed ABOVE the day count on purpose, and this is the whole of B2. Days
+  // late measures how long we have been wrong, not how much being wrong costs,
+  // and the retention rows accumulate days faster than anything else in the
+  // catalogue precisely because nothing happens when they do.
+  //
+  // `?? record` guards the one shape the type system cannot reach: a
+  // DeadlineItem built by a test or a caller from a partial rule object. It is
+  // the bottom of the ranking, so an unrecognised value sorts last rather than
+  // jumping the queue. Every real rule carries a value and a test asserts it.
+  const impact =
+    (IMPACT_RANK[a.rule.impact] ?? IMPACT_RANK.record) -
+    (IMPACT_RANK[b.rule.impact] ?? IMPACT_RANK.record)
+  if (impact !== 0) return impact
+
+  // THIRD, soonest first. Rows with no date sort last among their peers rather
+  // than first — an item we cannot date is not more urgent than a dated one in
+  // the same bucket.
+  //
+  // Note what this is NOT: a bucketing decision. An overdue INTERVAL rule can
+  // carry a POSITIVE `daysUntil` — the cycle it missed is behind it and the
+  // next one is ahead — so a consumer that split overdue from current on the
+  // sign of this number would file it as fine. Standing did that, above.
   const ad = a.daysUntil ?? Number.POSITIVE_INFINITY
   const bd = b.daysUntil ?? Number.POSITIVE_INFINITY
   if (ad !== bd) return ad - bd

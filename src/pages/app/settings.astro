@@ -36,6 +36,9 @@
 import ErrorSummary from '../../components/ui/ErrorSummary.astro'
 import App from '../../layouts/App.astro'
 import { formText, formatDate, todayInCalifornia } from '../../lib/drivers.ts'
+// The three "how you operate" facts: the same shape the census fills at signup,
+// so the settings form and the federal record write the same columns.
+import { operationAnswer, operationAnswers, operationFromAnswers } from '../../lib/fmcsa.ts'
 import {
   DEFAULT_LEAD_DAYS,
   NOTIFY_CATEGORIES,
@@ -60,12 +63,79 @@ const carrierId = Astro.locals.carrierId!
 const userId = Astro.locals.userId!
 
 /**
+ * ONE PAGE THAT WAS FOUR PAGES.
+ *
+ * This screen held eight sections and 2,200 lines of markup in one column: the
+ * owner's name, his password, his USDOT number, a nine-box notification matrix,
+ * quiet hours, snoozes and a log of every message we ever sent him. In his
+ * words: "the setting page is too much to scroll and update changes". He was
+ * right — on a phone the Save button for his own phone number was eight
+ * screens above the Save button for quiet hours, and nothing told him which
+ * one he was about to press.
+ *
+ * So the sections are grouped by WHO OR WHAT they are about — you, the
+ * company, what we send, what we sent — and only the group he asked for is
+ * rendered. Four short pages instead of one long one.
+ *
+ * NO SCRIPT, AND NOT A `#fragment`. The tab is a query parameter because a
+ * fragment never reaches the server and this page has to render the right
+ * group on the server. Each tab is a plain link; the strip is `.filter-tab` /
+ * `.is-current`, the same selected pill the rest of the app uses, so it is
+ * navigation a screen reader can already read and not a `role="tablist"` that
+ * would need arrow-key handling this app has no JavaScript to provide.
+ *
+ * WHY THE FORMS DID NOT HAVE TO CHANGE. Not one of them carries an `action`,
+ * so each POSTs to the address of the page it is standing on — which now
+ * carries `?tab=`. The server reads the tab back off that, and `back()` below
+ * puts it in the 303, so a save returns to the group the person was working
+ * in rather than dropping them at the top of the page.
+ */
+const TABS = [
+  {
+    id: 'you',
+    label: 'You',
+    subtitle: 'Your name, your phone, your email and your password.',
+  },
+  {
+    id: 'company',
+    label: 'Company',
+    subtitle: 'Your USDOT number, how your company operates, and who can sign in.',
+  },
+  {
+    id: 'alerts',
+    label: 'Alerts',
+    subtitle: 'Who gets told what, quiet hours, and anything you snoozed.',
+  },
+  {
+    id: 'messages',
+    label: 'Messages',
+    subtitle: 'Every email and text we sent you, and what became of it.',
+  },
+] as const
+type TabId = (typeof TABS)[number]['id']
+
+/**
+ * The group being shown. Anything we do not recognise falls back to the first
+ * one rather than being echoed anywhere — the same reason `?error=` on this
+ * page carries codes and not text.
+ */
+const current = TABS.find((t) => t.id === Astro.url.searchParams.get('tab')) ?? TABS[0]
+const tab: TabId = current.id
+
+/**
  * Every POST branch leaves through here. 303, never the 302 that
  * `Astro.redirect` defaults to: a 302 permits the browser to repeat the POST at
  * the new location, so a refresh after un-snoozing would try to delete the row
  * again — and after a save it would re-send the whole matrix.
  */
-const back = (query = '') => Astro.redirect(`/app/settings${query}`, 303)
+/**
+ * THE TAB TRAVELS WITH THE REDIRECT. Without it every save landed back on the
+ * first group, so changing quiet hours bounced the reader to the top of the
+ * account form and the confirmation he needed to read was on a page he was no
+ * longer looking at.
+ */
+const back = (query = '') =>
+  Astro.redirect(`/app/settings?tab=${tab}${query ? `&${query}` : ''}`, 303)
 /**
  * Failures travel as CODES, never as text.
  *
@@ -84,7 +154,7 @@ const back = (query = '') => Astro.redirect(`/app/settings${query}`, 303)
  * it and focuses it, and each line inside it is a link to the box it is about.
  * A fragment never reaches the server, so the destination is unchanged.
  */
-const fail = (code: string) => back(`?error=${code}#form-errors`)
+const fail = (code: string) => back(`error=${code}#form-errors`)
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -217,7 +287,7 @@ if (Astro.request.method === 'POST') {
       .eq('id', userId)
 
     if (error) return fail('save_failed')
-    return back('?saved=profile')
+    return back('saved=profile')
   }
 
   // ----------------------------------------------------- sign-in email
@@ -265,7 +335,7 @@ if (Astro.request.method === 'POST') {
     // distinction turns this form into a way of asking whether a given person is
     // a customer here. login.astro refuses to leak the same fact.
     if (error) return fail('email_failed')
-    return back('?saved=email_sent')
+    return back('saved=email_sent')
   }
 
   // -------------------------------------------------------- password
@@ -303,7 +373,7 @@ if (Astro.request.method === 'POST') {
     if (error) return fail('password_failed')
     // The session on this browser stays valid — Supabase refreshes it in place
     // — so nobody is thrown out of the page they just used.
-    return back('?saved=password')
+    return back('saved=password')
   }
 
   // -------------------------------------------------------- USDOT number
@@ -350,7 +420,51 @@ if (Astro.request.method === 'POST') {
     if (!updated || updated.length === 0) {
       return fail('dot_present')
     }
-    return back('?saved=dot')
+    return back('saved=dot')
+  }
+
+  // ------------------------------------------------- how the company operates
+
+  /**
+   * The owner's own answer to "which rules apply to me".
+   *
+   * Three questions, three columns (0031), one save. Every rule gate in
+   * src/lib/rules reads these off the carrier row, and until this form existed
+   * the only writer was the census row at signup — so an owner whose federal
+   * record was stale, or blank, had nowhere to say "that rule does not apply
+   * to me" (docs/product/REVIEW-2026-09-18.md § 2.1).
+   *
+   * "I'm not sure" stores NULL, and NULL keeps every gated rule on the board.
+   * The form never defaults an unanswered question to "no": the mapping in
+   * `operationFromAnswers` is the only place the three values are decided, and
+   * the test file pins it.
+   *
+   * `operation_source` is stamped 'owner' so the page can say whose answer is
+   * on file, and so the backfill script leaves this row alone.
+   */
+  if (intent === 'save_operation') {
+    const crossesStateLines = operationAnswer(form.get('crosses_state_lines'))
+    const forHire = operationAnswer(form.get('for_hire'))
+    const hazmat = operationAnswer(form.get('hazmat'))
+    if (!crossesStateLines || !forHire || !hazmat) return fail('operation_choice')
+
+    const { error: e } = await supabase
+      .from('carriers')
+      .update({
+        ...operationFromAnswers({ crossesStateLines, forHire, hazmat }),
+        operation_source: 'owner',
+      })
+      .eq('id', carrierId)
+    // PGRST204, naming one of the four columns, is 0031 not being applied here.
+    // It is NOT a transient failure and must not be reported as one — the
+    // difference between "try again in a moment" and "this is not switched on
+    // yet" is the difference between an owner pressing a button forty times and
+    // an owner who knows where he stands.
+    if (e) {
+      const notThere = /carrier_operation|for_hire|hazmat|operation_source/.test(e.message)
+      return fail(notThere ? 'operation_not_ready' : 'save_failed')
+    }
+    return back('saved=operation')
   }
 
   // ------------------------------------------------------------- the matrix
@@ -478,7 +592,7 @@ if (Astro.request.method === 'POST') {
       return fail('channels_failed')
     }
 
-    return back('?saved=alerts')
+    return back('saved=alerts')
   }
 
   // ------------------------------------------------------------- quiet hours
@@ -510,7 +624,7 @@ if (Astro.request.method === 'POST') {
       .eq('id', userId)
 
     if (error) return fail('save_failed')
-    return back('?saved=quiet')
+    return back('saved=quiet')
   }
 
   // ------------------------------------------------------------- un-snooze
@@ -531,7 +645,7 @@ if (Astro.request.method === 'POST') {
       .eq('id', snoozeId)
 
     if (error) return fail('save_failed')
-    return back('?saved=unsnoozed')
+    return back('saved=unsnoozed')
   }
 
   // An intent we do not recognise is a bug or a probe. Either way it must not
@@ -575,6 +689,44 @@ interface LogRow {
   /** What the provider says BECAME of it. See 0022 and notify/suppression.ts. */
   delivery_state: string
   delivery_detail: string | null
+  /**
+   * The provider's id for the ONE message these rows rode in. The digest logs a
+   * row per item so each item's dedup key is spent, which means one morning
+   * email with 22 items in it is 22 rows here — and printed one per row, the
+   * list said we sent 22 emails when we sent one.
+   */
+  provider_message_id: string | null
+}
+
+/** One line on screen: the message, and how many items it carried. */
+interface LogMessage {
+  row: LogRow
+  items: number
+}
+
+/**
+ * Rows folded into messages. Rows that share a provider id are one message;
+ * rows with no provider id (a refused send, a failure) are grouped by the
+ * second they were written, the address and the channel, which is how the job
+ * writes them. Order is kept: newest first, as the query returned them.
+ */
+function foldMessages(rows: readonly LogRow[]): LogMessage[] {
+  const out: LogMessage[] = []
+  const seen = new Map<string, LogMessage>()
+  for (const row of rows) {
+    const key = row.provider_message_id
+      ? `id:${row.provider_message_id}`
+      : `at:${row.sent_at}|${row.channel}|${row.destination}|${row.status}`
+    const hit = seen.get(key)
+    if (hit) {
+      hit.items += 1
+      continue
+    }
+    const entry = { row, items: 1 }
+    seen.set(key, entry)
+    out.push(entry)
+  }
+  return out
 }
 
 /**
@@ -594,6 +746,34 @@ interface MemberRow {
   joined_at: string
 }
 
+/**
+ * ONLY WHAT THIS TAB RENDERS.
+ *
+ * Every one of these ran on every view of this page, which meant somebody
+ * changing their phone number pulled 200 notification_log rows and the whole
+ * member list to draw a screen that shows neither. On a Worker that is not
+ * free: the subrequest budget is shared with everything else the request does,
+ * and the digest job already spends most of it.
+ *
+ * `carriers` and `profiles` are NOT gated — one row each, and between the
+ * timezone fallback, the quiet hours and the carrier name on a snooze they are
+ * read by more than one group. `skip` stands in for the rest with the shape the
+ * code below already handles: no rows, no error.
+ */
+const skip = <T,>(data: T) => Promise.resolve({ data, error: null })
+
+/**
+ * Whether the four columns behind "How your company operates" exist here.
+ *
+ * FALSE UNTIL 0031 IS APPLIED, and false is not a detail: the form below writes
+ * those columns, so every Save on it comes back "We could not save that just
+ * now. Try again in a moment." — a sentence that is not true, because no amount
+ * of trying again will make a column appear. This page's whole rule is that
+ * what it says is so; a control it cannot honour is not offered at all, and the
+ * reason is printed where the control was.
+ */
+let operationReady = true
+
 const [
   carrierResult,
   profileResult,
@@ -611,13 +791,35 @@ const [
     // `timezone` is selected because it is the fallback for a person who has not
     // chosen one: since 0010 `profiles.timezone` is nullable, and NULL means
     // "never chose" rather than "Pacific".
-    supabase
-      .from('carriers')
-      .select(
-        'legal_name, dba_name, dot_number, phy_street, phy_city, phy_state, phy_zip, timezone',
-      )
-      .eq('id', carrierId)
-      .maybeSingle(),
+    (async () => {
+      const full = await supabase
+        .from('carriers')
+        .select(
+          // One literal, not a concatenation: supabase-js types the row from the
+          // select string, and anything but a literal comes back as an error type.
+          'legal_name, dba_name, dot_number, phy_street, phy_city, phy_state, phy_zip, timezone, carrier_operation, for_hire, hazmat, operation_source',
+        )
+        .eq('id', carrierId)
+        .maybeSingle()
+      if (!full.error) return full
+
+      // UNTIL 0031 IS APPLIED the four operation columns do not exist, and
+      // naming them makes PostgREST refuse the whole select — which rendered
+      // the "Your carrier" block blank on the running dev server. Read the
+      // columns that do exist so the page still stands, and let the operation
+      // block say "we do not have these yet", which is true. The customer pages
+      // do the same for their invoice-date columns; the pattern is deliberate.
+      const base = await supabase
+        .from('carriers')
+        .select('legal_name, dba_name, dot_number, phy_street, phy_city, phy_state, phy_zip, timezone')
+        .eq('id', carrierId)
+        .maybeSingle()
+      operationReady = false
+      const data = base.data
+        ? { ...base.data, carrier_operation: null, for_hire: null, hazmat: null, operation_source: null }
+        : null
+      return { ...base, data: data as typeof full.data }
+    })(),
 
     // `email` is selected but never rendered as this person's address, and that
     // is deliberate: it is a mirror of `auth.users.email` (0027), and the
@@ -633,37 +835,53 @@ const [
     // to the CARRIER, so a colleague's preferences are legitimately visible here —
     // and rendering them as this person's settings would be a stranger's inbox
     // shown as your own.
-    supabase
-      .from('notification_preferences')
-      .select('category, channel, enabled')
-      .eq('user_id', userId),
+    tab === 'alerts'
+      ? supabase
+          .from('notification_preferences')
+          .select('category, channel, enabled')
+          .eq('user_id', userId)
+      : skip<PrefRow[]>([]),
 
     // Same reasoning for the user filter, same reason it is not optional.
-    supabase
-      .from('notification_category_preferences')
-      .select('category, lead_days, digest')
-      .eq('user_id', userId),
+    tab === 'alerts'
+      ? supabase
+          .from('notification_category_preferences')
+          .select('category, lead_days, digest')
+          .eq('user_id', userId)
+      : skip<CategoryPrefRow[]>([]),
 
     // Active only. A lapsed snooze is already doing nothing, and listing it would
     // make this section a growing pile of history with the live ones buried in it.
-    supabase
-      .from('notification_snoozes')
-      .select('id, rule_code, subject_type, subject_id, until, reason')
-      .gte('until', today)
-      .order('until', { ascending: true }),
+    tab === 'alerts'
+      ? supabase
+          .from('notification_snoozes')
+          .select('id, rule_code, subject_type, subject_id, until, reason')
+          .gte('until', today)
+          .order('until', { ascending: true })
+      : skip<SnoozeRow[]>([]),
 
-    supabase
-      .from('notification_log')
-      .select('sent_at, channel, destination, subject, status, error, delivery_state, delivery_detail')
-      .order('sent_at', { ascending: false })
-      .limit(20),
+    // 200 ROWS, not 20. A row is an item, not a message — one email carries
+    // many — and `foldMessages` below turns the rows into messages before the
+    // page counts to twenty. At 20 rows, one morning's email filled the whole
+    // list on its own.
+    tab === 'messages'
+      ? supabase
+          .from('notification_log')
+          .select(
+            'sent_at, channel, destination, subject, status, error, delivery_state, delivery_detail, provider_message_id',
+          )
+          .order('sent_at', { ascending: false })
+          .limit(200)
+      : skip<LogRow[]>([]),
 
     // The sign-in address, from the session rather than from `profiles`. The
     // whole point of the section below is that it names the address the login
     // page will accept, and only `auth.users` knows that.
-    supabase.auth.getUser(),
+    tab === 'you' ? supabase.auth.getUser() : skip({ user: null }),
 
-    supabase.rpc('carrier_members', { p_carrier_id: carrierId }),
+    tab === 'company'
+      ? supabase.rpc('carrier_members', { p_carrier_id: carrierId })
+      : skip<MemberRow[]>([]),
   ])
 
 const carrier = carrierResult.data
@@ -672,6 +890,7 @@ const prefRows = (prefsResult.data ?? []) as PrefRow[]
 const catPrefRows = (catPrefsResult.data ?? []) as CategoryPrefRow[]
 const snoozes = (snoozeResult.data ?? []) as SnoozeRow[]
 const log = (logResult.data ?? []) as LogRow[]
+const messages = foldMessages(log).slice(0, 20)
 
 const signInEmail = authResult.data.user?.email ?? ''
 const members = (membersResult.data ?? []) as MemberRow[]
@@ -899,6 +1118,10 @@ const ERRORS: Record<string, string> = {
   snooze_unknown: 'That snooze is not one of yours.',
   channels_failed: 'Your lead times were saved, but the channels were not. Try that part again.',
   save_failed: 'We could not save that just now. Try again in a moment.',
+  operation_choice: `Pick one answer for each of the three questions. "I'm not sure" is fine.`,
+  operation_not_ready:
+    'We cannot save these answers yet. This part is not switched on. Nothing changed, and we ' +
+    'keep showing you every rule until it is.',
 }
 
 // `Object.hasOwn`, not `ERRORS[code]`: a plain lookup answers `?error=toString`
@@ -934,6 +1157,7 @@ const ERROR_FIELD: Record<string, string> = {
   password_failed: 'new_password',
   quiet_pair: 'quiet_from',
   quiet_same: 'quiet_from',
+  operation_choice: 'crosses_state_lines_yes',
 }
 const errorField = error && errorCode ? (ERROR_FIELD[errorCode] ?? null) : null
 
@@ -963,7 +1187,21 @@ const savedMessage: Record<string, string> = {
   quiet: 'Quiet hours saved.',
   unsnoozed: 'Un-snoozed. That item is back in the alerts.',
   dot: 'USDOT number saved. Your federal record will start filling in the rest.',
+  operation: 'Saved. Your dashboard now shows only the rules that fit your answers.',
 }
+
+/**
+ * Which radio is checked in "How your company operates", from the stored
+ * columns. NULL → "I am not sure", so a carrier that signed up before 0031, or
+ * whose federal record left a box blank, sees the honest state and not a
+ * default answer somebody else picked for him.
+ */
+const operation = operationAnswers({
+  carrier_operation: carrier?.carrier_operation ?? null,
+  for_hire: carrier?.for_hire ?? null,
+  hazmat: carrier?.hazmat ?? null,
+})
+const operationSource: string | null = carrier?.operation_source ?? null
 
 const card = 'rounded-xl border border-ink-100 bg-white p-5'
 // The shared field construction. The local one it replaces was 40px tall and
@@ -1005,7 +1243,41 @@ const button = 'btn btn-primary'
 const help = 'field-hint block'
 ---
 
-<App title="Settings" subtitle="Your details, your password, and who gets told what.">
+<App title="Settings" subtitle={current.subtitle}>
+  {/*
+    FOUR LINKS, NOT A TABLIST. `role="tablist"` is a promise to handle arrow
+    keys, Home and End in script, and this app ships none — so the honest markup
+    for four addresses is four links inside a nav, which every screen reader and
+    every browser already knows how to work. `aria-current` is what says which
+    one you are on; the tint is the second signal, never the only one.
+
+    .filter-tab / .is-current are the same 44px pill the loads, drivers and
+    vehicle lists use, so the selected state here looks like the selected state
+    everywhere else. The strip does not stick: the header above it is already
+    fixed, and a second fixed bar was what made jump links land underneath the
+    first one.
+
+    IT WRAPS, IT DOES NOT SCROLL. The eleven-tab strips on the loads and drivers
+    lists scroll sideways behind a fade, because eleven tabs cannot wrap into
+    anything readable. Four can — and at 375px these four are 426px wide, so a
+    scrolling strip put "Messages" off the right edge with nothing on screen to
+    say it was there. Wrapping costs one 44px row on a phone and hides nothing,
+    at any font size, in any translation.
+  */}
+  <nav aria-label="Settings sections" class="mb-5 flex flex-wrap items-center gap-2">
+    {
+      TABS.map((t) => (
+        <a
+          href={`/app/settings?tab=${t.id}`}
+          aria-current={t.id === tab ? 'page' : undefined}
+          class:list={['filter-tab shrink-0', t.id === tab && 'is-current']}
+        >
+          {t.label}
+        </a>
+      ))
+    }
+  </nav>
+
   {/* The designed error state. `fail()` redirects to this box's id, so the
       browser scrolls to it and focuses it with no script running, and the line
       inside is a link to the box the refusal is about — which matters here,
@@ -1019,1002 +1291,1191 @@ const help = 'field-hint block'
     )
   }
 
-  {/* ======================================================== your account */}
+  {tab === 'you' && (
+    <Fragment>
+      {/* ======================================================== your account */}
 
-  <section>
-    <h2 class="text-lg font-semibold tracking-tight">Your account</h2>
-    <p class="mt-1 max-w-3xl text-sm text-ink-500">
-      This is you, not the company. Everyone who signs in has their own name, phone, email and
-      password.
-    </p>
-
-    <div class="mt-3 grid items-start gap-4 lg:grid-cols-2">
-      <form method="POST" class={card}>
-        <h3 class="text-sm font-semibold tracking-tight">Your details</h3>
-
-        <div class="mt-3">
-          <label class="field-label" for="full_name">Your name</label>
-          <input
-            type="text"
-            id="full_name"
-            name="full_name"
-            value={profile?.full_name ?? ''}
-            autocomplete="name"
-            class={field}
-            aria-describedby="full_name-hint"
-          />
-          <span class={help} id="full_name-hint">You can leave this blank.</span>
-        </div>
-
-        <div class="mt-3">
-          <label class="field-label" for="phone">Your phone</label>
-          {/*
-            Shown the way a person reads it, stored as E.164. The two are
-            deliberately different, and the save compares what was typed against
-            what this box DISPLAYED — see `parsePhoneEdit` — so an old number
-            nobody touched is never the reason a name will not save.
-          */}
-          <input
-            type="tel"
-            id="phone"
-            name="phone"
-            value={formatPhone(profile?.phone)}
-            placeholder="(818) 334-0168"
-            autocomplete="tel"
-            class={`${field} tabular-nums`}
-            {...invalid('phone')}
-          />
-          {
-            errorField === 'phone' && (
-              <p class="field-error" id="phone-error">
-                <span aria-hidden="true">⚠</span>
-                <span>{error}</span>
-              </p>
-            )
-          }
-          <span class={help}>
-            10 digits. You can leave this blank. We do not send text messages yet.
-          </span>
-          {
-            /*
-              A NOTE, NOT A BADGE, and the badge is why. `.badge` is
-              `whitespace-nowrap` — it is a one-word label, "Overdue" or "Paid" —
-              so this three-sentence warning rendered as a single unbreakable
-              pill about 350px wide inside a card on a 341px phone window, and
-              the end of it was off the screen.
-
-              The sentence itself stays exactly as it was. This number was
-              already saved: `parsePhoneEdit` grandfathers a legacy value on
-              purpose, because tightening the check locked owners out of their
-              own rows, so this is a standing note about a number we hold and not
-              a refusal of anything. Amber, because it is a thing to fix and not
-              a thing that is wrong right now, and the glyph is decoration beside
-              words that say it — colour is never the only signal.
-            */
-            phoneUndialable && (
-              <p class="mt-1.5 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                <span aria-hidden="true">⚠</span>
-                <span>We cannot text this number. Type 10 digits. We saved it anyway.</span>
-              </p>
-            )
-          }
-        </div>
-
-        <div class="mt-3">
-          <label class="field-label" for="timezone">Your timezone</label>
-          <select id="timezone" name="timezone" class={field} {...invalid('timezone')}>
-            {
-              timezoneOptions(timezone).map((tz) => (
-                <option value={tz.value} selected={tz.value === timezone}>
-                  {tz.label}
-                </option>
-              ))
-            }
-          </select>
-          {
-            errorField === 'timezone' && (
-              <p class="field-error" id="timezone-error">
-                <span aria-hidden="true">⚠</span>
-                <span>{error}</span>
-              </p>
-            )
-          }
-          {/*
-            This control used to live in the carrier block. It is a setting about
-            the PERSON — it decides what time their own email arrives and what
-            their own quiet hours mean — and a person looking for their own
-            details never found it under the company's federal record.
-          */}
-          <span class={help}>
-            Your clock, not the company's. It sets when your morning email arrives, what your
-            quiet hours mean, and how times are printed on this page. Until you pick one, we use
-            the company's.
-          </span>
-        </div>
-
-        <button type="submit" name="intent" value="save_profile" class={`${button} mt-4`}>
-          Save my details
-        </button>
-      </form>
-
-      <div class="space-y-4">
-        {/* ------------------------------------------------ sign-in email */}
-
-        <div class={card}>
-          <h3 class="text-sm font-semibold tracking-tight">Your email</h3>
-          <p class="mt-3 text-sm text-ink-500">You sign in with this email:</p>
-          <p class="mt-1 text-base font-medium break-all">
-            {signInEmail || <span class="font-normal text-ink-500">not known</span>}
-          </p>
-          <p class="mt-2 text-sm text-ink-500">
-            Your morning compliance email goes to this address too.
-          </p>
-
-          <form method="POST" class="mt-4 border-t border-ink-100 pt-4">
-            <div>
-              <label class="field-label" for="new_email">New email</label>
-              <input
-                type="email"
-                id="new_email"
-                name="new_email"
-                required
-                autocomplete="email"
-                class={field}
-                {...invalid('new_email')}
-              />
-              {
-                errorField === 'new_email' && (
-                  <p class="field-error" id="new_email-error">
-                    <span aria-hidden="true">⚠</span>
-                    <span>{error}</span>
-                  </p>
-                )
-              }
-            </div>
-            <div class="mt-3">
-              {/* The id is scoped to this form: the password block below has a
-                  box with the same `name`, and two elements cannot share an id
-                  on one page — which is what `aria-describedby` resolves. */}
-              <label class="field-label" for="email_current_password">Your password</label>
-              <input
-                type="password"
-                id="email_current_password"
-                name="current_password"
-                required
-                autocomplete="current-password"
-                class={field}
-                aria-describedby="email_current_password-hint"
-              />
-              <span class={help} id="email_current_password-hint">
-                We ask for it so nobody else can change your email.
-              </span>
-            </div>
-
-            {/*
-              Said BEFORE the button, not after it. `updateUser({ email })` does
-              not change the sign-in address — it sends a link and waits — and a
-              person who presses this expecting an immediate change will try the
-              new address on the login page and conclude the account is broken.
-            */}
-            <div class="mt-3 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              <p class="font-medium">What happens next</p>
-              <ol class="mt-1 list-decimal space-y-0.5 pl-5">
-                <li>We send a link to the new email.</li>
-                <li>You open that email and click the link.</li>
-                <li>Then the new email works for signing in.</li>
-              </ol>
-              <p class="mt-2">
-                Your email does not change until you click the link. Until then, keep signing in
-                with your old email. Do not close your account or sign out to wait.
-              </p>
-            </div>
-
-            <button type="submit" name="intent" value="change_email" class={`${button} mt-3`}>
-              Send the link
-            </button>
-          </form>
-        </div>
-
-        {/* ---------------------------------------------------- password */}
-
-        <div class={card}>
-          <h3 class="text-sm font-semibold tracking-tight">Your password</h3>
-
-          {/*
-            THIS BOX USED TO BE A WARNING, and it was amber because it carried
-            bad news: there was no forgot-password anywhere in the application,
-            so a person who could not remember their password never got back in,
-            and the only thing this screen could honestly do was say so and give
-            them an address to write to.
-
-            /auth/forgot-password now exists, so the warning would be a lie —
-            and an expensive one, because the person who reads it is deciding
-            what to do on the morning they are locked out. It is an instruction
-            now, not an alarm, which is why it is no longer amber: nothing here
-            is going wrong. The steps are numbered because they are steps, and
-            because they will be read by somebody who is worried.
-          */}
-          <div class="mt-3 rounded-lg bg-ink-50 px-4 py-3 text-sm text-ink-700">
-            <p class="font-medium">If you forget your password</p>
-            <ol class="mt-1 list-decimal space-y-1 pl-4">
-              <li>Go to the sign-in page and press "Forgot your password?".</li>
-              <li>Type your email. We send you a link.</li>
-              <li>Open the link and pick a new password.</li>
-            </ol>
-            <p class="mt-2">
-              The link goes to the email you sign in with, so keep that email working. If you
-              cannot get into that email, write to{' '}
-              <a href={`mailto:${site.email}`} class="link font-medium">{site.email}</a>.
-            </p>
-          </div>
-
-          <form method="POST" class="mt-4">
-            <div>
-              <label class="field-label" for="current_password">Password you use now</label>
-              <input
-                type="password"
-                id="current_password"
-                name="current_password"
-                required
-                autocomplete="current-password"
-                class={field}
-                {...invalid('current_password')}
-              />
-              {
-                errorField === 'current_password' && (
-                  <p class="field-error" id="current_password-error">
-                    <span aria-hidden="true">⚠</span>
-                    <span>{error}</span>
-                  </p>
-                )
-              }
-            </div>
-            <div class="mt-3">
-              <label class="field-label" for="new_password">New password</label>
-              <input
-                type="password"
-                id="new_password"
-                name="new_password"
-                required
-                minlength={MIN_PASSWORD}
-                autocomplete="new-password"
-                class={field}
-                aria-invalid={errorField === 'new_password' ? 'true' : undefined}
-                aria-describedby={
-                  errorField === 'new_password'
-                    ? 'new_password-error new_password-hint'
-                    : 'new_password-hint'
-                }
-              />
-              {
-                errorField === 'new_password' && (
-                  <p class="field-error" id="new_password-error">
-                    <span aria-hidden="true">⚠</span>
-                    <span>{error}</span>
-                  </p>
-                )
-              }
-              <span class={help} id="new_password-hint">
-                Use {MIN_PASSWORD} letters or numbers or more.
-              </span>
-            </div>
-            <div class="mt-3">
-              <label class="field-label" for="new_password_again">New password again</label>
-              <input
-                type="password"
-                id="new_password_again"
-                name="new_password_again"
-                required
-                minlength={MIN_PASSWORD}
-                autocomplete="new-password"
-                class={field}
-                aria-invalid={errorField === 'new_password_again' ? 'true' : undefined}
-                aria-describedby={
-                  errorField === 'new_password_again'
-                    ? 'new_password_again-error new_password_again-hint'
-                    : 'new_password_again-hint'
-                }
-              />
-              {
-                errorField === 'new_password_again' && (
-                  <p class="field-error" id="new_password_again-error">
-                    <span aria-hidden="true">⚠</span>
-                    <span>{error}</span>
-                  </p>
-                )
-              }
-              <span class={help} id="new_password_again-hint">
-                Type the same new password one more time.
-              </span>
-            </div>
-
-            <p class="mt-3 text-sm text-ink-500">
-              You stay signed in on this computer. Use the new password next time you sign in.
-            </p>
-
-            <button type="submit" name="intent" value="change_password" class={`${button} mt-3`}>
-              Change my password
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  {/* ==================================================== who can sign in */}
-
-  <section class="mt-10">
-    <h2 class="text-lg font-semibold tracking-tight">Who can sign in</h2>
-    <p class="mt-1 max-w-3xl text-sm text-ink-500">
-      Everyone who can open this account. Each person signs in with their own email and their own
-      password.
-    </p>
-
-    {
-      /* A failed read and an empty list are the same notice, and neither is
-         ever an empty section. The list CANNOT legitimately be empty — the
-         middleware got this carrier id out of the caller's own membership, so
-         the caller is always in it — which means zero rows is another way of
-         saying the read did not work. An empty `<ul>` would draw nothing at all
-         and read as a section that has no answer, on the one question this
-         section exists to answer. */
-      membersFailed || members.length === 0 ? (
-        <p class="mt-3 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
-          We could not load this list right now. Reload the page.
+      <section>
+        <h2 class="text-lg font-semibold tracking-tight">Your account</h2>
+        <p class="mt-1 max-w-3xl text-sm text-ink-500">
+          This is you, not the company. Everyone who signs in has their own name, phone, email and
+          password.
         </p>
-      ) : (
-        <ul class="mt-3 space-y-2">
-          {members.map((m) => (
-            <li class="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-ink-100 bg-white px-4 py-3">
-              <div class="min-w-0 flex-1">
-                <p class="font-medium">
-                  {m.full_name || <span class="font-normal text-ink-500">No name yet</span>}
-                  {/* The signed-in person is marked, because a list of email
-                      addresses with no "you" in it is a list somebody has to
-                      read carefully to place themselves in. */}
-                  {m.user_id === userId && (
-                    <span class="badge badge-info ml-2">This is you</span>
-                  )}
-                </p>
-                <p class="mt-0.5 text-sm break-all text-ink-500">{m.email ?? '—'}</p>
-              </div>
-              <div class="text-sm whitespace-nowrap text-ink-500">
-                {m.role === 'owner' ? 'Owner' : 'Staff'}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )
-    }
 
-    {/*
-      Both sentences are true today and both have to be here. `memberships.role`
-      is stored and read by NO code in this application — not one policy, not one
-      page — so a screen implying that "staff" sees less would be describing a
-      product that does not exist. And there is no invite: `authenticated` has no
-      INSERT on memberships by design (0001), the only way onto a carrier is the
-      USDOT claim, so a second person on one account is a thing we do by hand.
-    */}
-    <div class="mt-3 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-      <p>
-        <span class="font-medium">Adding and removing people is not built yet.</span> To add
-        someone, or to remove someone, email{' '}
-        <a href={`mailto:${site.email}`} class="link font-medium">{site.email}</a> with the
-        name and email and we will do it.
-      </p>
-      <p class="mt-2">
-        Owner and staff both see everything and can change everything today. The role is stored
-        but it does not limit anyone yet.
-      </p>
-    </div>
-  </section>
+        <div class="mt-3 grid items-start gap-4 lg:grid-cols-2">
+          <form method="POST" class={card}>
+            <h3 class="text-sm font-semibold tracking-tight">Your details</h3>
 
-  {/* ============================================================ carrier */}
-
-  <section>
-    <h2 class="text-lg font-semibold tracking-tight">Your carrier</h2>
-    <p class="mt-1 max-w-3xl text-sm text-ink-500">
-      These come from your federal record at FMCSA. You cannot change them here. If something is
-      wrong, file an MCS-150 update with FMCSA. It changes here after that.
-    </p>
-
-    {
-      /*
-        Only when there is no number on file. A carrier who signed up without one
-        has an MCS-150 row on his dashboard that nothing in the app can ever
-        answer — the column is written by the signup form and nowhere else — and
-        every federal lookup we do is keyed on this number, so until it is here
-        the promise to "fill in what we can" has nothing to fill in from.
-
-        Deliberately not an edit. Once a number is on file this disappears, and
-        the paragraph above it goes back to being the whole truth.
-      */
-      !carrier?.dot_number && (
-        <form method="POST" class="mt-3 rounded-xl border border-amber-200 bg-amber-50/40 p-5">
-          <h3 class="text-sm font-semibold tracking-tight">
-            We do not have your USDOT number
-          </h3>
-          <p class="mt-1 max-w-2xl text-sm text-amber-900">
-            Without it we cannot read your federal record, and the MCS-150 update on your
-            dashboard has nothing to count from. You can set it once here; after that it comes
-            from FMCSA like everything else above.
-          </p>
-          <div class="mt-3 flex flex-wrap items-end gap-3">
-            <div>
-              <label class="field-label" for="dot_number">USDOT number</label>
+            <div class="mt-3">
+              <label class="field-label" for="full_name">Your name</label>
               <input
                 type="text"
-                id="dot_number"
-                name="dot_number"
-                inputmode="numeric"
-                pattern="[0-9]{1,8}"
-                required
-                autocomplete="off"
-                class={`${field} w-48 tabular-nums`}
-                {...invalid('dot_number')}
+                id="full_name"
+                name="full_name"
+                value={profile?.full_name ?? ''}
+                autocomplete="name"
+                class={field}
+                aria-describedby="full_name-hint"
+              />
+              <span class={help} id="full_name-hint">You can leave this blank.</span>
+            </div>
+
+            <div class="mt-3">
+              <label class="field-label" for="phone">Your phone</label>
+              {/*
+                Shown the way a person reads it, stored as E.164. The two are
+                deliberately different, and the save compares what was typed against
+                what this box DISPLAYED — see `parsePhoneEdit` — so an old number
+                nobody touched is never the reason a name will not save.
+              */}
+              <input
+                type="tel"
+                inputmode="tel"
+                id="phone"
+                name="phone"
+                value={formatPhone(profile?.phone)}
+                placeholder="(818) 334-0168"
+                autocomplete="tel"
+                class={`${field} tabular-nums`}
+                {...invalid('phone')}
               />
               {
-                errorField === 'dot_number' && (
-                  <p class="field-error" id="dot_number-error">
+                errorField === 'phone' && (
+                  <p class="field-error" id="phone-error">
                     <span aria-hidden="true">⚠</span>
                     <span>{error}</span>
                   </p>
                 )
               }
+              <span class={help}>
+                10 digits. You can leave this blank. We do not send text messages yet.
+              </span>
+              {
+                /*
+                  A NOTE, NOT A BADGE, and the badge is why. `.badge` is
+                  `whitespace-nowrap` — it is a one-word label, "Overdue" or "Paid" —
+                  so this three-sentence warning rendered as a single unbreakable
+                  pill about 350px wide inside a card on a 341px phone window, and
+                  the end of it was off the screen.
+
+                  The sentence itself stays exactly as it was. This number was
+                  already saved: `parsePhoneEdit` grandfathers a legacy value on
+                  purpose, because tightening the check locked owners out of their
+                  own rows, so this is a standing note about a number we hold and not
+                  a refusal of anything. Amber, because it is a thing to fix and not
+                  a thing that is wrong right now, and the glyph is decoration beside
+                  words that say it — colour is never the only signal.
+                */
+                phoneUndialable && (
+                  <p class="mt-1.5 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    <span aria-hidden="true">⚠</span>
+                    <span>We cannot text this number. Type 10 digits. We saved it anyway.</span>
+                  </p>
+                )
+              }
             </div>
-            <button type="submit" name="intent" value="set_dot_number" class="btn btn-primary">
-              Save it
+
+            <div class="mt-3">
+              <label class="field-label" for="timezone">Your timezone</label>
+              <select id="timezone" name="timezone" class={field} {...invalid('timezone')}>
+                {
+                  timezoneOptions(timezone).map((tz) => (
+                    <option value={tz.value} selected={tz.value === timezone}>
+                      {tz.label}
+                    </option>
+                  ))
+                }
+              </select>
+              {
+                errorField === 'timezone' && (
+                  <p class="field-error" id="timezone-error">
+                    <span aria-hidden="true">⚠</span>
+                    <span>{error}</span>
+                  </p>
+                )
+              }
+              {/*
+                This control used to live in the carrier block. It is a setting about
+                the PERSON — it decides what time their own email arrives and what
+                their own quiet hours mean — and a person looking for their own
+                details never found it under the company's federal record.
+              */}
+              <span class={help}>
+                Your clock, not the company's. It sets when your morning email arrives, what your
+                quiet hours mean, and how times are printed on this page. Until you pick one, we use
+                the company's.
+              </span>
+            </div>
+
+            <button type="submit" name="intent" value="save_profile" class={`${button} mt-4`}>
+              Save my details
+            </button>
+          </form>
+
+          <div class="space-y-4">
+            {/* ------------------------------------------------ sign-in email */}
+
+            <div class={card}>
+              <h3 class="text-sm font-semibold tracking-tight">Your email</h3>
+              <p class="mt-3 text-sm text-ink-500">You sign in with this email:</p>
+              <p class="mt-1 text-base font-medium break-all">
+                {signInEmail || <span class="font-normal text-ink-500">not known</span>}
+              </p>
+              <p class="mt-2 text-sm text-ink-500">
+                Your morning compliance email goes to this address too.
+              </p>
+
+              <form method="POST" class="mt-4 border-t border-ink-100 pt-4">
+                <div>
+                  <label class="field-label" for="new_email">New email</label>
+                  <input
+                    type="email"
+                    id="new_email"
+                    name="new_email"
+                    required
+                    autocomplete="email"
+                    class={field}
+                    {...invalid('new_email')}
+                  />
+                  {
+                    errorField === 'new_email' && (
+                      <p class="field-error" id="new_email-error">
+                        <span aria-hidden="true">⚠</span>
+                        <span>{error}</span>
+                      </p>
+                    )
+                  }
+                </div>
+                <div class="mt-3">
+                  {/* The id is scoped to this form: the password block below has a
+                      box with the same `name`, and two elements cannot share an id
+                      on one page — which is what `aria-describedby` resolves. */}
+                  <label class="field-label" for="email_current_password">Your password</label>
+                  <input
+                    type="password"
+                    id="email_current_password"
+                    name="current_password"
+                    required
+                    autocomplete="current-password"
+                    class={field}
+                    aria-describedby="email_current_password-hint"
+                  />
+                  <span class={help} id="email_current_password-hint">
+                    We ask for it so nobody else can change your email.
+                  </span>
+                </div>
+
+                {/*
+                  Said BEFORE the button, not after it. `updateUser({ email })` does
+                  not change the sign-in address — it sends a link and waits — and a
+                  person who presses this expecting an immediate change will try the
+                  new address on the login page and conclude the account is broken.
+                */}
+                <div class="mt-3 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  <p class="font-medium">What happens next</p>
+                  <ol class="mt-1 list-decimal space-y-0.5 pl-5">
+                    <li>We send a link to the new email.</li>
+                    <li>You open that email and click the link.</li>
+                    <li>Then the new email works for signing in.</li>
+                  </ol>
+                  <p class="mt-2">
+                    Your email does not change until you click the link. Until then, keep signing in
+                    with your old email. Do not close your account or sign out to wait.
+                  </p>
+                </div>
+
+                <button type="submit" name="intent" value="change_email" class={`${button} mt-3`}>
+                  Send the link
+                </button>
+              </form>
+            </div>
+
+            {/* ---------------------------------------------------- password */}
+
+            <div class={card}>
+              <h3 class="text-sm font-semibold tracking-tight">Your password</h3>
+
+              {/*
+                THIS BOX USED TO BE A WARNING, and it was amber because it carried
+                bad news: there was no forgot-password anywhere in the application,
+                so a person who could not remember their password never got back in,
+                and the only thing this screen could honestly do was say so and give
+                them an address to write to.
+
+                /auth/forgot-password now exists, so the warning would be a lie —
+                and an expensive one, because the person who reads it is deciding
+                what to do on the morning they are locked out. It is an instruction
+                now, not an alarm, which is why it is no longer amber: nothing here
+                is going wrong. The steps are numbered because they are steps, and
+                because they will be read by somebody who is worried.
+              */}
+              <div class="mt-3 rounded-lg bg-ink-50 px-4 py-3 text-sm text-ink-700">
+                <p class="font-medium">If you forget your password</p>
+                <ol class="mt-1 list-decimal space-y-1 pl-4">
+                  <li>Go to the sign-in page and press "Forgot your password?".</li>
+                  <li>Type your email. We send you a link.</li>
+                  <li>Open the link and pick a new password.</li>
+                </ol>
+                <p class="mt-2">
+                  The link goes to the email you sign in with, so keep that email working. If you
+                  cannot get into that email, write to{' '}
+                  <a href={`mailto:${site.email}`} class="link font-medium">{site.email}</a>.
+                </p>
+              </div>
+
+              <form method="POST" class="mt-4">
+                <div>
+                  <label class="field-label" for="current_password">Password you use now</label>
+                  <input
+                    type="password"
+                    id="current_password"
+                    name="current_password"
+                    required
+                    autocomplete="current-password"
+                    class={field}
+                    {...invalid('current_password')}
+                  />
+                  {
+                    errorField === 'current_password' && (
+                      <p class="field-error" id="current_password-error">
+                        <span aria-hidden="true">⚠</span>
+                        <span>{error}</span>
+                      </p>
+                    )
+                  }
+                </div>
+                <div class="mt-3">
+                  <label class="field-label" for="new_password">New password</label>
+                  <input
+                    type="password"
+                    id="new_password"
+                    name="new_password"
+                    required
+                    minlength={MIN_PASSWORD}
+                    autocomplete="new-password"
+                    class={field}
+                    aria-invalid={errorField === 'new_password' ? 'true' : undefined}
+                    aria-describedby={
+                      errorField === 'new_password'
+                        ? 'new_password-error new_password-hint'
+                        : 'new_password-hint'
+                    }
+                  />
+                  {
+                    errorField === 'new_password' && (
+                      <p class="field-error" id="new_password-error">
+                        <span aria-hidden="true">⚠</span>
+                        <span>{error}</span>
+                      </p>
+                    )
+                  }
+                  <span class={help} id="new_password-hint">
+                    Use {MIN_PASSWORD} letters or numbers or more.
+                  </span>
+                </div>
+                <div class="mt-3">
+                  <label class="field-label" for="new_password_again">New password again</label>
+                  <input
+                    type="password"
+                    id="new_password_again"
+                    name="new_password_again"
+                    required
+                    minlength={MIN_PASSWORD}
+                    autocomplete="new-password"
+                    class={field}
+                    aria-invalid={errorField === 'new_password_again' ? 'true' : undefined}
+                    aria-describedby={
+                      errorField === 'new_password_again'
+                        ? 'new_password_again-error new_password_again-hint'
+                        : 'new_password_again-hint'
+                    }
+                  />
+                  {
+                    errorField === 'new_password_again' && (
+                      <p class="field-error" id="new_password_again-error">
+                        <span aria-hidden="true">⚠</span>
+                        <span>{error}</span>
+                      </p>
+                    )
+                  }
+                  <span class={help} id="new_password_again-hint">
+                    Type the same new password one more time.
+                  </span>
+                </div>
+
+                <p class="mt-3 text-sm text-ink-500">
+                  You stay signed in on this computer. Use the new password next time you sign in.
+                </p>
+
+                <button type="submit" name="intent" value="change_password" class={`${button} mt-3`}>
+                  Change my password
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </section>
+    </Fragment>
+  )}
+
+  {tab === 'company' && (
+    <Fragment>
+      {/* ============================================================ carrier */}
+
+      <section>
+        <h2 class="text-lg font-semibold tracking-tight">Your carrier</h2>
+        <p class="mt-1 max-w-3xl text-sm text-ink-500">
+          These come from your federal record at FMCSA. You cannot change them here. If something is
+          wrong, file an MCS-150 update with FMCSA. It changes here after that.
+        </p>
+
+        {
+          /*
+            Only when there is no number on file. A carrier who signed up without one
+            has an MCS-150 row on his dashboard that nothing in the app can ever
+            answer — the column is written by the signup form and nowhere else — and
+            every federal lookup we do is keyed on this number, so until it is here
+            the promise to "fill in what we can" has nothing to fill in from.
+
+            Deliberately not an edit. Once a number is on file this disappears, and
+            the paragraph above it goes back to being the whole truth.
+          */
+          !carrier?.dot_number && (
+            <form method="POST" class="mt-3 rounded-xl border border-amber-200 bg-amber-50/40 p-5">
+              <h3 class="text-sm font-semibold tracking-tight">
+                We do not have your USDOT number
+              </h3>
+              <p class="mt-1 max-w-2xl text-sm text-amber-900">
+                Without it we cannot read your federal record, and the MCS-150 update on your
+                dashboard has nothing to count from. You can set it once here; after that it comes
+                from FMCSA like everything else above.
+              </p>
+              <div class="mt-3 flex flex-wrap items-end gap-3">
+                <div>
+                  <label class="field-label" for="dot_number">USDOT number</label>
+                  <input
+                    type="text"
+                    id="dot_number"
+                    name="dot_number"
+                    inputmode="numeric"
+                    pattern="[0-9]{1,8}"
+                    required
+                    autocomplete="off"
+                    class={`${field} w-48 tabular-nums`}
+                    {...invalid('dot_number')}
+                  />
+                  {
+                    errorField === 'dot_number' && (
+                      <p class="field-error" id="dot_number-error">
+                        <span aria-hidden="true">⚠</span>
+                        <span>{error}</span>
+                      </p>
+                    )
+                  }
+                </div>
+                <button type="submit" name="intent" value="set_dot_number" class="btn btn-primary">
+                  Save it
+                </button>
+              </div>
+            </form>
+          )
+        }
+
+        {/* One card since the timezone control moved into "Your account", where the
+            person it belongs to is. */}
+        <div class="mt-3 max-w-3xl">
+          <div class={card}>
+            <dl class="divide-y divide-ink-100 text-sm">
+              <div class="flex justify-between gap-4 py-2.5">
+                <dt class="text-ink-500">Legal name</dt>
+                <dd class="text-right font-medium">{carrier?.legal_name ?? '—'}</dd>
+              </div>
+              <div class="flex justify-between gap-4 py-2.5">
+                <dt class="text-ink-500">Doing business as</dt>
+                <dd class="text-right font-medium">
+                  {carrier?.dba_name || <span class="font-normal text-ink-500">none on file</span>}
+                </dd>
+              </div>
+              <div class="flex justify-between gap-4 py-2.5">
+                <dt class="text-ink-500">USDOT number</dt>
+                <dd class="text-right font-medium tabular-nums">{carrier?.dot_number ?? '—'}</dd>
+              </div>
+              <div class="flex justify-between gap-4 py-2.5">
+                <dt class="text-ink-500">Physical address</dt>
+                <dd class="text-right font-medium">
+                  {
+                    addressLines.length > 0 ? (
+                      addressLines.map((line) => <div class="tabular-nums">{line}</div>)
+                    ) : (
+                      <span class="font-normal text-ink-500">none on file</span>
+                    )
+                  }
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+      </section>
+
+      {/* ========================================= how the company operates */}
+
+      {/*
+        NOT inside a <details>, and not below the fold of anything. The review of
+        2026-09-18 found that a carrier had nowhere in the product to say "that
+        rule does not apply to me", and put it first on the list of things that
+        stop him paying. Three radio groups, one save, and the sentence above them
+        says in plain words what an answer does to his dashboard.
+
+        Every "No" is stated in words on the page: "we stop showing the rules that
+        only apply when the answer is Yes". "I'm not sure" is a real option, not a
+        fallback — it stores NULL and the rules keep tracking.
+      */}
+      <section class="mt-10">
+        <h2 class="text-lg font-semibold tracking-tight">How your company operates</h2>
+        <p class="mt-1 max-w-3xl text-sm text-ink-500">
+          Your answers decide which rules we show you. If you answer No, we stop showing the rules
+          that only apply when the answer is Yes. If you are not sure, we keep showing them.
+        </p>
+
+        {
+          operationReady ? (
+            <form method="POST" class={`${card} mt-3 max-w-3xl`}>
+              <p class="text-sm text-ink-700">
+                {
+                  operationSource === 'owner'
+                    ? 'You set these answers. You can change them here any time.'
+                    : operationSource === 'fmcsa'
+                      ? 'These answers came from your federal record at FMCSA. If one is wrong, change it here.'
+                      : 'We do not have these answers yet. Please answer the three questions.'
+                }
+              </p>
+
+              <fieldset class="mt-5">
+                <legend class="text-sm font-medium">Do your trucks cross state lines?</legend>
+                <p class="field-hint">
+                  Answer Yes if any truck goes into another state, or carries freight that is going to
+                  or coming from another state.
+                </p>
+                <div class="mt-2">
+                  <label class="check-row">
+                    <input
+                      type="radio"
+                      name="crosses_state_lines"
+                      value="yes"
+                      id="crosses_state_lines_yes"
+                      checked={operation.crossesStateLines === 'yes'}
+                      {...invalid('crosses_state_lines_yes')}
+                    />
+                    <span class="text-sm">Yes</span>
+                  </label>
+                  <label class="check-row">
+                    <input
+                      type="radio"
+                      name="crosses_state_lines"
+                      value="no"
+                      checked={operation.crossesStateLines === 'no'}
+                    />
+                    <span class="text-sm">No. Our trucks stay inside one state.</span>
+                  </label>
+                  <label class="check-row">
+                    <input
+                      type="radio"
+                      name="crosses_state_lines"
+                      value="unsure"
+                      checked={operation.crossesStateLines === 'unsure'}
+                    />
+                    <span class="text-sm">I'm not sure</span>
+                  </label>
+                </div>
+                {
+                  errorField === 'crosses_state_lines_yes' && (
+                    <p class="field-error" id="crosses_state_lines_yes-error">
+                      <span aria-hidden="true">⚠</span>
+                      <span>{error}</span>
+                    </p>
+                  )
+                }
+              </fieldset>
+
+              <fieldset class="mt-5 border-t border-ink-100 pt-5">
+                <legend class="text-sm font-medium">Do you haul for other people for pay?</legend>
+                <p class="field-hint">
+                  Answer Yes if you get paid to carry freight for a shipper or a broker. Answer No if
+                  your trucks only carry your own goods.
+                </p>
+                <div class="mt-2">
+                  <label class="check-row">
+                    <input
+                      type="radio"
+                      name="for_hire"
+                      value="yes"
+                      checked={operation.forHire === 'yes'}
+                    />
+                    <span class="text-sm">Yes</span>
+                  </label>
+                  <label class="check-row">
+                    <input type="radio" name="for_hire" value="no" checked={operation.forHire === 'no'} />
+                    <span class="text-sm">No. We only carry our own goods.</span>
+                  </label>
+                  <label class="check-row">
+                    <input
+                      type="radio"
+                      name="for_hire"
+                      value="unsure"
+                      checked={operation.forHire === 'unsure'}
+                    />
+                    <span class="text-sm">I'm not sure</span>
+                  </label>
+                </div>
+              </fieldset>
+
+              <fieldset class="mt-5 border-t border-ink-100 pt-5">
+                <legend class="text-sm font-medium">
+                  Do you carry placarded hazardous materials?
+                </legend>
+                <p class="field-hint">
+                  Placarded means the load needs the diamond hazmat signs on the truck. Answer No if you
+                  never carry a load like that.
+                </p>
+                <div class="mt-2">
+                  <label class="check-row">
+                    <input type="radio" name="hazmat" value="yes" checked={operation.hazmat === 'yes'} />
+                    <span class="text-sm">Yes</span>
+                  </label>
+                  <label class="check-row">
+                    <input type="radio" name="hazmat" value="no" checked={operation.hazmat === 'no'} />
+                    <span class="text-sm">No</span>
+                  </label>
+                  <label class="check-row">
+                    <input
+                      type="radio"
+                      name="hazmat"
+                      value="unsure"
+                      checked={operation.hazmat === 'unsure'}
+                    />
+                    <span class="text-sm">I'm not sure</span>
+                  </label>
+                </div>
+              </fieldset>
+
+              <div class="mt-5 border-t border-ink-100 pt-5">
+                <button type="submit" name="intent" value="save_operation" class="btn btn-primary">
+                  Save answers
+                </button>
+              </div>
+            </form>
+          ) : (
+            /* NOT a disabled form. A screen full of radio buttons with a dead
+               Save is a screen that looks like it works, and the owner finds
+               out it does not by pressing the button. The questions come back
+               the moment the columns do. */
+            <div class={`${card} mt-3 max-w-3xl`}>
+              <p class="text-sm text-ink-700">
+                These three questions are not switched on yet. You cannot answer them here today.
+              </p>
+              <p class="mt-2 text-sm text-ink-500">
+                Until they are, we keep showing you every rule — including the ones that may not
+                apply to your company. That is the safe side to be on: you will see something you
+                do not need before you miss something you do.
+              </p>
+            </div>
+          )
+        }
+      </section>
+
+      {/* ==================================================== who can sign in */}
+
+      <section class="mt-10">
+        <h2 class="text-lg font-semibold tracking-tight">Who can sign in</h2>
+        <p class="mt-1 max-w-3xl text-sm text-ink-500">
+          Everyone who can open this account. Each person signs in with their own email and their own
+          password.
+        </p>
+
+        {
+          /* A failed read and an empty list are the same notice, and neither is
+             ever an empty section. The list CANNOT legitimately be empty — the
+             middleware got this carrier id out of the caller's own membership, so
+             the caller is always in it — which means zero rows is another way of
+             saying the read did not work. An empty `<ul>` would draw nothing at all
+             and read as a section that has no answer, on the one question this
+             section exists to answer. */
+          membersFailed || members.length === 0 ? (
+            <p class="mt-3 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+              We could not load this list right now. Reload the page.
+            </p>
+          ) : (
+            <ul class="mt-3 space-y-2">
+              {members.map((m) => (
+                <li class="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-ink-100 bg-white px-4 py-3">
+                  <div class="min-w-0 flex-1">
+                    <p class="font-medium">
+                      {m.full_name || <span class="font-normal text-ink-500">No name yet</span>}
+                      {/* The signed-in person is marked, because a list of email
+                          addresses with no "you" in it is a list somebody has to
+                          read carefully to place themselves in. */}
+                      {m.user_id === userId && (
+                        <span class="badge badge-info ml-2">This is you</span>
+                      )}
+                    </p>
+                    <p class="mt-0.5 text-sm break-all text-ink-500">{m.email ?? '—'}</p>
+                  </div>
+                  <div class="text-sm whitespace-nowrap text-ink-500">
+                    {m.role === 'owner' ? 'Owner' : 'Staff'}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )
+        }
+
+        {/*
+          Both sentences are true today and both have to be here. `memberships.role`
+          is stored and read by NO code in this application — not one policy, not one
+          page — so a screen implying that "staff" sees less would be describing a
+          product that does not exist. And there is no invite: `authenticated` has no
+          INSERT on memberships by design (0001), the only way onto a carrier is the
+          USDOT claim, so a second person on one account is a thing we do by hand.
+        */}
+        <div class="mt-3 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <p>
+            <span class="font-medium">Adding and removing people is not built yet.</span> To add
+            someone, or to remove someone, email{' '}
+            <a href={`mailto:${site.email}`} class="link font-medium">{site.email}</a> with the
+            name and email and we will do it.
+          </p>
+          <p class="mt-2">
+            Owner and staff both see everything and can change everything today. The role is stored
+            but it does not limit anyone yet.
+          </p>
+        </div>
+      </section>
+    </Fragment>
+  )}
+
+  {tab === 'alerts' && (
+    <Fragment>
+      {/* ======================================================== the matrix */}
+
+      <section>
+        <h2 class="text-lg font-semibold tracking-tight">Who gets told what</h2>
+        <p class="mt-1 max-w-3xl text-sm text-ink-500">
+          These are your settings, not the company's. Everyone on the account sets their own, so the
+          office manager can take every deadline and the owner can take only the ones that are already
+          overdue.
+        </p>
+
+        {
+          !hasSavedPrefs && (
+            <p class="mt-3 max-w-3xl rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
+              You have not changed anything yet, so what is ticked below is what we do by default:
+              deadlines, by email. Saving this page turns that default into a choice.
+            </p>
+          )
+        }
+
+        <form method="POST" class="mt-3">
+          <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
+            <table class="w-full text-sm sm:min-w-[56rem]">
+              {/* No header line on a phone. Every box below carries its own name
+                  and its own caveat instead. */}
+              {/* ink-700: a column head is text a reader reads, and at 12px that
+                  is the floor whatever it sits on. */}
+              <thead
+                class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group"
+              >
+                <tr>
+                  <th class={th}>What</th>
+                  {
+                    NOTIFY_CHANNELS.map((c) => (
+                      <th class={`${th} text-center`}>
+                        <div>{c.label}</div>
+                        {c.note && (
+                          <div
+                            class:list={[
+                              'mt-0.5 text-xs normal-case',
+                              c.live ? 'text-ink-700' : 'text-amber-700',
+                            ]}
+                          >
+                            {c.note}
+                          </div>
+                        )}
+                      </th>
+                    ))
+                  }
+                  <th class={th}>Warn me this many days out</th>
+                  {/* The caveat rides under the column head, exactly as a channel's
+                      does, because that is where somebody reading the table looks
+                      before they reach for the control. */}
+                  <th class={`${th} text-center`}>
+                    <div>Roll into one daily message</div>
+                    <div class="mt-0.5 text-xs normal-case text-amber-700">
+                      always on, not yours to change yet
+                    </div>
+                  </th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-ink-100">
+                {
+                  NOTIFY_CATEGORIES.map((category) => (
+                    <tr class="block py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                      <td class={`${cell} sm:align-top`}>
+                        <div class="font-medium">{category.label}</div>
+                        <div class="mt-0.5 max-w-xs text-xs text-ink-700">{category.blurb}</div>
+                        {!category.live && (
+                          <div class="mt-1 max-w-xs text-xs text-amber-700">
+                            Nothing is sent for this yet — the job that watches for it is not written.
+                            Your choice is kept and will be honoured the day it is.
+                          </div>
+                        )}
+                      </td>
+
+                      {NOTIFY_CHANNELS.map((channel) => (
+                        <td class={`${cell} sm:text-center sm:align-top`}>
+                          {/* The whole line is the target on a phone, which is what
+                              makes a 16px box tappable standing in a yard. The
+                              visible word is part of the aria-label above it, so
+                              the two names cannot disagree. */}
+                          <label class={boxRow}>
+                            {channel.live ? (
+                              <input
+                                type="checkbox"
+                                name={`on_${category.value}_${channel.value}`}
+                                checked={isEnabled(category.value, channel.value)}
+                                aria-label={`${category.label} by ${channel.label}`}
+                                class={checkbox}
+                              />
+                            ) : (
+                              /* Disabled, not absent, and not a live box that does
+                                 nothing. A ticked box that produced no text message
+                                 would be a promise the system cannot keep — which is
+                                 exactly the mistake the last build shipped. */
+                              <input
+                                type="checkbox"
+                                disabled
+                                checked={false}
+                                aria-label={`${category.label} by ${channel.label} — not available`}
+                                title="Text messages are not switched on yet."
+                                class={`${checkbox} opacity-40`}
+                              />
+                            )}
+                            {/* The column head, carried onto the box. A grid of
+                                unnamed boxes is what this becomes on a phone
+                                otherwise, and the caveat under the head is the
+                                difference between a setting and a promise. */}
+                            <span class="sm:hidden">
+                              {channel.label}
+                              {channel.note && (
+                                <span
+                                  class:list={[
+                                    'ml-1 text-xs',
+                                    channel.live ? 'text-ink-700' : 'text-amber-700',
+                                  ]}
+                                >
+                                  {channel.note}
+                                </span>
+                              )}
+                            </span>
+                          </label>
+                        </td>
+                      ))}
+
+                      <td class={`${cell} mt-2 sm:mt-0 sm:align-top`}>
+                        <span class={`${colName} mb-1 block`}>Warn me this many days out</span>
+                        {category.perItemLeadDays ? (
+                          /* No box, because there is nothing here to store. Each
+                             reminder carries its own number — an insurance renewal
+                             wants a month, a callback wants a day — so a box here
+                             would be a control that changed nothing. Say where the
+                             setting actually is instead. */
+                          <span class="block max-w-[14rem] text-xs text-ink-700">
+                            You choose the days on each reminder.{' '}
+                            <a href="/app/reminders" class="link font-medium">
+                              My reminders
+                            </a>
+                          </span>
+                        ) : (
+                          <>
+                            <input
+                              type="text"
+                              id={`lead_${category.value}`}
+                              name={`lead_${category.value}`}
+                              value={formatLeadDays(leadDaysFor(category.value))}
+                              inputmode="text"
+                              class={`${field} w-full tabular-nums sm:w-44`}
+                              aria-label={`Lead times for ${category.label}`}
+                            />
+                            <span class="mt-1 block text-xs text-ink-700 sm:max-w-[14rem]">
+                              {describeLeadDays(leadDaysFor(category.value))}
+                            </span>
+                          </>
+                        )}
+                      </td>
+
+                      <td class={`${cell} sm:text-center sm:align-top`}>
+                        <label class={boxRow}>
+                        {/* Disabled, not absent, and not a live box that does
+                            nothing — the same treatment a channel we cannot deliver
+                            on gets, for the same reason. The digest job batches
+                            every message into one morning email unconditionally and
+                            reads this column nowhere, so an untickable box was a
+                            promise of separate messages that no code sends. It
+                            shows TICKED because ticked is what genuinely happens,
+                            to everybody, today. There is no `name`, so it posts
+                            nothing; the save reads the stored value back instead. */}
+                        <input
+                          type="checkbox"
+                          disabled
+                          checked
+                          aria-label={`Daily digest for ${category.label} — always on`}
+                          title="Everything already arrives as one message a day. There is no other setting yet."
+                          class={`${checkbox} opacity-40`}
+                        />
+                          {/* The column head, carried onto the box, caveat and all.
+                              Without it this is a ticked box on a phone with
+                              nothing on screen saying what it is or that it is not
+                              yet yours to change. */}
+                          <span class="sm:hidden">
+                            Roll into one daily message
+                            <span class="ml-1 text-xs text-amber-700">
+                              always on, not yours to change yet
+                            </span>
+                          </span>
+                        </label>
+                        {!digestFor(category.value) && (
+                          /* Somebody unticked this while the box was still live.
+                             The row survives the save untouched, so say so here
+                             rather than showing a ticked box over a stored `false`
+                             and letting them find out the day the choice is real. */
+                          <div class="mt-1 text-xs text-amber-700">
+                            You turned this off before we could honour it. Still on file.
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          </div>
+
+          <div class="mt-4 grid gap-4 lg:grid-cols-2">
+            <div class="rounded-xl border border-ink-100 bg-white p-4 text-sm text-ink-700">
+              <p class="font-medium text-ink-900">About those numbers</p>
+              <p class="mt-1">
+                Days before the deadline, separated by commas. <span class="tabular-nums">30, 7, 1</span
+                > means we warn you a month out, a week out, and the day before.
+              </p>
+              <p class="mt-2">
+                A <span class="font-medium text-ink-900">negative</span> number is a nudge
+                <span class="font-medium text-ink-900">after</span> the date has gone by:
+                <span class="tabular-nums">-1</span> means "tell me again the day after it lapsed",
+                because that is the day it starts costing money. The sentence under each box is what we
+                read your numbers as — if it does not match what you meant, the numbers are wrong.
+              </p>
+              <p class="mt-2">
+                Emptying the box does not mean "never". We put the standard
+                <span class="tabular-nums">30, 7, 1, -1</span> back, because nobody has ever actually
+                wanted a deadline they are never warned about.
+              </p>
+            </div>
+
+            <div class="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+              <p class="font-medium">What actually goes out today</p>
+              <ul class="mt-1 space-y-1">
+                <li>
+                  <span class="font-medium">Email about deadlines</span> — live. One message a morning
+                  with everything that has reached a warning day.
+                </li>
+                <li>
+                  <span class="font-medium">Text messages</span> — not switched on yet. The carrier
+                  registration that lets a business send texts does not exist for us yet, so a text
+                  would be rejected rather than delivered. We are not going to tick a box that does
+                  nothing.
+                </li>
+                <li>
+                  <span class="font-medium">In the app</span> — that is the dashboard, which lists
+                  everything whether or not this is ticked.
+                </li>
+                <li>
+                  <span class="font-medium">One daily message</span> — already how it works, for
+                  everyone, and there is no way to ask for separate messages instead. That column is
+                  greyed out rather than taking a choice we cannot act on. If you turned it off back
+                  when it was tickable, that is still on file and saving this page does not erase it.
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div
+            class="sticky bottom-0 mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white/95 p-4 backdrop-blur"
+          >
+            <span class="flex-1 text-sm text-ink-500">
+              Saving rewrites every box on this table at once, so nothing is left half-ticked. The
+              lead times are written first; if anything goes wrong after that, the message says so
+              rather than leaving you to guess which half landed.
+            </span>
+            <button type="submit" name="intent" value="save_alerts" class="btn btn-primary">
+              Save alert settings
             </button>
           </div>
         </form>
-      )
-    }
+      </section>
 
-    {/* One card since the timezone control moved into "Your account", where the
-        person it belongs to is. */}
-    <div class="mt-3 max-w-3xl">
-      <div class={card}>
-        <dl class="divide-y divide-ink-100 text-sm">
-          <div class="flex justify-between gap-4 py-2.5">
-            <dt class="text-ink-500">Legal name</dt>
-            <dd class="text-right font-medium">{carrier?.legal_name ?? '—'}</dd>
-          </div>
-          <div class="flex justify-between gap-4 py-2.5">
-            <dt class="text-ink-500">Doing business as</dt>
-            <dd class="text-right font-medium">
-              {carrier?.dba_name || <span class="font-normal text-ink-500">none on file</span>}
-            </dd>
-          </div>
-          <div class="flex justify-between gap-4 py-2.5">
-            <dt class="text-ink-500">USDOT number</dt>
-            <dd class="text-right font-medium tabular-nums">{carrier?.dot_number ?? '—'}</dd>
-          </div>
-          <div class="flex justify-between gap-4 py-2.5">
-            <dt class="text-ink-500">Physical address</dt>
-            <dd class="text-right font-medium">
+      {/* ======================================================= quiet hours */}
+
+      <section class="mt-10">
+        <h2 class="text-lg font-semibold tracking-tight">Quiet hours</h2>
+        <p class="mt-1 max-w-3xl text-sm text-ink-500">
+          Hours when we hold a message rather than send it. Times are on your own clock — the one set
+          above — so they mean what they say wherever you are.
+        </p>
+
+        <form method="POST" class={`${card} mt-3 max-w-2xl`}>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label class="field-label" for="quiet_from">Quiet from</label>
+              <input
+                type="time"
+                id="quiet_from"
+                name="quiet_from"
+                value={timeForInput(profile?.quiet_from)}
+                class={`${field} tabular-nums`}
+                {...invalid('quiet_from')}
+              />
               {
-                addressLines.length > 0 ? (
-                  addressLines.map((line) => <div class="tabular-nums">{line}</div>)
-                ) : (
-                  <span class="font-normal text-ink-500">none on file</span>
+                errorField === 'quiet_from' && (
+                  <p class="field-error" id="quiet_from-error">
+                    <span aria-hidden="true">⚠</span>
+                    <span>{error}</span>
+                  </p>
                 )
               }
-            </dd>
+            </div>
+            <div>
+              <label class="field-label" for="quiet_to">Quiet until</label>
+              <input
+                type="time"
+                id="quiet_to"
+                name="quiet_to"
+                value={timeForInput(profile?.quiet_to)}
+                class={`${field} tabular-nums`}
+                aria-invalid={errorField === 'quiet_from' ? 'true' : undefined}
+                aria-describedby={errorField === 'quiet_from' ? 'quiet_from-error' : undefined}
+              />
+            </div>
           </div>
-        </dl>
-      </div>
-    </div>
-  </section>
-
-  {/* ======================================================== the matrix */}
-
-  <section class="mt-10">
-    <h2 class="text-lg font-semibold tracking-tight">Who gets told what</h2>
-    <p class="mt-1 max-w-3xl text-sm text-ink-500">
-      These are your settings, not the company's. Everyone on the account sets their own, so the
-      office manager can take every deadline and the owner can take only the ones that are already
-      overdue.
-    </p>
-
-    {
-      !hasSavedPrefs && (
-        <p class="mt-3 max-w-3xl rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
-          You have not changed anything yet, so what is ticked below is what we do by default:
-          deadlines, by email. Saving this page turns that default into a choice.
-        </p>
-      )
-    }
-
-    <form method="POST" class="mt-3">
-      <div class="overflow-x-auto rounded-xl border border-ink-100 bg-white">
-        <table class="w-full text-sm sm:min-w-[56rem]">
-          {/* No header line on a phone. Every box below carries its own name
-              and its own caveat instead. */}
-          {/* ink-700: a column head is text a reader reads, and at 12px that
-              is the floor whatever it sits on. */}
-          <thead
-            class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group"
-          >
-            <tr>
-              <th class={th}>What</th>
-              {
-                NOTIFY_CHANNELS.map((c) => (
-                  <th class={`${th} text-center`}>
-                    <div>{c.label}</div>
-                    {c.note && (
-                      <div
-                        class:list={[
-                          'mt-0.5 text-xs normal-case',
-                          c.live ? 'text-ink-700' : 'text-amber-700',
-                        ]}
-                      >
-                        {c.note}
-                      </div>
-                    )}
-                  </th>
-                ))
-              }
-              <th class={th}>Warn me this many days out</th>
-              {/* The caveat rides under the column head, exactly as a channel's
-                  does, because that is where somebody reading the table looks
-                  before they reach for the control. */}
-              <th class={`${th} text-center`}>
-                <div>Roll into one daily message</div>
-                <div class="mt-0.5 text-xs normal-case text-amber-700">
-                  always on, not yours to change yet
-                </div>
-              </th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-ink-100">
-            {
-              NOTIFY_CATEGORIES.map((category) => (
-                <tr class="block py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
-                  <td class={`${cell} sm:align-top`}>
-                    <div class="font-medium">{category.label}</div>
-                    <div class="mt-0.5 max-w-xs text-xs text-ink-700">{category.blurb}</div>
-                    {!category.live && (
-                      <div class="mt-1 max-w-xs text-xs text-amber-700">
-                        Nothing is sent for this yet — the job that watches for it is not written.
-                        Your choice is kept and will be honoured the day it is.
-                      </div>
-                    )}
-                  </td>
-
-                  {NOTIFY_CHANNELS.map((channel) => (
-                    <td class={`${cell} sm:text-center sm:align-top`}>
-                      {/* The whole line is the target on a phone, which is what
-                          makes a 16px box tappable standing in a yard. The
-                          visible word is part of the aria-label above it, so
-                          the two names cannot disagree. */}
-                      <label class={boxRow}>
-                        {channel.live ? (
-                          <input
-                            type="checkbox"
-                            name={`on_${category.value}_${channel.value}`}
-                            checked={isEnabled(category.value, channel.value)}
-                            aria-label={`${category.label} by ${channel.label}`}
-                            class={checkbox}
-                          />
-                        ) : (
-                          /* Disabled, not absent, and not a live box that does
-                             nothing. A ticked box that produced no text message
-                             would be a promise the system cannot keep — which is
-                             exactly the mistake the last build shipped. */
-                          <input
-                            type="checkbox"
-                            disabled
-                            checked={false}
-                            aria-label={`${category.label} by ${channel.label} — not available`}
-                            title="Text messages are not switched on yet."
-                            class={`${checkbox} opacity-40`}
-                          />
-                        )}
-                        {/* The column head, carried onto the box. A grid of
-                            unnamed boxes is what this becomes on a phone
-                            otherwise, and the caveat under the head is the
-                            difference between a setting and a promise. */}
-                        <span class="sm:hidden">
-                          {channel.label}
-                          {channel.note && (
-                            <span
-                              class:list={[
-                                'ml-1 text-xs',
-                                channel.live ? 'text-ink-700' : 'text-amber-700',
-                              ]}
-                            >
-                              {channel.note}
-                            </span>
-                          )}
-                        </span>
-                      </label>
-                    </td>
-                  ))}
-
-                  <td class={`${cell} mt-2 sm:mt-0 sm:align-top`}>
-                    <span class={`${colName} mb-1 block`}>Warn me this many days out</span>
-                    {category.perItemLeadDays ? (
-                      /* No box, because there is nothing here to store. Each
-                         reminder carries its own number — an insurance renewal
-                         wants a month, a callback wants a day — so a box here
-                         would be a control that changed nothing. Say where the
-                         setting actually is instead. */
-                      <span class="block max-w-[14rem] text-xs text-ink-700">
-                        You choose the days on each reminder.{' '}
-                        <a href="/app/reminders" class="link font-medium">
-                          My reminders
-                        </a>
-                      </span>
-                    ) : (
-                      <>
-                        <input
-                          type="text"
-                          id={`lead_${category.value}`}
-                          name={`lead_${category.value}`}
-                          value={formatLeadDays(leadDaysFor(category.value))}
-                          inputmode="text"
-                          class={`${field} w-full tabular-nums sm:w-44`}
-                          aria-label={`Lead times for ${category.label}`}
-                        />
-                        <span class="mt-1 block text-xs text-ink-700 sm:max-w-[14rem]">
-                          {describeLeadDays(leadDaysFor(category.value))}
-                        </span>
-                      </>
-                    )}
-                  </td>
-
-                  <td class={`${cell} sm:text-center sm:align-top`}>
-                    <label class={boxRow}>
-                    {/* Disabled, not absent, and not a live box that does
-                        nothing — the same treatment a channel we cannot deliver
-                        on gets, for the same reason. The digest job batches
-                        every message into one morning email unconditionally and
-                        reads this column nowhere, so an untickable box was a
-                        promise of separate messages that no code sends. It
-                        shows TICKED because ticked is what genuinely happens,
-                        to everybody, today. There is no `name`, so it posts
-                        nothing; the save reads the stored value back instead. */}
-                    <input
-                      type="checkbox"
-                      disabled
-                      checked
-                      aria-label={`Daily digest for ${category.label} — always on`}
-                      title="Everything already arrives as one message a day. There is no other setting yet."
-                      class={`${checkbox} opacity-40`}
-                    />
-                      {/* The column head, carried onto the box, caveat and all.
-                          Without it this is a ticked box on a phone with
-                          nothing on screen saying what it is or that it is not
-                          yet yours to change. */}
-                      <span class="sm:hidden">
-                        Roll into one daily message
-                        <span class="ml-1 text-xs text-amber-700">
-                          always on, not yours to change yet
-                        </span>
-                      </span>
-                    </label>
-                    {!digestFor(category.value) && (
-                      /* Somebody unticked this while the box was still live.
-                         The row survives the save untouched, so say so here
-                         rather than showing a ticked box over a stored `false`
-                         and letting them find out the day the choice is real. */
-                      <div class="mt-1 text-xs text-amber-700">
-                        You turned this off before we could honour it. Still on file.
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))
-            }
-          </tbody>
-        </table>
-      </div>
-
-      <div class="mt-4 grid gap-4 lg:grid-cols-2">
-        <div class="rounded-xl border border-ink-100 bg-white p-4 text-sm text-ink-700">
-          <p class="font-medium text-ink-900">About those numbers</p>
-          <p class="mt-1">
-            Days before the deadline, separated by commas. <span class="tabular-nums">30, 7, 1</span
-            > means we warn you a month out, a week out, and the day before.
+          <p class="mt-2 text-xs text-ink-700">
+            Leave both blank for no quiet hours. A window that runs past midnight —
+            <span class="tabular-nums">22:00</span> to <span class="tabular-nums">07:00</span> — is the
+            normal one and works correctly. Filling in only one of the two is refused, because half a
+            window silences nothing while looking like it does.
           </p>
-          <p class="mt-2">
-            A <span class="font-medium text-ink-900">negative</span> number is a nudge
-            <span class="font-medium text-ink-900">after</span> the date has gone by:
-            <span class="tabular-nums">-1</span> means "tell me again the day after it lapsed",
-            because that is the day it starts costing money. The sentence under each box is what we
-            read your numbers as — if it does not match what you meant, the numbers are wrong.
+
+          <label class="check-row mt-4 items-start border-t border-ink-100 px-2 pt-4">
+            <input
+              type="checkbox"
+              name="quiet_allow_critical"
+              checked={profile?.quiet_allow_critical ?? true}
+              class={`${checkbox} mt-0.5`}
+            />
+            <span>
+              <span class="text-sm font-medium">Let the urgent ones through anyway</span>
+              <span class="mt-1 block text-sm text-ink-500">
+                "Urgent" is a short, fixed list, and you should be able to see exactly what is on it:
+                anything <span class="font-medium text-ink-900">already overdue</span>, and anything
+                <span class="font-medium text-ink-900">due tomorrow</span>. Nothing else qualifies, and
+                nothing else ever will without this line changing. Untick this and we hold even those
+                until your quiet hours end.
+              </span>
+              {/* Said here, where somebody decides what may wake him. The job
+                  forces `allowCritical: false` for reminders whatever this box
+                  says, and a rule the code applies and the screen does not mention
+                  is a rule nobody can check. */}
+              <span class="mt-1 block text-sm text-ink-500">
+                Your own reminders never come through quiet hours, even when they are late. They wait
+                for the morning.
+              </span>
+            </span>
+          </label>
+
+          <p class="mt-4 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+            Obeyed. The morning job checks these times on your clock before it sends anything, and a
+            message caught inside the window is <span class="font-medium">held</span>, not dropped —
+            it goes out on the next run after your quiet hours end, still saying the same thing.
           </p>
-          <p class="mt-2">
-            Emptying the box does not mean "never". We put the standard
-            <span class="tabular-nums">30, 7, 1, -1</span> back, because nobody has ever actually
-            wanted a deadline they are never warned about.
+          <p class="mt-2 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            One thing to know before you set a wide window: the job runs on a schedule, and a message
+            can only go out when the job is awake. A quiet window covering every hour the job runs
+            holds everything indefinitely — so if you want silence for most of the day, leave
+            <span class="font-medium">let the urgent ones through</span> ticked.
           </p>
-        </div>
 
-        <div class="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
-          <p class="font-medium">What actually goes out today</p>
-          <ul class="mt-1 space-y-1">
-            <li>
-              <span class="font-medium">Email about deadlines</span> — live. One message a morning
-              with everything that has reached a warning day.
-            </li>
-            <li>
-              <span class="font-medium">Text messages</span> — not switched on yet. The carrier
-              registration that lets a business send texts does not exist for us yet, so a text
-              would be rejected rather than delivered. We are not going to tick a box that does
-              nothing.
-            </li>
-            <li>
-              <span class="font-medium">In the app</span> — that is the dashboard, which lists
-              everything whether or not this is ticked.
-            </li>
-            <li>
-              <span class="font-medium">One daily message</span> — already how it works, for
-              everyone, and there is no way to ask for separate messages instead. That column is
-              greyed out rather than taking a choice we cannot act on. If you turned it off back
-              when it was tickable, that is still on file and saving this page does not erase it.
-            </li>
-          </ul>
-        </div>
-      </div>
+          <div class="mt-4 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+            <button type="submit" name="intent" value="save_quiet" class="btn btn-primary">
+              Save quiet hours
+            </button>
+          </div>
+        </form>
+      </section>
 
-      <div
-        class="sticky bottom-0 mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 bg-white/95 p-4 backdrop-blur"
-      >
-        <span class="flex-1 text-sm text-ink-500">
-          Saving rewrites every box on this table at once, so nothing is left half-ticked. The
-          lead times are written first; if anything goes wrong after that, the message says so
-          rather than leaving you to guess which half landed.
-        </span>
-        <button type="submit" name="intent" value="save_alerts" class="btn btn-primary">
-          Save alert settings
-        </button>
-      </div>
-    </form>
-  </section>
+      {/* ============================================================ snoozes */}
 
-  {/* ======================================================= quiet hours */}
-
-  <section class="mt-10">
-    <h2 class="text-lg font-semibold tracking-tight">Quiet hours</h2>
-    <p class="mt-1 max-w-3xl text-sm text-ink-500">
-      Hours when we hold a message rather than send it. Times are on your own clock — the one set
-      above — so they mean what they say wherever you are.
-    </p>
-
-    <form method="POST" class={`${card} mt-3 max-w-2xl`}>
-      <div class="grid gap-4 sm:grid-cols-2">
-        <div>
-          <label class="field-label" for="quiet_from">Quiet from</label>
-          <input
-            type="time"
-            id="quiet_from"
-            name="quiet_from"
-            value={timeForInput(profile?.quiet_from)}
-            class={`${field} tabular-nums`}
-            {...invalid('quiet_from')}
-          />
+      <section class="mt-10">
+        <h2 class="text-lg font-semibold tracking-tight">
+          Snoozed items
           {
-            errorField === 'quiet_from' && (
-              <p class="field-error" id="quiet_from-error">
-                <span aria-hidden="true">⚠</span>
-                <span>{error}</span>
-              </p>
+            snoozes.length > 0 && (
+              <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">{snoozes.length}</span>
             )
           }
-        </div>
-        <div>
-          <label class="field-label" for="quiet_to">Quiet until</label>
-          <input
-            type="time"
-            id="quiet_to"
-            name="quiet_to"
-            value={timeForInput(profile?.quiet_to)}
-            class={`${field} tabular-nums`}
-            aria-invalid={errorField === 'quiet_from' ? 'true' : undefined}
-            aria-describedby={errorField === 'quiet_from' ? 'quiet_from-error' : undefined}
-          />
-        </div>
-      </div>
-      <p class="mt-2 text-xs text-ink-700">
-        Leave both blank for no quiet hours. A window that runs past midnight —
-        <span class="tabular-nums">22:00</span> to <span class="tabular-nums">07:00</span> — is the
-        normal one and works correctly. Filling in only one of the two is refused, because half a
-        window silences nothing while looking like it does.
-      </p>
+        </h2>
+        <p class="mt-1 max-w-3xl text-sm text-ink-500">
+          Items somebody looked at and decided could wait. They stay off your alerts until the date
+          shown, and then come back on their own — a snooze is never permanent, because the deadline
+          is not.
+        </p>
 
-      <label class="check-row mt-4 items-start border-t border-ink-100 px-2 pt-4">
-        <input
-          type="checkbox"
-          name="quiet_allow_critical"
-          checked={profile?.quiet_allow_critical ?? true}
-          class={`${checkbox} mt-0.5`}
-        />
-        <span>
-          <span class="text-sm font-medium">Let the urgent ones through anyway</span>
-          <span class="mt-1 block text-sm text-ink-500">
-            "Urgent" is a short, fixed list, and you should be able to see exactly what is on it:
-            anything <span class="font-medium text-ink-900">already overdue</span>, and anything
-            <span class="font-medium text-ink-900">due tomorrow</span>. Nothing else qualifies, and
-            nothing else ever will without this line changing. Untick this and we hold even those
-            until your quiet hours end.
-          </span>
-          {/* Said here, where somebody decides what may wake him. The job
-              forces `allowCritical: false` for reminders whatever this box
-              says, and a rule the code applies and the screen does not mention
-              is a rule nobody can check. */}
-          <span class="mt-1 block text-sm text-ink-500">
-            Your own reminders never come through quiet hours, even when they are late. They wait
-            for the morning.
-          </span>
-        </span>
-      </label>
+        {
+          snoozes.length === 0 ? (
+            <div class="mt-3 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+              <p class="font-medium">Nothing is snoozed</p>
+              <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+                Everything we track is alerting normally. When you snooze something it appears here,
+                with the date it comes back.
+              </p>
+            </div>
+          ) : (
+            <ul class="mt-3 space-y-2">
+              {snoozes.map((s) => {
+                const rule = ruleByCode(s.rule_code)
+                return (
+                  <li class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-ink-100 bg-white px-4 py-3">
+                    <div class="min-w-0 flex-1">
+                      <p class="font-medium">{rule?.title ?? s.rule_code}</p>
+                      <p class="mt-0.5 text-sm text-ink-500">
+                        {snoozeSubject(s)}
+                        {/* The rule code is shown as well as the title. It is the
+                            string actually stored in the row, and it is what
+                            support has to match on when the title and the row
+                            disagree — which happens the moment a rule is renamed. */}
+                        {/* The stored rule code. It was ink-300 — the string
+                            support has to match on, present and unreadable. */}
+                        <span class="text-ink-500"> · {s.rule_code}</span>
+                      </p>
+                      {s.reason && <p class="mt-0.5 text-xs text-ink-700">{s.reason}</p>}
+                    </div>
+                    <div class="text-sm whitespace-nowrap">
+                      <span class="text-ink-500">Quiet until</span>{' '}
+                      <span class="font-medium tabular-nums">{formatDate(s.until)}</span>
+                    </div>
+                    <form method="POST" class="shrink-0">
+                      <input type="hidden" name="snooze_id" value={s.id} />
+                      {/* Secondary, not red: putting an item back into the alerts
+                          destroys nothing. 44px, where it used to be 36px. */}
+                      <button
+                        type="submit"
+                        name="intent"
+                        value="unsnooze"
+                        class="btn btn-secondary btn-sm"
+                      >
+                        Un-snooze
+                      </button>
+                    </form>
+                  </li>
+                )
+              })}
+            </ul>
+          )
+        }
+      </section>
+    </Fragment>
+  )}
 
-      <p class="mt-4 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-        Obeyed. The morning job checks these times on your clock before it sends anything, and a
-        message caught inside the window is <span class="font-medium">held</span>, not dropped —
-        it goes out on the next run after your quiet hours end, still saying the same thing.
-      </p>
-      <p class="mt-2 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-        One thing to know before you set a wide window: the job runs on a schedule, and a message
-        can only go out when the job is awake. A quiet window covering every hour the job runs
-        holds everything indefinitely — so if you want silence for most of the day, leave
-        <span class="font-medium">let the urgent ones through</span> ticked.
-      </p>
+  {tab === 'messages' && (
+    <Fragment>
+      {/* ==================================================== recent messages */}
 
-      <div class="mt-4 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
-        <button type="submit" name="intent" value="save_quiet" class="btn btn-primary">
-          Save quiet hours
-        </button>
-      </div>
-    </form>
-  </section>
+      <section>
+        <h2 class="text-lg font-semibold tracking-tight">Recent messages</h2>
+        <p class="mt-1 max-w-3xl text-sm text-ink-500">
+          The last <span class="tabular-nums">20</span> messages we sent about this carrier, to anyone
+          on the account. This is a record, not a setting: it cannot be edited or cleared from here, by
+          anyone, because its whole value is answering "did you tell me?" months later. The address
+          shown is where the message actually went, not where we would send one today.
+        </p>
 
-  {/* ============================================================ snoozes */}
+        {
+          log.length === 0 ? (
+            <div class="mt-3 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
+              <p class="font-medium">Nothing sent yet</p>
+              <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
+                Once a deadline reaches one of your warning days, the message we send about it is
+                listed here — including any we tried to send and could not.
+              </p>
+            </div>
+          ) : (
+            <div class="mt-3 overflow-x-auto rounded-xl border border-ink-100 bg-white">
+              <table class="w-full text-sm sm:min-w-[48rem]">
+                {/* No header line on a phone. Each block says what it is instead. */}
+                <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
+                  <tr>
+                    <th class={th}>When</th>
+                    <th class={th}>How</th>
+                    <th class={th}>To</th>
+                    <th class={th}>About</th>
+                    <th class={th}>Result</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-ink-100">
+                  {messages.map(({ row, items }) => (
+                    <tr class="flex flex-col py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
+                      {/* WHAT IT WAS ABOUT LEADS on a phone. This list answers "did
+                          you tell me?", and the subject line is the answer; the
+                          stamp and the address are what back it up. */}
+                      <td class={`${cell} order-2 tabular-nums sm:whitespace-nowrap`}>
+                        {stamp(row.sent_at)}
+                      </td>
+                      <td class={`${cell} order-4`}>
+                        <span class={colName}>How </span>
+                        {channelLabel(row.channel)}
+                      </td>
+                      <td class={`${cell} order-5 tabular-nums`}>
+                        <span class={`${colName} tabular-nums`}>To </span>
+                        {row.destination}
+                      </td>
+                      <td class={`${cell} order-1 font-medium sm:font-normal`}>
+                        {row.subject ?? <span class="text-ink-500">no subject line</span>}
+                        {items > 1 && (
+                          <span class="block text-xs font-normal text-ink-500">
+                            One message. <span class="tabular-nums">{items}</span> items in it.
+                          </span>
+                        )}
+                      </td>
+                      <td class={`${cell} order-3`}>
+                        {/* `statusPill` hands back the shared `badge badge-*` pair,
+                            so there is no second construction over the top of it. */}
+                        <span class={statusPill(deliveryLabel(row))}>{deliveryLabel(row)}</span>
+                        {/* A message we tried and failed to send is exactly the
+                            thing somebody will ask about, so the reason is on the
+                            row rather than in a log only we can read. The provider's
+                            own word is there too when we have it: "bounced" and
+                            "suppressed" both mean it never arrived and have entirely
+                            different fixes. */}
+                        {row.error && <div class="mt-1 text-xs text-ink-700">{row.error}</div>}
+                        {row.delivery_detail && row.delivery_state !== 'delivered' && (
+                          <div class="mt-1 text-xs text-ink-700">{row.delivery_detail}</div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
+      </section>
+    </Fragment>
+  )}
 
-  <section class="mt-10">
-    <h2 class="text-lg font-semibold tracking-tight">
-      Snoozed items
-      {
-        snoozes.length > 0 && (
-          <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">{snoozes.length}</span>
-        )
-      }
-    </h2>
-    <p class="mt-1 max-w-3xl text-sm text-ink-500">
-      Items somebody looked at and decided could wait. They stay off your alerts until the date
-      shown, and then come back on their own — a snooze is never permanent, because the deadline
-      is not.
-    </p>
-
-    {
-      snoozes.length === 0 ? (
-        <div class="mt-3 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
-          <p class="font-medium">Nothing is snoozed</p>
-          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
-            Everything we track is alerting normally. When you snooze something it appears here,
-            with the date it comes back.
-          </p>
-        </div>
-      ) : (
-        <ul class="mt-3 space-y-2">
-          {snoozes.map((s) => {
-            const rule = ruleByCode(s.rule_code)
-            return (
-              <li class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-ink-100 bg-white px-4 py-3">
-                <div class="min-w-0 flex-1">
-                  <p class="font-medium">{rule?.title ?? s.rule_code}</p>
-                  <p class="mt-0.5 text-sm text-ink-500">
-                    {snoozeSubject(s)}
-                    {/* The rule code is shown as well as the title. It is the
-                        string actually stored in the row, and it is what
-                        support has to match on when the title and the row
-                        disagree — which happens the moment a rule is renamed. */}
-                    {/* The stored rule code. It was ink-300 — the string
-                        support has to match on, present and unreadable. */}
-                    <span class="text-ink-500"> · {s.rule_code}</span>
-                  </p>
-                  {s.reason && <p class="mt-0.5 text-xs text-ink-700">{s.reason}</p>}
-                </div>
-                <div class="text-sm whitespace-nowrap">
-                  <span class="text-ink-500">Quiet until</span>{' '}
-                  <span class="font-medium tabular-nums">{formatDate(s.until)}</span>
-                </div>
-                <form method="POST" class="shrink-0">
-                  <input type="hidden" name="snooze_id" value={s.id} />
-                  {/* Secondary, not red: putting an item back into the alerts
-                      destroys nothing. 44px, where it used to be 36px. */}
-                  <button
-                    type="submit"
-                    name="intent"
-                    value="unsnooze"
-                    class="btn btn-secondary btn-sm"
-                  >
-                    Un-snooze
-                  </button>
-                </form>
-              </li>
-            )
-          })}
-        </ul>
-      )
-    }
-  </section>
-
-  {/* ==================================================== recent messages */}
-
-  <section class="mt-10">
-    <h2 class="text-lg font-semibold tracking-tight">Recent messages</h2>
-    <p class="mt-1 max-w-3xl text-sm text-ink-500">
-      The last <span class="tabular-nums">20</span> messages we sent about this carrier, to anyone
-      on the account. This is a record, not a setting: it cannot be edited or cleared from here, by
-      anyone, because its whole value is answering "did you tell me?" months later. The address
-      shown is where the message actually went, not where we would send one today.
-    </p>
-
-    {
-      log.length === 0 ? (
-        <div class="mt-3 rounded-xl border border-dashed border-ink-100 bg-white p-10 text-center">
-          <p class="font-medium">Nothing sent yet</p>
-          <p class="mx-auto mt-2 max-w-md text-sm text-ink-500">
-            Once a deadline reaches one of your warning days, the message we send about it is
-            listed here — including any we tried to send and could not.
-          </p>
-        </div>
-      ) : (
-        <div class="mt-3 overflow-x-auto rounded-xl border border-ink-100 bg-white">
-          <table class="w-full text-sm sm:min-w-[48rem]">
-            {/* No header line on a phone. Each block says what it is instead. */}
-            <thead class="hidden border-b border-ink-100 text-left text-xs tracking-wide text-ink-700 uppercase sm:table-header-group">
-              <tr>
-                <th class={th}>When</th>
-                <th class={th}>How</th>
-                <th class={th}>To</th>
-                <th class={th}>About</th>
-                <th class={th}>Result</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-ink-100">
-              {log.map((row) => (
-                <tr class="flex flex-col py-3 hover:bg-ink-50/60 sm:table-row sm:py-0">
-                  {/* WHAT IT WAS ABOUT LEADS on a phone. This list answers "did
-                      you tell me?", and the subject line is the answer; the
-                      stamp and the address are what back it up. */}
-                  <td class={`${cell} order-2 tabular-nums sm:whitespace-nowrap`}>
-                    {stamp(row.sent_at)}
-                  </td>
-                  <td class={`${cell} order-4`}>
-                    <span class={colName}>How </span>
-                    {channelLabel(row.channel)}
-                  </td>
-                  <td class={`${cell} order-5 tabular-nums`}>
-                    <span class={`${colName} tabular-nums`}>To </span>
-                    {row.destination}
-                  </td>
-                  <td class={`${cell} order-1 font-medium sm:font-normal`}>
-                    {row.subject ?? <span class="text-ink-500">no subject line</span>}
-                  </td>
-                  <td class={`${cell} order-3`}>
-                    {/* `statusPill` hands back the shared `badge badge-*` pair,
-                        so there is no second construction over the top of it. */}
-                    <span class={statusPill(deliveryLabel(row))}>{deliveryLabel(row)}</span>
-                    {/* A message we tried and failed to send is exactly the
-                        thing somebody will ask about, so the reason is on the
-                        row rather than in a log only we can read. The provider's
-                        own word is there too when we have it: "bounced" and
-                        "suppressed" both mean it never arrived and have entirely
-                        different fixes. */}
-                    {row.error && <div class="mt-1 text-xs text-ink-700">{row.error}</div>}
-                    {row.delivery_detail && row.delivery_state !== 'delivered' && (
-                      <div class="mt-1 text-xs text-ink-700">{row.delivery_detail}</div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )
-    }
-  </section>
 </App>

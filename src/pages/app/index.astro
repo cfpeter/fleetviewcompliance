@@ -23,6 +23,7 @@ import Donut from '../../components/charts/Donut.astro'
 import Figure from '../../components/charts/Figure.astro'
 import Runway from '../../components/charts/Runway.astro'
 import App from '../../layouts/App.astro'
+import { flashText } from '../../lib/flash.ts'
 import {
   buildHealth,
   donutSlices,
@@ -38,6 +39,7 @@ import { buildRunway, weekRangeLabel } from '../../lib/charts/runway.ts'
 import { TONES } from '../../lib/charts/tones.ts'
 import {
   capSection,
+  DASHBOARD_SECTIONS,
   dashboardHref,
   emptyFilterState,
   parseDashboardView,
@@ -64,6 +66,13 @@ import {
   type ReminderItem,
 } from '../../lib/reminders.ts'
 import { setupNudge } from '../../lib/roster.ts'
+import {
+  readRowDates,
+  rowAnswers,
+  rowField,
+  rowMax,
+  rowPrompt,
+} from '../../lib/dashboard-rows.ts'
 import { resolveAnchor } from '../../lib/rules/anchors.ts'
 import { SOON_DAYS, dueLine, standingPill } from '../../lib/rules/index.ts'
 
@@ -129,6 +138,22 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const todayIso = new Date().toISOString().slice(0, 10)
 
 /**
+ * The box on each row, by field name — built from `items` and NOT from the rows
+ * currently on screen.
+ *
+ * Two jobs, one map. The markup asks it whether this row gets a box; the save
+ * handler asks it what a posted field means. Building it from every item rather
+ * than from the filtered view is what lets a save work when the form was
+ * submitted from a filtered dashboard, and it costs nothing: `items` is already
+ * scoped to this carrier by RLS, so every target in here is one of his own
+ * records.
+ *
+ * A posted field that is not in this map is not refused — it is never looked
+ * at. See the note on `rowAnswers`.
+ */
+const answerable = rowAnswers(items, carrierId)
+
+/**
  * The dashboard now takes writes, and every branch ends in a 303.
  *
  * Posting to the page itself rather than to an API route keeps the whole thing
@@ -142,6 +167,162 @@ if (Astro.request.method === 'POST') {
   const here = (extra: string) =>
     `show=unknown${focus ? `&s=${encodeURIComponent(focus.id)}` : ''}${extra}`
   const fail = (message: string) => to(here(`&error=${encodeURIComponent(message)}`))
+
+  /**
+   * A row save can be made from any view, so its answer goes back to the view
+   * he was standing on. `here()` above always says `show=unknown` because the
+   * date editor lives there; sending a man who saved a date from the Overdue
+   * list to the date editor would be answering a question he did not ask.
+   */
+  const keepView = (extra: string) => (view === 'all' ? extra : `show=${view}&${extra}`)
+  const rowFail = (message: string, at = '') =>
+    to(`${keepView(`error=${encodeURIComponent(message)}`)}${at}`)
+
+  /**
+   * A date typed on a deadline row, straight from the list.
+   *
+   * ONE FORM, EVERY ROW. Each box carries `form="row-dates"`, so a person can
+   * type three dates in three sections and press Save once — the alternative
+   * was a form per row, and on a page with no JavaScript that is one full page
+   * load per date.
+   *
+   * WHAT IS TRUSTED OUT OF THE BODY: nothing but the field NAME, and only far
+   * enough to look it up in `answerable`, which was built here from this
+   * carrier's own rows. Which anchor key a date is filed under, which table it
+   * lands in and which record it belongs to are all decided on this side. A
+   * posted anchor key would be an owner filing any date under any key on any
+   * record he can see — including `hire_date`, which outranks the driver's own
+   * column forever.
+   */
+  if (intent === 'save_row_dates') {
+    /**
+     * BACK TO THE ROW HE WAS LOOKING AT, on EVERY exit.
+     *
+     * The owner's words: "I saved the overdue and it refreshed and it scrolled
+     * down, this is something very very annoying." A POST always ends in a
+     * fresh document and a fresh document starts at the top; the fragment is
+     * what HTML gives us instead, and it costs no script.
+     *
+     * Computed here rather than at the one `return` that first had it, because
+     * the exits that are NOT the happy path are the ones where losing his place
+     * hurts most: a refusal he has to act on, and a blank submit he has to go
+     * back and correct. Both used to drop him at the top of a 10,000px page.
+     *
+     * Checked against the catalogue rather than pasted through: this ends up in
+     * a Location header, and an unchecked value out of the body has no business
+     * there.
+     */
+    const pressed = String(form.get('from') ?? '')
+    const at = (DASHBOARD_SECTIONS as readonly string[]).includes(pressed)
+      ? `#section-${pressed}`
+      : ''
+
+    const typed = readRowDates(answerable, (field) => form.get(field) as string | null, todayIso)
+    if (!typed.ok) return rowFail(typed.message, at)
+    if (typed.typed.length === 0) return to(`${keepView('rows=0')}${at}`)
+
+    const anchors = typed.typed.filter((t) => t.answer.target.via === 'anchor')
+    const columns = typed.typed.filter((t) => t.answer.target.via === 'column')
+
+    const recordedAt = new Date().toISOString()
+    let written = 0
+
+    if (anchors.length > 0) {
+      // Every record these dates touch, in one query. The filter is on
+      // `subject_id` alone and the map is keyed on all three parts, so a row
+      // belonging to some other subject type with the same id — which cannot
+      // happen, but nothing here depends on that — simply never matches a slot.
+      const subjectIds = [
+        ...new Set(anchors.map((t) => (t.answer.target as { subjectId: string }).subjectId)),
+      ]
+      const { data: currentRows, error: readError } = await supabase
+        .from('current_compliance_anchors')
+        .select('id, anchor_key, occurred_on, subject_type, subject_id')
+        .in('subject_id', subjectIds)
+      if (readError) return rowFail(readError.message)
+
+      const current = new Map(
+        (currentRows ?? []).map((r) => [
+          anchorSlot(
+            String(r.subject_type) as 'carrier' | 'driver' | 'vehicle',
+            String(r.subject_id),
+            String(r.anchor_key),
+          ),
+          { id: String(r.id), occurred_on: String(r.occurred_on).slice(0, 10) },
+        ]),
+      )
+
+      const { supersede, inserts, conflicts } = planAnchorWrites({
+        entries: anchors.map((t) => {
+          const target = t.answer.target as {
+            subject: 'carrier' | 'driver' | 'vehicle'
+            subjectId: string
+            anchorKey: string
+          }
+          return {
+            subject: target.subject,
+            subjectId: target.subjectId,
+            anchorKey: target.anchorKey,
+            on: t.on,
+          }
+        }),
+        current,
+        carrierId,
+        userId: Astro.locals.userId ?? null,
+        recordedAt,
+      })
+
+      // One box per row and one row per (rule, record), so two boxes cannot
+      // name one slot — but a planner that can refuse must never refuse
+      // silently.
+      if (conflicts.length > 0) {
+        return rowFail('You typed two different dates for the same thing.')
+      }
+
+      if (supersede.length > 0) {
+        // Superseded, never deleted. The old row stays as the record of what was
+        // believed and when.
+        const { error } = await supabase
+          .from('compliance_records')
+          .update({ superseded_at: recordedAt })
+          .in('id', supersede)
+        if (error) return rowFail(error.message)
+      }
+      if (inserts.length > 0) {
+        const { error } = await supabase.from('compliance_records').insert(inserts)
+        if (error) return rowFail(error.message)
+      }
+      written += inserts.length
+    }
+
+    // The CDL expiry, and today nothing else: its home is a column on the
+    // driver, and a compliance record under that key would outrank the column
+    // silently. See COLUMN_TARGETS in src/lib/dashboard-rows.ts.
+    for (const t of columns) {
+      const target = t.answer.target as { table: 'drivers'; column: 'cdl_expires_on'; id: string }
+      const { error } = await supabase
+        .from(target.table)
+        .update({ [target.column]: t.on })
+        .eq('id', target.id)
+      if (error) return rowFail(error.message)
+      written += 1
+    }
+
+    /**
+     * BACK TO THE ROW HE WAS LOOKING AT, not to the top of the page.
+     *
+     * The owner's words: "I saved the overdue and it refreshed and it scrolled
+     * down, this is something very very annoying." A POST always ends in a
+     * fresh document, and a fresh document starts at the top. The fragment is
+     * what HTML gives us instead — the same mechanism the settings page uses to
+     * put focus on a refusal — and it costs no script.
+     *
+     * Checked against the catalogue rather than pasted through: the fragment is
+     * part of the Location header we send, and an unchecked value out of the
+     * body has no business there.
+     */
+    return to(`${keepView(`rows=${written}`)}${at}`)
+  }
 
   if (intent === 'withdraw_date') {
     const recordId = String(form.get('record_id') ?? '')
@@ -291,7 +472,26 @@ const reminderLater = reminders.filter((r) => r.daysUntil > SOON_DAYS)
 
 const subjectHref = (t: string, id: string | null) =>
   t === 'driver' ? `/app/drivers/${id}` :
-  t === 'power_unit' || t === 'trailer' ? `/app/vehicles/${id}` : '/app/settings'
+  // A carrier subject is the COMPANY, so it goes to the company group of
+  // Settings rather than to the first tab, which is about the person.
+  t === 'power_unit' || t === 'trailer' ? `/app/vehicles/${id}` : '/app/settings?tab=company'
+
+/**
+ * The word under a subject's name in a row: the word the nav uses ("truck"),
+ * not the column name ("power unit"). The reminder rows further down already
+ * said "truck" and "your company" for the same records, and the "Start with"
+ * list above them says "Truck" — one page, one word for one thing.
+ */
+const subjectWord = (t: string) =>
+  t === 'power_unit'
+    ? 'truck'
+    : t === 'trailer'
+      ? 'trailer'
+      : t === 'driver'
+        ? 'driver'
+        : t === 'carrier'
+          ? 'your company'
+          : t.replaceAll('_', ' ')
 
 // `reminders` rides along on each section rather than being merged into `items`.
 // The two lists are ranked the same way and read on the same screen, and they
@@ -485,11 +685,21 @@ const healthArithmetic = healthMath(health)
  */
 const healthMissing = ringDrawn ? missingLine(health, 'owner') : null
 
+// On a filtered view the frame keeps a one-line subtitle: it is what holds the
+// "Show everything" link in the corner clear of the tiles under it.
 const healthSubtitle = !showRing
-  ? undefined
+  ? view !== 'all'
+    ? 'Tap a box to change the list.'
+    : undefined
   : health.total === health.onTrack
     ? `All ${health.total} we track have a date and are still ahead of you.`
-    : `Out of ${health.total} we track. Tap a box to see the list.`
+    : health.needsAttention > 0
+      ? // Says what the number IS. "2 need attention" over a grey line saying
+        // 14 are not OK read as a contradiction. Both are right; the word that
+        // makes them so is the clock: attention means overdue or due soon, and
+        // the dates nobody has typed are counted on their own, just below.
+        `Overdue or due soon, out of ${health.total} we track. Tap a box to see the list.`
+      : `Out of ${health.total} we track. Tap a box to see the list.`
 
 // Same rule as the runway's: what the shape does NOT cover, attached to the
 // figure rather than dropped in a footnote, because the shape is read whole and
@@ -701,7 +911,9 @@ const companyNeeds = openCount(buildHealth(companyInputs))
 const showNeeds = view === 'all' && needsTop.length > 0
 
 // The heading names the record, because the name IS the answer to "who first".
-const needsTitle = needsTop.length > 0 ? `Start with ${needsTop[0].label}` : ''
+// With its noun: a truck is usually a number, and "Start with 12" is a count.
+const needsTitle =
+  needsTop.length > 0 ? `Start with ${needsTop[0].noun.toLowerCase()} ${needsTop[0].label}` : ''
 const needsSubtitle =
   needsRows.length > NEEDS_CAP
     ? `The ${NEEDS_CAP} with the most to fix. Tap one to open it.`
@@ -720,10 +932,18 @@ const needsMore =
   needsMoreParts.length > 0 ? `${needsMoreParts.join(' ')} They are in the list below.` : null
 
 const params = Astro.url.searchParams
-const errorMessage = params.get('error')
+const errorMessage = flashText(Astro.url, Astro.request)
 const savedCount = params.has('dates') ? Number(params.get('dates')) : null
 const clearedCount = params.has('cleared') ? Number(params.get('cleared')) : null
 const withdrawn = params.get('withdrawn') === '1'
+/**
+ * Dates saved from the rows themselves, on whichever view he was standing on.
+ *
+ * Separate from `?dates=`, which belongs to the date editor and is only ever
+ * read on `show=unknown`. One receipt read on two surfaces would put "4 dates
+ * saved" across the top of a page where nothing had been.
+ */
+const rowsSaved = params.has('rows') ? Number(params.get('rows')) : null
 const batchStamp = params.get('at')
 
 /**
@@ -793,6 +1013,15 @@ const cardHeading = 'text-sm font-semibold tracking-tight'
  */
 const cell = 'block px-4 sm:table-cell sm:py-3'
 
+/**
+ * The pill on a "Coming up" row. `standingPill` knows nothing about the 45-day
+ * window — due soon is not a standing — so these rows wore the green "Current"
+ * pill inside an amber section, under an amber tile reading "Due in 45 days",
+ * beside a truck page that calls the same date "Due soon" in amber. One state,
+ * one colour: amber here too, with the word the tile and the truck page use.
+ */
+const SOON_PILL = { label: 'Due soon', className: 'badge badge-warning' }
+
 const emptyFiltered = shownCount === 0 && view !== 'all' ? emptyFilterState(view) : null
 
 /**
@@ -826,9 +1055,36 @@ const backOut = 'btn btn-secondary'
     real link, not a dismissible banner: there is nothing to dismiss, since it
     goes away by itself the moment the roster stops being empty.
   */}
+  {/*
+    THE ANSWER TO THE SAVE HE JUST MADE, above everything.
+
+    A date typed on a row can be saved from any view, so neither of these can
+    live where the date editor's receipt lives — that one is only ever drawn on
+    `show=unknown`, and a refusal rendered on a screen he is not looking at is a
+    save that failed in silence.
+  */}
+  {
+    errorMessage && view !== 'unknown' && (
+      <p class="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</p>
+    )
+  }
+  {
+    rowsSaved !== null && Number.isFinite(rowsSaved) && (
+      <p class="mb-4 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        {rowsSaved > 0
+          ? /* The count is the number of DATES, and the sentence says so. Rows
+               can move by more than that — one periodic inspection settles two
+               rules — and a number that does not match what he watched change
+               is a number he stops trusting. */
+            `${rowsSaved} ${rowsSaved === 1 ? 'date' : 'dates'} saved. The list below is already using ${rowsSaved === 1 ? 'it' : 'them'}.`
+          : 'Nothing was typed in, so nothing changed.'}
+      </p>
+    )
+  }
+
   {
     nudge && (
-      <div class="mb-4 rounded-xl border border-brand-500/30 bg-brand-500/[0.06] p-4 sm:flex sm:items-center sm:gap-4">
+      <div class="mb-4 rounded-xl border border-brand-500/30 bg-champagne-50 p-4 sm:flex sm:items-center sm:gap-4">
         <div class="sm:flex-1">
           <p class="font-medium">Finish setting up your fleet</p>
           <p class="mt-1 text-sm text-ink-700">{nudge}</p>
@@ -1033,11 +1289,15 @@ const backOut = 'btn btn-secondary'
 
   {
     view !== 'all' && (
-      <p class="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm tabular-nums text-ink-500">
+      <p class="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm tabular-nums text-ink-700">
         {/* One sentence, one tap out. The count is repeated here rather than left
             on the tile alone because this line is what he reads after the page
-            moves under him — the tiles are above his thumb, this is under it. */}
-        <span>Showing only <span class="font-medium text-ink-900">{viewNoun(view)}</span>. {shownCount} of {trackedCount} items.</span>
+            moves under him — the tiles are above his thumb, this is under it.
+
+            `health.total`, the same denominator the ring prints as "of 41". It
+            was `trackedCount`, which also counts the duties with no date anyone
+            can work out, so this line said "2 of 50" under a ring saying 41. */}
+        <span>Showing only <span class="font-medium text-ink-900">{viewNoun(view)}</span>. {shownCount} of {health.total} items.</span>
         <a href="/app" class="link inline-flex min-h-11 items-center font-medium">Show everything</a>
       </p>
     )
@@ -1221,7 +1481,7 @@ const backOut = 'btn btn-secondary'
 
   {
     view === 'unknown' && withdrawn && (
-      <p class="mt-4 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+      <p class="mt-4 rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
         Date withdrawn. We keep it in the history, so you can still see what was on file and
         when. The next most recent date is now the one we use.
       </p>
@@ -1280,13 +1540,14 @@ const backOut = 'btn btn-secondary'
     view === 'unknown' && !focus && editor.subjectCount > 0 && (
       <section class="mt-8">
         <h2 class="text-lg font-semibold tracking-tight">
-          We need a date from you
-          <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">{unknown.length}</span>
+          We need a date from you{' '}
+          <span class="ml-2 text-sm font-normal text-ink-700 tabular-nums">{unknown.length}</span>
         </h2>
-        <p class="mt-1 max-w-2xl text-sm text-ink-500">
-          These are not OK. Without the date, your risk is the same as if it had already expired.
-          That is why they sit with the overdue ones. Open one record, type what you know, and
-          leave the rest for later.
+        <p class="mt-1 max-w-2xl text-sm text-ink-700">
+          These are not in the "need attention" number, because we cannot put them on a clock.
+          They are not OK either. Without the date, your risk is the same as if it had already
+          expired. That is why they sit with the overdue ones. Open one record, type what you
+          know, and leave the rest for later.
         </p>
 
         {editor.groups.map((g) => (
@@ -1338,12 +1599,12 @@ const backOut = 'btn btn-secondary'
     view === 'unknown' && focus && (
       <form method="POST" class="mt-8">
         <h2 class="text-lg font-semibold tracking-tight">
-          {focus.label}
-          <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">
+          {focus.label}{' '}
+          <span class="ml-2 text-sm font-normal text-ink-700 tabular-nums">
             {focus.noun} · {focus.questionCount} missing
           </span>
         </h2>
-        <p class="mt-1 max-w-2xl text-sm text-ink-500">
+        <p class="mt-1 max-w-2xl text-sm text-ink-700">
           Type what you have in front of you. Leave the rest for later. A blank box changes
           nothing.
         </p>
@@ -1384,7 +1645,7 @@ const backOut = 'btn btn-secondary'
                    here would override a correct hire date forever, move five federal
                    rules onto wrong dates, and leave his own page still showing the
                    right one. `dot_number` is not a date at all. */
-                <div class="rounded-lg border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3">
+                <div class="rounded-lg border border-brand-500/25 bg-champagne-50 px-4 py-3">
                   <p class="text-sm font-medium">{q.label}</p>
                   <p class="mt-0.5 text-xs text-ink-700">
                     This date lives on {q.elsewhere?.where ?? 'another screen'}, not here. We keep
@@ -1468,7 +1729,7 @@ const backOut = 'btn btn-secondary'
                    here would override a correct hire date forever, move five federal
                    rules onto wrong dates, and leave his own page still showing the
                    right one. `dot_number` is not a date at all. */
-                <div class="rounded-lg border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3">
+                <div class="rounded-lg border border-brand-500/25 bg-champagne-50 px-4 py-3">
                   <p class="text-sm font-medium">{q.label}</p>
                   <p class="mt-0.5 text-xs text-ink-700">
                     This date lives on {q.elsewhere?.where ?? 'another screen'}, not here. We keep
@@ -1539,29 +1800,54 @@ const backOut = 'btn btn-secondary'
     )
   }
 
+  {/*
+    ONE FORM FOR EVERY BOX ON THE PAGE.
+
+    HTML forbids a form inside a form and forbids a form wrapping part of a
+    table, and this page has up to three tables in three sections. The `form=`
+    attribute is what lets a box standing in a table cell — and a Save button
+    standing under it — submit into this one, which is empty apart from the
+    intent. The same trick the truck page uses for its Withdraw buttons.
+
+    No script, and no form per row: on a page with no JavaScript a form per row
+    is one whole page load per date. This way he types the three he has in front
+    of him and presses Save once.
+  */}
+  <form method="POST" id="row-dates">
+    <input type="hidden" name="intent" value="save_row_dates" />
+  </form>
+
   {
     view !== 'unknown' &&
     lists.map(
       (s) =>
         s.shown.total > 0 && (
-          <section class="mt-8">
+          /* `id` is not decoration. Every save on this page is a POST and a 303,
+             so the browser lands on a fresh document at the top — and the man
+             who typed a date into the ninth row of Overdue is now looking at the
+             tiles, with no idea whether anything happened. The redirect carries
+             `#section-<key>` and the browser puts him back where he was working.
+             `scroll-padding-top` in global.css already keeps the sticky header
+             off the heading. */
+          <section id={`section-${s.key}`} class="mt-8">
             <h2 class="text-lg font-semibold tracking-tight">
-              {s.title}
+              {s.title}{' '}
               {/* The WHOLE section, always — never the number of rows drawn
                   below. Ten rows under a heading that says 119 is a page
                   showing you the top of a list; ten rows under a heading that
                   says 10 is a page that has lost 109 of your deadlines. */}
-              <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">
+              <span class="ml-2 text-sm font-normal text-ink-700 tabular-nums">
                 {s.shown.total}
               </span>
             </h2>
 
             {s.key === 'unknown' && (
-              <p class="mt-1 text-sm text-ink-500">
-                These are not OK. Without the date, your risk is the same as if it had already
-                expired. That is why they sit with the overdue ones, not at the bottom. The date
-                on these rows is the next one on the schedule, not a confirmed deadline, so we do
-                not count them in "Due in {SOON_DAYS} days".{' '}
+              <p class="mt-1 text-sm text-ink-700">
+                These are not in the "need attention" number, because we cannot put them on a
+                clock. They are not OK either. Without the date, your risk is the same as if it
+                had already expired. That is why they sit with the overdue ones, not at the
+                bottom. The date on these rows is the next one on the schedule, not a confirmed
+                deadline, so we do not count them in "Due in {SOON_DAYS} days".{' '}
                 {/* The bridge. This table is for reading; the editor behind this
                     link is for answering, and without a way across, the reading
                     view is the only one he ever finds. */}
@@ -1580,7 +1866,7 @@ const backOut = 'btn btn-secondary'
                  Keyed off the SHOWN reminders, not off the section's. A cap
                  that trimmed every reminder out of the table would otherwise
                  leave a line explaining a badge that is not on screen. */
-              <p class="mt-1 text-sm text-ink-500">
+              <p class="mt-1 text-sm text-ink-700">
                 {REMINDER_ORIGIN_NOTE}{' '}
                 <a href="/app/reminders" class="link inline-flex min-h-11 items-center font-medium">
                   My reminders →
@@ -1601,11 +1887,14 @@ const backOut = 'btn btn-secondary'
                     <th class="px-4 py-3 font-medium">Who or what</th>
                     <th class="px-4 py-3 font-medium">Due</th>
                     <th class="px-4 py-3 font-medium">Rule</th>
+                    {/* Last, after the citation, because it is the thing you do
+                        about the row rather than another fact about it. */}
+                    <th class="px-4 py-3 font-medium">Record it</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-ink-100">
                   {s.shown.items.map((i) => {
-                    const pill = standingPill(i.status.standing)
+                    const pill = s.key === 'soon' ? SOON_PILL : standingPill(i.status.standing)
                     return (
                       /* The block leads with WHAT is due. The section heading
                          above it has already said which bucket every row in it
@@ -1615,8 +1904,15 @@ const backOut = 'btn btn-secondary'
                         <td class={cell}>
                           <div class="font-medium">{i.rule.title}</div>
                           {i.status.standing === 'unknown' && i.status.needs && (
+                            /* The registry's label for the date, never the raw
+                               key: "Date of the DOT physical", not "medical exam
+                               date", and never "mcp issued". The fallback is for
+                               the one need that is already words. */
                             <div class="mt-0.5 text-xs text-ink-700">
-                              We need: {i.status.needs.join(', ').replaceAll('_', ' ')}
+                              We need:{' '}
+                              {i.status.needs
+                                .map((k) => resolveAnchor(k)?.label ?? k.replaceAll('_', ' '))
+                                .join(', ')}
                             </div>
                           )}
                         </td>
@@ -1633,13 +1929,16 @@ const backOut = 'btn btn-secondary'
                           )}
                           <span class="text-xs text-ink-700 sm:block">
                             <span class="sm:hidden"> · </span>
-                            {i.subjectType.replaceAll('_', ' ')}
+                            {subjectWord(i.subjectType)}
                           </span>
                         </td>
-                        <td class={`${cell} mt-1.5 whitespace-nowrap sm:mt-0`}>
-                          <span class:list={['rounded-md px-2 py-0.5 text-xs font-medium', pill.className]}>
-                            {pill.label}
-                          </span>
+                        <td class={`${cell} mt-1.5 sm:mt-0 sm:whitespace-nowrap`}>
+                          {/* The shared badge and nothing on top of it. The
+                              utilities that sat beside it outranked `.badge`
+                              and drew this pill as a rounded-lg rectangle at
+                              font-medium — the one screen where "Overdue" was a
+                              different shape from every other screen. */}
+                          <span class={pill.className}>{pill.label}</span>
                           {/* A countdown here is a promise of slack, so only a
                               `current` row gets one. See `dueLine`. */}
                           <span class="ml-2 tabular-nums sm:mt-1 sm:ml-0 sm:block">{dueLine(i)}</span>
@@ -1653,6 +1952,43 @@ const backOut = 'btn btn-secondary'
                           >
                             {i.rule.citation}
                           </a>
+                        </td>
+                        {/*
+                          THE DATE, ON THE ROW. He is looking at the row that
+                          names the licence and holding the new licence; this is
+                          where the answer goes, not four screens away.
+
+                          The label is real and visible, not a placeholder. Two
+                          different questions wear this same control — "when does
+                          the new one expire" and "when was it done" — and an
+                          owner who reads the wrong one types a date that is
+                          right for the other question and wrong for this row.
+
+                          A row with no box is a row whose answer is not a date
+                          we can file: a terminal, an employee, a record we
+                          cannot name. Its name in the second column is still a
+                          link to the record, which is where that answer lives.
+                        */}
+                        <td class={`${cell} mt-2 sm:mt-0`}>
+                          {(() => {
+                            const a = answerable.get(rowField(i.rule.code, i.subjectId ?? carrierId))
+                            if (!a) return null
+                            return (
+                              <>
+                                <label class="field-hint block" for={a.field}>
+                                  {rowPrompt(a)}
+                                </label>
+                                <input
+                                  type="date"
+                                  id={a.field}
+                                  name={a.field}
+                                  form="row-dates"
+                                  max={rowMax(a, todayIso)}
+                                  class="field-input mt-1 tabular-nums"
+                                />
+                              </>
+                            )
+                          })()}
                         </td>
                       </tr>
                     )
@@ -1675,7 +2011,7 @@ const backOut = 'btn btn-secondary'
                            where an owner already looks to find out what the rule
                            is, so it is where the answer "there is no rule"
                            belongs.
-                        2. The tint, in the same brand blue the page already uses
+                        2. The tint, in the same info blue the page already uses
                            for "this one is yours to judge" — the `unsupported`
                            pill and the "You have to check these yourself" block.
                         3. The sentence above the table, which says what the
@@ -1690,9 +2026,9 @@ const backOut = 'btn btn-secondary'
                       a truck is the one to read first.
                   */}
                   {s.shown.reminders.map((r) => {
-                    const pill = standingPill(r.status.standing)
+                    const pill = s.key === 'soon' ? SOON_PILL : standingPill(r.status.standing)
                     return (
-                      <tr class="block bg-brand-500/[0.05] py-3 hover:bg-brand-500/[0.09] sm:table-row sm:py-0">
+                      <tr class="block bg-champagne-50 py-3 hover:bg-champagne sm:table-row sm:py-0">
                         <td class={cell}>
                           <div class="font-medium">{r.title}</div>
                           {r.note && (
@@ -1721,25 +2057,25 @@ const backOut = 'btn btn-secondary'
                                 : 'driver'}
                           </span>
                         </td>
-                        <td class={`${cell} mt-1.5 whitespace-nowrap sm:mt-0`}>
-                          <span
-                            class:list={['rounded-md px-2 py-0.5 text-xs font-medium', pill.className]}
-                          >
-                            {pill.label}
-                          </span>
+                        <td class={`${cell} mt-1.5 sm:mt-0 sm:whitespace-nowrap`}>
+                          <span class={pill.className}>{pill.label}</span>
                           <span class="ml-2 tabular-nums sm:mt-1 sm:ml-0 sm:block">{dueLine(r)}</span>
                         </td>
                         <td class={`${cell} mt-1.5 text-xs sm:mt-0`}>
                           {/* No link. Nothing to look up IS the fact. */}
-                          <span
-                            class:list={[
-                              'rounded-md px-2 py-0.5 font-medium',
-                              REMINDER_ORIGIN.className,
-                            ]}
-                          >
+                          {/* `.badge` for the shape, so it is the same pill as
+                              the standing beside it and the same one
+                              /app/reminders draws. */}
+                          <span class:list={['badge', REMINDER_ORIGIN.className]}>
                             {REMINDER_ORIGIN.label}
                           </span>
                         </td>
+                        {/* The same number of cells as a rule row, so the
+                            desktop table does not shear. A reminder is the
+                            owner's own note with a date he chose — there is no
+                            compliance record behind it to file, and /app/reminders
+                            is where its date is changed. */}
+                        <td class={cell} aria-hidden="true" />
                       </tr>
                     )
                   })}
@@ -1770,6 +2106,88 @@ const backOut = 'btn btn-secondary'
                 </a>
               </p>
             )}
+
+            {/*
+              ONE SAVE PER SECTION, ALL INTO THE SAME FORM, AND IT FOLLOWS HIM
+              DOWN THE LIST.
+
+              `sticky bottom-0` is the truck page's bar, for the same reason and
+              at a worse scale: "We need a date from you" runs to 28 rows and
+              5,000px on a phone, so a button under the last of them was a
+              button you reached by scrolling past everything you had not typed.
+              Pinned, it sits at the foot of the screen the whole way down the
+              section — and because it is sticky INSIDE the section rather than
+              fixed to the window, it belongs to the list he is actually in and
+              leaves with it. Two sections never argue over one bar.
+
+              LAST CHILD, deliberately. Sticky only pins while its own parent is
+              still on screen, so a bar placed above the "show the rest" link
+              would let go of the bottom of the page a paragraph early.
+
+              Several submit buttons on one form is plain HTML and they are
+              identical: whichever he presses sends every box he typed, in any
+              section. Drawn only where the section HAS a box — a Save under
+              rows that cannot take a date is a button that does nothing, which
+              is the fastest way to teach somebody the screen is broken.
+            */}
+            {s.shown.items.some((i) =>
+              answerable.has(rowField(i.rule.code, i.subjectId ?? carrierId)),
+            ) && (
+              <div class="sticky bottom-0 mt-3 rounded-xl border border-ink-100 bg-white/95 p-4 backdrop-blur">
+                {/*
+                  THE REFUSAL TRAVELS WITH THE BAR. The banner at the top of the
+                  page is no use once the redirect puts him back at this
+                  section, thousands of pixels below it — a message up there is
+                  a save that failed in silence. Printed in both places rather
+                  than moved: a refusal with no section to anchor to still has
+                  to be readable.
+                */}
+                {/* No `view !== 'unknown'` guard here: these sections only
+                    render on the other views at all, so the compiler is right
+                    that it can never be false. The guard stays on the banner at
+                    the top of the page, where both views can reach it. */}
+                {errorMessage && (
+                  <p class="mb-3 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {errorMessage}
+                  </p>
+                )}
+                <div class="flex flex-wrap items-center gap-3">
+                  {/*
+                    THE WORDS "ON THIS PAGE" ARE LOAD-BEARING.
+
+                    A short section's bar sits in the flow while the next
+                    section's bar is pinned below it, so for a few hundred
+                    pixels of scrolling there are two bars on screen, both
+                    reading Save dates — measured at the Overdue / need-a-date
+                    boundary, about 600px of it. Two identical buttons invite
+                    exactly one question: which one saves MY row?
+
+                    The honest answer is either of them, because every box on
+                    the page posts into one form — so the bar says so, and the
+                    question stops being worth asking. Hiding one of the bars
+                    was the other way to fix it, and it is the wrong one: the
+                    section he cannot see a button for is the section he thinks
+                    he cannot save.
+                  */}
+                  <span class="flex-1 text-sm text-ink-500">
+                    Saves every date you typed on this page. A blank box changes nothing.
+                  </span>
+                  {/* The button carries its own section. Several submit buttons
+                      share one form, and the one he pressed is the only thing
+                      that says where on the page he was standing — which is
+                      where the 303 has to put him back. */}
+                  <button
+                    type="submit"
+                    form="row-dates"
+                    name="from"
+                    value={s.key}
+                    class="btn btn-primary"
+                  >
+                    Save dates
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
         ),
     )
@@ -1785,7 +2203,7 @@ const backOut = 'btn btn-secondary'
     view === 'all' && manual.length > 0 && (
       <section class="mt-8">
         <h2 class="text-lg font-semibold tracking-tight">You have to check these yourself</h2>
-        <p class="mt-1 max-w-2xl text-sm text-ink-500">
+        <p class="mt-1 max-w-2xl text-sm text-ink-700">
           These are real duties, but we cannot put a date on them. Some are ongoing duties with no
           deadline. For the rest, the schedule depends on something no public record holds. We
           list them here instead of making up a date.
@@ -1800,7 +2218,7 @@ const backOut = 'btn btn-secondary'
         */}
         <ul class="mt-3 space-y-2">
           {manual.map((i) => (
-            <li class="rounded-lg border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3 text-sm">
+            <li class="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm">
               <span class="font-medium">{i.rule.title}</span>
               <span class="text-ink-700"> · {i.subjectLabel}</span>
               {i.status.reason && <div class="mt-0.5 text-xs text-ink-700">{i.status.reason}</div>}
@@ -1813,7 +2231,7 @@ const backOut = 'btn btn-secondary'
 
   {
     view === 'all' && later.length > 0 && (
-      <p class="mt-8 text-sm text-ink-500 tabular-nums">
+      <p class="mt-8 text-sm text-ink-700 tabular-nums">
         {later.length} more are up to date and not due for a while.
       </p>
     )
@@ -1824,7 +2242,7 @@ const backOut = 'btn btn-secondary'
       the thing is for rather than naming it. */}
   {
     view === 'all' && (
-      <p class="mt-3 flex flex-wrap items-center gap-2 text-sm text-ink-500">
+      <p class="mt-3 flex flex-wrap items-center gap-2 text-sm text-ink-700">
         <span class="tabular-nums">
           {reminders.length === 0
             ? 'You can add your own reminders: insurance, truck payment, appointments.'

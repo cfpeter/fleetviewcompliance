@@ -298,6 +298,7 @@ export const federalDriverRules: RuleDefinition[] = [
       'Using a driver not medically examined and certified within the preceding 24 months ' +
       'is a CRITICAL violation (391.45(b)), and the underlying unqualified-driver finding ' +
       'under 391.11(b)(4) is ACUTE.',
+    impact: 'driver',
     // Two gates. The interstate one matches the general rule it stands in for —
     // shipping to a state without its own intrastate medical rule would
     // otherwise make the certificate vanish from that state's drivers.
@@ -340,6 +341,7 @@ export const federalDriverRules: RuleDefinition[] = [
       'The driver is not qualified under 391.11(b)(5). Using an unqualified driver is ' +
       'an ACUTE violation and a single-occurrence automatic failure in a new-entrant ' +
       'safety audit. Employer penalty up to $19,246 per violation (2025 amounts).',
+    impact: 'driver',
   },
 
   // -------------------------------------------------------------------------
@@ -372,6 +374,7 @@ export const federalDriverRules: RuleDefinition[] = [
       `${RECORDKEEPING}; an incomplete file is also the evidentiary basis for an ` +
       'unqualified-driver finding and for negligent-hiring exposure. Keep the file for ' +
       'employment + 3 years (391.51(c)).',
+    impact: 'audit',
   },
 
   {
@@ -393,6 +396,7 @@ export const federalDriverRules: RuleDefinition[] = [
       'permit in the preceding 3 years — not just the current licensing state. Where a state ' +
       'does not respond, documentation of the good-faith effort.',
     consequence: `${RECORDKEEPING}; operating an unqualified driver.`,
+    impact: 'audit',
   },
 
   {
@@ -422,6 +426,7 @@ export const federalDriverRules: RuleDefinition[] = [
       `${RECORDKEEPING}; negligent-hiring exposure. A previous employer has 30 days to ` +
       'reply (391.23(g)(1)); retain the file for employment + 3 years in a secure location ' +
       'with controlled access (391.53(c)).',
+    impact: 'audit',
   },
 
   {
@@ -445,6 +450,7 @@ export const federalDriverRules: RuleDefinition[] = [
     consequence:
       `${RECORDKEEPING}; operating an unqualified driver. Purgeable from the DQF 3 years ` +
       'after execution (391.51(d)).',
+    impact: 'audit',
   },
 
   {
@@ -469,6 +475,7 @@ export const federalDriverRules: RuleDefinition[] = [
     consequence:
       `${RECORDKEEPING}; operating an unqualified driver. Purgeable from the DQF 3 years ` +
       'after execution (391.51(d)).',
+    impact: 'audit',
   },
 
   {
@@ -489,6 +496,7 @@ export const federalDriverRules: RuleDefinition[] = [
       "the valid CDL, or of another carrier's road test certificate issued within the " +
       'preceding 3 years, accepted in lieu of the test.',
     consequence: `${RECORDKEEPING}; operating an unqualified driver.`,
+    impact: 'audit',
   },
 
   {
@@ -536,6 +544,7 @@ export const federalDriverRules: RuleDefinition[] = [
       'expired certification is posted to the CDLIS record and the state must DOWNGRADE THE ' +
       'CDL within 60 days (383.73(q), 384.235) — the loss of the licence privilege, not a ' +
       'paperwork fine.',
+    impact: 'driver',
     applies: interstateDriver,
   },
 
@@ -555,6 +564,7 @@ export const federalDriverRules: RuleDefinition[] = [
     warningDays: [90, 45, 14, -1],
     evidence: 'As the general case, plus the intracity zone exemption documentation in the DQF.',
     consequence: 'Driver placed out of service; operating an unqualified driver.',
+    impact: 'driver',
     // Fails OPEN: without a date proving the exemption we return 'unknown', so an
     // interstate driver carries both this row and the 24-month row. The 12-month
     // one fires first, which is the direction that costs a reminder rather than
@@ -581,6 +591,7 @@ export const federalDriverRules: RuleDefinition[] = [
       'Form (MCSA-5870) completed by the treating clinician, dated within the preceding 45 ' +
       'days of the examination, retained in the DQF.',
     consequence: 'Driver placed out of service; operating an unqualified driver.',
+    impact: 'driver',
     applies: (ctx) =>
       and(
         interstateDriver(ctx),
@@ -604,6 +615,7 @@ export const federalDriverRules: RuleDefinition[] = [
       'vision exemption programme — a driver on the alternative standard does not hold a ' +
       'vision exemption letter to renew.',
     consequence: 'Driver placed out of service; operating an unqualified driver.',
+    impact: 'driver',
     applies: (ctx) =>
       and(
         interstateDriver(ctx),
@@ -629,6 +641,7 @@ export const federalDriverRules: RuleDefinition[] = [
     consequence:
       'Operating an unqualified driver: without a current SPE the underlying limb impairment ' +
       'disqualifies the driver under § 391.41(b)(1)-(2).',
+    impact: 'driver',
     // Never returns false, because RuleContext has no "holds an SPE" boolean.
     // Every driver therefore carries this row in `missing_data` until somebody
     // answers, which is noisy for a rule that touches well under 1% of drivers.
@@ -662,6 +675,7 @@ export const federalDriverRules: RuleDefinition[] = [
       'driver from safety-sensitive functions after 30 days unless the previous-employer ' +
       'information (the 2-YEAR lookback of 40.25(b), not the 3-year one of 391.23(e)) was ' +
       'obtained or a good-faith effort documented.',
+    impact: 'driver',
     applies: part382Driver,
   },
 
@@ -691,6 +705,7 @@ export const federalDriverRules: RuleDefinition[] = [
       `Using a prohibited driver; ${CLEARINGHOUSE_PENALTY}. Clearinghouse recordkeeping sits ` +
       'under App. B(b), not under the (a)(1) recordkeeping line, because (a)(1) covers Part ' +
       '382 subparts A-F and excludes subpart G.',
+    impact: 'money',
     applies: part382Driver,
   },
 
@@ -727,6 +742,17 @@ export const federalDriverRules: RuleDefinition[] = [
     // January 1 AFTER publication, so the rate simply persists. Do not go looking
     // for a 2026 notice, and do not let anyone "update" this to 25%.
     consequence: `${PART382_EMPLOYER}; drivers placed out of service.`,
+    /**
+     * `audit`, NOT `driver`, and docs/product/DATE-PRIORITY.md § 5.3 disagrees
+     * with the sentence above. "Drivers placed out of service" would make this
+     * a driver-stopper. The only citation this row carries is the EMPLOYER
+     * penalty at 49 CFR 386 App. B(a)(3), and neither that document's author
+     * nor this file can produce a citation for a roadside out-of-service order
+     * caused by a missed annual random-testing RATE. It is ranked on the
+     * penalty and the audit exposure, which are the parts that are cited.
+     * Produce that citation and this becomes `driver`.
+     */
+    impact: 'audit',
     applies: part382Driver,
   },
 
@@ -747,6 +773,9 @@ export const federalDriverRules: RuleDefinition[] = [
       '0.02 (382.401(b)(1)) and 1 year for results below 0.02 (382.401(b)(3)) — the "2 years" ' +
       'bucket is the collection-process records at 382.401(b)(2), not negatives.',
     consequence: `${PART382_EMPLOYER}; drivers placed out of service.`,
+    // Same disagreement as the drug rate above, on the same sentence and for
+    // the same reason. See docs/product/DATE-PRIORITY.md § 5.3.
+    impact: 'audit',
     applies: part382Driver,
   },
 
@@ -779,6 +808,7 @@ export const federalDriverRules: RuleDefinition[] = [
       `${PART382_EMPLOYER}. Without a trained supervisor the carrier cannot lawfully make a ` +
       'reasonable-suspicion determination at all, which turns an observed impairment into an ' +
       'unusable observation.',
+    impact: 'audit',
     applies: part382Driver,
   },
 
@@ -804,6 +834,7 @@ export const federalDriverRules: RuleDefinition[] = [
       'Using a prohibited driver. Never give the driver the schedule, a copy of it, or any ' +
       'hint of its frequency or duration (40.307(g)) — that prohibition binds the employer, ' +
       'the SAP and any service agent.',
+    impact: 'driver',
     applies: part382Driver,
   },
 ]

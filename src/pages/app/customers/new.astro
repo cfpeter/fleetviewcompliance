@@ -10,6 +10,7 @@
  * and report their status as this broker's.
  */
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import {
   docketOrNull,
   parseDaysToPay,
@@ -81,7 +82,11 @@ if (Astro.request.method === 'POST') {
       .select('id')
       .single()
 
-    if (error || !data) return back(error?.message ?? 'That customer could not be saved.')
+    if (error || !data) {
+      // Postgres words are for an operator, not for the person at the desk.
+      if (error) console.error('customer insert failed:', error.message)
+      return back('That customer could not be saved. Wait a moment and try again.')
+    }
 
     // Straight to the customer rather than back to the list: if she gave us a
     // DOT number, their federal authority status is waiting on that page, and it
@@ -94,7 +99,10 @@ if (Astro.request.method === 'POST') {
   return Astro.redirect('/app/customers/new', 303)
 }
 
-const error = Astro.url.searchParams.get('error')
+// Read through flashText, never straight off the URL: the sentence is printed
+// in our red box, so it is only honoured when the browser says the request
+// came from our own 303. See src/lib/flash.ts.
+const error = flashText(Astro.url, Astro.request)
 
 /**
  * ONE FIELD CONSTRUCTION, AND IT LIVES IN global.css.
@@ -130,7 +138,15 @@ const optional = 'font-normal text-ink-500'
           <span class="field-label">
             MC number <span class={optional}>(optional)</span>
           </span>
-          <input type="text" name="mc_number" placeholder="MC123456" class={`${field} tabular-nums`} />
+          <input
+            type="text"
+            name="mc_number"
+            autocapitalize="characters"
+            autocomplete="off"
+            maxlength="12"
+            placeholder="MC123456"
+            class={`${field} tabular-nums`}
+          />
           <span class="field-hint block">
             Keep the prefix if there is one. MC, MX and FF are three different kinds of authority.
           </span>
@@ -143,6 +159,8 @@ const optional = 'font-normal text-ink-500'
             type="text"
             name="dot_number"
             inputmode="numeric"
+            maxlength="12"
+            autocomplete="off"
             placeholder="1234567"
             class={`${field} tabular-nums`}
           />
@@ -166,6 +184,8 @@ const optional = 'font-normal text-ink-500'
           </span>
           <input
             type="tel"
+            inputmode="tel"
+            autocomplete="tel"
             name="phone"
             placeholder="(818) 334-0168"
             class={`${field} tabular-nums`}
@@ -178,13 +198,19 @@ const optional = 'font-normal text-ink-500'
           <span class="field-label">
             Email <span class={optional}>(optional)</span>
           </span>
-          <input type="email" name="email" class={field} />
+          <input type="email" inputmode="email" autocomplete="email" name="email" class={field} />
         </label>
         <label class="block">
           <span class="field-label">
             Billing email <span class={optional}>(optional)</span>
           </span>
-          <input type="email" name="billing_email" class={field} />
+          <input
+            type="email"
+            inputmode="email"
+            autocomplete="email"
+            name="billing_email"
+            class={field}
+          />
           <span class="field-hint block">
             Keep this separate from the dispatch email. Invoices sent to the dispatcher do not
             get paid.

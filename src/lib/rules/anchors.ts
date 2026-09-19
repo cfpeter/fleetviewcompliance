@@ -354,10 +354,11 @@ const SPECS: readonly AnchorSpec[] = [
     label: 'Hazmat recurrent training completed',
     // A driver anchor that DRIVER_ANCHORS never had, so the twelve-field driver
     // form could not collect it and the row fired for every driver forever.
-    // `ctx.hazmat` is never populated, so the rule fails open by design and the
-    // honest answer — "we do not haul hazmat" — is not a date at all. Marked
-    // `only_if_it_applies` so a blank stops counting against a carrier who hauls
-    // no hazmat; the real fix is a carrier setting feeding `RuleContext.hazmat`.
+    // `ctx.hazmat` now comes from `carriers.hazmat` (0031), filled from the
+    // census `hm_ind` at signup and correctable on /app/settings; a carrier
+    // with NULL there still fails open, and the honest answer — "we do not
+    // haul hazmat" — is not a date at all. Marked `only_if_it_applies` so a
+    // blank stops counting against a carrier who hauls no hazmat.
     help:
       'Leave blank unless you haul hazmat. Every three years from this driver’s last ' +
       'training — not the 90 days a new hazmat employee gets.',
@@ -392,7 +393,11 @@ const SPECS: readonly AnchorSpec[] = [
     answeredElsewhere: {
       where: 'the driver’s own page',
       source: 'drivers.hired_on',
-      href: '/app/drivers/:id',
+      // THE TAB IS PART OF THE ADDRESS. The driver page is four tabs now, and a
+      // link that lands on the default one puts the owner in front of a
+      // checklist when the sentence he just read told him to fix a box on the
+      // record. `/app/settings?tab=company` below set the precedent.
+      href: '/app/drivers/:id?tab=record#record',
     },
   },
   {
@@ -411,7 +416,7 @@ const SPECS: readonly AnchorSpec[] = [
     answeredElsewhere: {
       where: 'the driver’s own page',
       source: 'drivers.cdl_expires_on',
-      href: '/app/drivers/:id',
+      href: '/app/drivers/:id?tab=record#record',
     },
   },
   {
@@ -433,7 +438,11 @@ const SPECS: readonly AnchorSpec[] = [
     answeredElsewhere: {
       where: 'your carrier details in Settings',
       source: 'carriers.dot_number',
-      href: '/app/settings',
+      // The tab, not the bare page. Settings groups its sections behind
+      // `?tab=`, and the USDOT box is in the company group — so a link without
+      // it drops the owner on his own name and password and leaves him to find
+      // the box this row sent him for.
+      href: '/app/settings?tab=company',
     },
   },
 ]

@@ -38,6 +38,17 @@ const BLOCKING_RULE_CODES = new Set([
   'medical_certificate_intracity_zone',
   'medical_certificate_insulin_treated',
   'medical_certificate_alternative_vision',
+  // California's intrastate medical certificate, and it belongs here for the
+  // same reason as the five above it: an expired card is an expired card, and
+  // the driver cannot drive on it.
+  //
+  // Without this line the gap was silent and one-sided. All five federal
+  // medical rules answer "not applicable" for a carrier marked intrastate, so
+  // for those carriers this set matched NOTHING — a driver with a card that ran
+  // out last year produced a row on the dashboard and no block at all on the
+  // assignment screen. The rule that closes the tracking half is new; this
+  // closes the dispatch half.
+  'ca_intrastate_medical_certificate',
   'cdl_expiry',
 ])
 

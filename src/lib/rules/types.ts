@@ -58,7 +58,22 @@ export type Recurrence =
    * A date fixed in the calendar, the same for everyone.
    * IFTA quarters, the OSHA 300A posting window, DOORS on 1 March.
    */
-  | { type: 'fixed_calendar'; months: readonly number[]; day: number | 'last' }
+  | {
+      type: 'fixed_calendar'
+      months: readonly number[]
+      day: number | 'last'
+      /**
+       * Move a date that lands on a Saturday or Sunday to the Monday after.
+       *
+       * Opt-in, per rule, because it is a statutory fact and not a convenience:
+       * IFTA returns due on a weekend are due the next business day, so the
+       * catalogue saying "31 Oct" while the IFTA screen said "2 Nov" was the
+       * same return with two dates on two screens. Weekends only — public
+       * holidays would need a calendar per jurisdiction, and being a day early
+       * on a holiday is the safe direction.
+       */
+      rollWeekend?: boolean
+    }
   /**
    * An interval measured from a per-entity anchor date.
    * IRP's assigned month, the MCP term, a TRU's fee anniversary, Form 2290 from
@@ -138,6 +153,48 @@ export interface RuleContext {
 }
 
 /**
+ * WHAT A LAPSE ACTUALLY STOPS. See `RuleDefinition.impact`.
+ *
+ * Six words, in descending order of consequence. They are deliberately about
+ * the EFFECT on the business, not about the regulation: an owner reading a red
+ * row needs to know whether he still has a company this morning, not which
+ * subpart he is in.
+ *
+ *   company  the whole operation stops — no truck can legally move, or the
+ *            right to operate is gone
+ *   driver   this one person cannot drive; the rest of the fleet keeps earning
+ *   truck    this one unit cannot roll; the other units keep earning
+ *   money    it costs money on a date, or a broker sees a mark, and the truck
+ *            keeps rolling
+ *   audit    nothing happens on the day. It is found later, by an auditor, an
+ *            insurer or a lawyer — and then all of it is found at once
+ *   record   a retention floor, not a deadline. The date is the FIRST day the
+ *            record may be destroyed; destroying it early is the violation
+ *
+ * `driver` ranks above `truck` because a stopped driver is a person who cannot
+ * earn while a stopped truck can often be swapped, and because the driver-side
+ * rows here are 49 CFR 391.11(b)(4)-(5) findings, which are ACUTE and a
+ * single-occurrence automatic failure in a new-entrant safety audit.
+ *
+ * `audit` and `record` are SEPARATE values, where docs/product/DATE-PRIORITY.md
+ * § 3.2 sketched one combined `record`. That document's own § 3.7 asks for the
+ * six retention rows to be lifted out of the deadline list into a "Paper you
+ * must keep" section, and one value cannot both carry that and carry the
+ * tier-4 audit findings. Its tiers 4 and 5 are already two tiers.
+ */
+export type Impact = 'company' | 'driver' | 'truck' | 'money' | 'audit' | 'record'
+
+/** The plain sentence for an `Impact`. Written to be printed, not decoded. */
+export const IMPACT_LABEL: Record<Impact, string> = {
+  company: 'The whole company stops',
+  driver: 'This driver cannot drive',
+  truck: 'This truck cannot roll',
+  money: 'It costs money',
+  audit: 'Found later in an audit',
+  record: 'Paper you must keep',
+}
+
+/**
  * Whether a rule applies. Three states, not two.
  *
  * `'unknown'` exists because the honest answer to "does the annual inspection
@@ -165,6 +222,36 @@ export interface RuleDefinition {
   evidence: string
   /** What happens if it is missed — shown on overdue items. */
   consequence: string
+  /**
+   * WHAT A LAPSE STOPS. Required on every rule, with no default.
+   *
+   * THE BUG THIS EXISTS TO FIX. `compareDeadlines` sorted on standing and then
+   * on days late, so inside the Overdue section an ELD back-up retention row
+   * 90 days past sat above a medical certificate that expired yesterday. Both
+   * are red, both say a number of days, and the one that stops a man driving
+   * was below the one that says when he may shred a file.
+   *
+   * It is a SORT KEY, never a filter and never a standing. An overdue row can
+   * never sort below a green one because of it — see `compareDeadlines`.
+   *
+   * No default, deliberately. An optional field with a fallback means a rule
+   * added next year sorts wherever the fallback happens to put it, silently,
+   * and the failure is invisible: the row still renders, still shows the right
+   * date, and is simply in the wrong place. The type system asking the question
+   * once, at the moment the rule is written, is the whole protection.
+   *
+   * Ranked by docs/product/DATE-PRIORITY.md § 2, whose tiers map: tier 1 →
+   * `company`, tier 2 → `driver` or `truck`, tier 3 → `money`, tier 4 →
+   * `audit`, tier 5 → `record`. Where that document disagrees with a row's own
+   * `consequence` sentence (its § 5), the document wins and the row says so.
+   *
+   * ONE THING IT CANNOT SAY. This is static data on the rule, so it cannot vary
+   * with the carrier. The two hazmat rows are tier 3 for a carrier who does not
+   * haul hazmat and tier 1 for one who does, and only a context-aware value
+   * could carry that. They are ranked as the tier table ranks them, and each
+   * row records the caveat.
+   */
+  impact: Impact
   /** Defaults to always-applicable when omitted. */
   applies?: (ctx: RuleContext) => Applicability
   /**

@@ -6,7 +6,12 @@ import type { Standing } from '../rules/compute.ts'
 import type { DeadlineItem } from '../rules/index.ts'
 import type { Subject } from '../rules/types.ts'
 import { type Channel, dedupKey, withinQuietHours } from './guard.ts'
-import { DEFAULT_LEAD_DAYS, type NotifyCategory } from './preferences.ts'
+import {
+  DEFAULT_LEAD_DAYS,
+  isDefaultLeadDays,
+  MAX_LEAD_DAY,
+  type NotifyCategory,
+} from './preferences.ts'
 
 export interface Recipient {
   userId: string
@@ -71,11 +76,94 @@ const iso = (d: Date) => d.toISOString().slice(0, 10)
  * job does not run for a week, an item that blew through the 30-day and 7-day
  * marks sends ONE message about seven days, not two messages about both. Waking
  * somebody twice to tell them the same thing is how the mute happens.
+ *
+ * BOTH SIDES OF ZERO ARE GUARDED, and that guard is the load-bearing part.
+ *
+ * A window before the due date and a nudge after it answer two different
+ * questions — "this is coming" and "this has lapsed" — so a date already behind
+ * us may only be measured against the negative windows, and a date still ahead
+ * only against zero and the positive ones. Without that, `daysUntil <= d` is
+ * true of every window in the list for anything overdue: a date five years past
+ * reaches a 90-day window and comes back as a 90-day warning, and `deservesSms`
+ * then reads the same item as critical and texts it through quiet hours. That is
+ * the shape of the bug src/lib/rules/compute.ts fixed at the source, and this
+ * filter is what stops a per-rule window list from re-opening it here. It only
+ * ever survived before because every list happened to end in -1, so the minimum
+ * came out negative anyway; a rule window list is not required to end in -1.
+ *
+ * `daysUntil` alone does not settle whether an item is OVERDUE — an interval
+ * rule's next cycle is always ahead of it, so a carrier three cycles behind
+ * still shows a positive countdown. Standing decides which ladder an item is
+ * measured against (see `leadDaysForItem`); the number only decides which rung.
  */
 export function reachedWindow(daysUntil: number, leadDays: readonly number[]): number | null {
-  const reached = leadDays.filter((d) => daysUntil <= d)
+  const sameSide = leadDays.filter((d) => (daysUntil < 0 ? d < 0 : d >= 0))
+  const reached = sameSide.filter((d) => daysUntil <= d)
   if (reached.length === 0) return null
   return Math.min(...reached)
+}
+
+/**
+ * The ladder ONE item is measured against.
+ *
+ * Every rule in the catalogue carries a `warningDays` array chosen for how long
+ * its remedy actually takes: 90 days on a medical certificate because a DOT
+ * physical is an appointment, 120 on hazmat training because a class has to be
+ * scheduled, 60 on a CDL because the DMV books weeks out. Nothing read it, so a
+ * medical card and a fee you can pay online were both first mentioned at 30
+ * days. See docs/product/DATE-PRIORITY.md section 3.4.
+ *
+ * PRECEDENCE, in one sentence: a rule's window is a better DEFAULT, never an
+ * override of a person's choice.
+ *
+ *   1. The owner typed his own lead times — his array, exactly, for every rule.
+ *      He may have set them wider or narrower than the catalogue thinks wise and
+ *      it is not this function's business to know better. `isDefaultLeadDays`
+ *      answers "did a person move this" from the value, because the alerts form
+ *      writes a row on every save whether or not the box was touched.
+ *   2. He has not — the rule's own window joins the default he started from.
+ *   3. The rule has nothing to say — the default, unchanged, exactly as before.
+ *
+ * ADDED TO, NOT SWAPPED FOR. A 90-day window that then goes quiet until the
+ * deadline is worse than the flat 30, because the point of the long window is an
+ * EARLIER warning and not a lonelier one: a card mentioned once in February and
+ * never again before it expires in May is a card that expires. So the two lists
+ * are merged, and the merged list is a superset of the one in use today — no
+ * item can come out of this with fewer warnings than it gets now.
+ *
+ * ONLY WINDOWS ABOVE ZERO ARE TAKEN FROM THE RULE, and that is what keeps this
+ * change out of the SMS ration. `deservesSms` texts what is overdue or due
+ * within a day; the merged list therefore still contains 1 and -1 from the
+ * default, so anything at 1, 0 or below still reports the same window it reports
+ * today and produces exactly the same text messages. Every window this adds is
+ * above 1, and a window above 1 is only ever returned for an item more than a
+ * day out, which `deservesSms` refuses. Widening the email windows must not
+ * quietly widen texting, so it does not.
+ *
+ * AN OVERDUE ITEM KEEPS THE FLAT LADDER. A rolling obligation that is overdue
+ * carries a POSITIVE countdown to its next cycle, and it is already critical by
+ * standing alone — so handing it the rule's 90 would make it a candidate, and
+ * therefore a text message, three months before a date it has already missed.
+ * Standing first, days second.
+ */
+export function leadDaysForItem(
+  item: { rule: { warningDays?: readonly number[] }; status: { standing: Standing } },
+  settingLeadDays: readonly number[],
+): readonly number[] {
+  if (!isDefaultLeadDays(settingLeadDays)) return settingLeadDays
+  if (item.status.standing === 'overdue') return settingLeadDays
+
+  // `MAX_LEAD_DAY` for the same reason `parseLeadDays` applies it to what a
+  // person types: a window longer than the obligation's own cycle is reached
+  // permanently, so an annual item with a 400-day window alerts the morning it
+  // is renewed and every morning after. The widest window in the catalogue today
+  // is 120.
+  const earlier = (item.rule.warningDays ?? []).filter((d) => d > 0 && d <= MAX_LEAD_DAY)
+  if (earlier.length === 0) return settingLeadDays
+
+  const merged = new Set<number>(settingLeadDays)
+  for (const d of earlier) merged.add(d)
+  return [...merged].sort((a, b) => b - a)
 }
 
 /**
@@ -119,7 +207,13 @@ export function selectForRecipient(args: {
   items: readonly DeadlineItem[]
   recipient: Recipient
   preferences: readonly Preference[]
-  /** Lead times, per category. Absent for a category means the default. */
+  /**
+   * Lead times, per category. Absent for a category means the default.
+   *
+   * An array that is still the shipped default is treated as nobody having
+   * chosen, and each rule's own warning window is merged into it — see
+   * `leadDaysForItem`. An array a person actually moved is used as it stands.
+   */
   categoryPreferences?: readonly CategoryPreference[]
   snoozes: readonly Snooze[]
   alreadySent: ReadonlySet<string>
@@ -141,9 +235,11 @@ export function selectForRecipient(args: {
 
     // A category with no row of its own gets the documented default rather than
     // nothing. An empty lead-day list means "warn me never", and arriving at
-    // that by ACCIDENT — a row that has not been written yet — is how a deadline
-    // goes past with the settings page still showing 30, 7, 1, -1.
-    const leadDays = leadDaysByCategory.get(pref.category) ?? [...DEFAULT_LEAD_DAYS]
+    // that by ACCIDENT — a row that has not been written yet, or one holding the
+    // empty array the settings screen refuses to save — is how a deadline goes
+    // past with the settings page still showing 30, 7, 1, -1.
+    const stored = leadDaysByCategory.get(pref.category)
+    const leadDays = stored && stored.length > 0 ? stored : [...DEFAULT_LEAD_DAYS]
 
     for (const item of items) {
       // Nothing to warn about: we either cannot date it, or it does not apply.
@@ -158,7 +254,10 @@ export function selectForRecipient(args: {
 
       if (isSnoozed(item, snoozes, today)) continue
 
-      const window = reachedWindow(item.daysUntil, leadDays)
+      // The rule's own window where the owner has not chosen one of his own.
+      // See `leadDaysForItem` for the precedence and for why an overdue item is
+      // measured against the flat ladder instead.
+      const window = reachedWindow(item.daysUntil, leadDaysForItem(item, leadDays))
       if (window === null) continue
 
       const key = dedupKey({

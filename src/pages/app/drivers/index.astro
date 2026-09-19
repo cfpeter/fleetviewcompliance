@@ -9,6 +9,7 @@
 import Proportion from '../../../components/charts/Proportion.astro'
 import Ring from '../../../components/charts/Ring.astro'
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import { dqRing, rosterLine, rowLine } from '../../../lib/charts/dq-rings.ts'
 import { CHECK_TONES, pillFor, rosterBar } from '../../../lib/charts/driver-status.ts'
 import { loadDeadlines } from '../../../lib/deadlines.ts'
@@ -96,7 +97,11 @@ const [{ data: drivers, error }, { count: totalCount }, deadlines] = await Promi
 ])
 
 const rows = drivers ?? []
-const notice = params.get('error') ?? (error ? error.message : null)
+// Read only when the browser says the request came from this site; a
+// database failure is said in plain words, never in its own.
+const notice =
+  flashText(Astro.url, Astro.request) ??
+  (error ? 'We could not load your drivers. Reload the page.' : null)
 // A flag, not a sentence. The wording lives in src/lib/fleet/remove.ts and never
 // comes out of the query string — /app/billing documents why.
 const removed = params.get('removed') === '1'
@@ -267,9 +272,14 @@ const said = 'text-ink-500 sm:hidden'
     reader gets, so the colour is never carrying it alone. gap-2 keeps 8px
     between two targets a thumb aims at.
   */}
+  {/* The strip is 392px of tabs in a 375px window, so "All" was cut at its
+      last pixel with nothing to say the row went on. The right edge fades over
+      its last 40px — the cue for "more this way" — and the 48px of trailing
+      padding keeps the fade off the last word once scrolled to the end. See
+      the same treatment on /app/loads, where it matters most. */}
   <nav
     aria-label="Filter drivers by status"
-    class="-mx-4 mb-4 flex items-center gap-2 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0"
+    class="-mx-4 mb-4 flex items-center gap-2 overflow-x-auto pr-12 pl-4 [mask-image:linear-gradient(to_right,black_calc(100%-2.5rem),transparent)] sm:mx-0 sm:flex-wrap sm:px-0 sm:[mask-image:none]"
   >
     {
       tabs.map((t) => {
@@ -296,7 +306,9 @@ const said = 'text-ink-500 sm:hidden'
             Add the people you dispatch. A name is enough to start. The dates can follow when the
             paperwork comes in.
           </p>
-          <a href="/app/drivers/new" class="btn btn-primary btn-sm mt-4">
+          {/* Secondary: the one Primary on this screen is the "Add a driver" at
+              the top, which is on screen at the same time as this card. */}
+          <a href="/app/drivers/new" class="btn btn-secondary btn-sm mt-4">
             Add a driver →
           </a>
         </div>
@@ -320,7 +332,8 @@ const said = 'text-ink-500 sm:hidden'
           the first driver down the page.
         */}
         <div class="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
-          <span class="text-ink-500">
+          {/* ink-700: this line sits on the page tint, where ink-500 is 4.41:1. */}
+          <span class="text-ink-700">
             <span class="tabular-nums">{rows.length}</span>
             {rows.length === 1 ? ' driver' : ' drivers'}
           </span>
@@ -439,10 +452,11 @@ const said = 'text-ink-500 sm:hidden'
                       his hand, never scanned down a roster of forty. */}
                   <td class={`${cell} order-4 mt-1 sm:mt-0`}>
                     <span class={said}>CDL </span>
+                    {/* A word, never a dash: grey means missing and says so. */}
                     {d.cdl_number ? (
                       <span class="tabular-nums">{d.cdl_number}</span>
                     ) : (
-                      <span class="text-ink-500">—</span>
+                      <span class="text-ink-500">not given</span>
                     )}
                     {d.cdl_state && (
                       <span class="text-xs text-ink-700 sm:block">
@@ -469,8 +483,11 @@ const said = 'text-ink-500 sm:hidden'
                         <span class:list={[d.cdl_expires_on < today ? 'font-medium text-red-700' : '']}>
                           {formatDate(d.cdl_expires_on)}
                         </span>
-                      ) : (
-                        <span class="text-ink-500">—</span>
+                      ) : cdl && cdl.tone === 'nodate' ? null : (
+                        /* The engine's pill below already says "no date on
+                           file" for an active driver; this word is for the
+                           driver it does not check. Never a dash. */
+                        <span class="text-ink-500">not given</span>
                       )}
                     </span>
                     {/*
@@ -507,7 +524,7 @@ const said = 'text-ink-500 sm:hidden'
                   {/* Last. The hire date is for the file, not for the roster. */}
                   <td class={`${cell} order-5 mt-1 whitespace-nowrap tabular-nums sm:mt-0`}>
                     <span class={said}>Hired </span>
-                    {d.hired_on ? formatDate(d.hired_on) : <span class="text-ink-500">—</span>}
+                    {d.hired_on ? formatDate(d.hired_on) : <span class="text-ink-500">not given</span>}
                   </td>
                 </tr>
                 )

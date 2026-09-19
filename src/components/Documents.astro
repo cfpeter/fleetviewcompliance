@@ -156,7 +156,27 @@ const replacing = replaceId ? (current.find((d) => d.id === replaceId) ?? null) 
 // with. A made-up id simply matches no row and nothing is shown.
 const previewId = params.get('preview')
 
-const here = Astro.url.pathname
+/**
+ * THIS PAGE AGAIN, KEEPING WHERE WE ARE.
+ *
+ * It was `Astro.url.pathname` on its own, which threw the query string away.
+ * Harmless until the driver page grew tabs: Preview, Replace and Cancel all
+ * dropped `?tab=papers` and bounced the reader to the default tab in the middle
+ * of the job they were doing.
+ *
+ * The component's OWN parameters are dropped and everything else is kept, so a
+ * second Preview cannot leave two `?preview=` behind it. `old` is deliberately
+ * kept: a reader who opened the superseded list should still be looking at it
+ * after a preview.
+ */
+const OWN_PARAMS = ['preview', 'replace', 'doc_error', 'doc_saved', 'doc_warning']
+const here = (set?: [string, string]) => {
+  const keep = new URLSearchParams(Astro.url.search)
+  for (const own of OWN_PARAMS) keep.delete(own)
+  if (set) keep.set(set[0], set[1])
+  const query = keep.toString()
+  return `${Astro.url.pathname}${query ? `?${query}` : ''}#documents`
+}
 
 // ---------------------------------------------------------------------------
 // What the end date on a paper says
@@ -528,12 +548,12 @@ const actionRow = '-ml-4 mt-0.5 flex flex-wrap items-center gap-x-3 sm:mt-0 sm:m
                     */}
                     {facts.showable ? (
                       showing ? (
-                        <a href={`${here}#documents`} class="btn btn-tertiary btn-sm">
+                        <a href={here()} class="btn btn-tertiary btn-sm">
                           Hide
                         </a>
                       ) : (
                         <a
-                          href={`${here}?preview=${doc.id}#documents`}
+                          href={here(['preview', doc.id])}
                           class="btn btn-tertiary btn-sm"
                         >
                           Show
@@ -557,7 +577,7 @@ const actionRow = '-ml-4 mt-0.5 flex flex-wrap items-center gap-x-3 sm:mt-0 sm:m
                       </a>
                     )}
                     <a
-                      href={`${here}?replace=${doc.id}#documents`}
+                      href={here(['replace', doc.id])}
                       class="btn btn-tertiary btn-sm"
                     >
                       Replace
@@ -752,7 +772,7 @@ const actionRow = '-ml-4 mt-0.5 flex flex-wrap items-center gap-x-3 sm:mt-0 sm:m
 
         {
           replacing && (
-            <p class="mt-3 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+            <p class="mt-3 rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
               You are replacing <strong>{kindLabel(subjectType, replacing.kind)}</strong> (
               {replacing.file_name ?? 'file'}). We keep the old file. It moves to Old files above.
             </p>
@@ -823,7 +843,11 @@ const actionRow = '-ml-4 mt-0.5 flex flex-wrap items-center gap-x-3 sm:mt-0 sm:m
           <button type="submit" name="intent" value="upload_document" class="btn btn-primary">
             {replacing ? 'Upload the new file' : 'Add the file'}
           </button>
-          {replacing && <a href={`${here}#documents`} class="btn btn-tertiary">Cancel</a>}
+          {replacing && (
+            <a href={here()} class="btn btn-tertiary">
+              Cancel
+            </a>
+          )}
           <span class="text-sm text-ink-500">Only you and your office can open these files.</span>
         </div>
       </form>

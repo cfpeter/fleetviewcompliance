@@ -19,6 +19,7 @@
 import ErrorSummary from '../../../components/ui/ErrorSummary.astro'
 import App from '../../../layouts/App.astro'
 import { formatDate, todayInCalifornia } from '../../../lib/drivers.ts'
+import { suggestionByKey, suggestionsFor } from '../../../lib/reminder-suggestions.ts'
 import {
   DEFAULT_REMINDER_LEAD_DAYS,
   MAX_NOTE,
@@ -63,7 +64,14 @@ const fail = (code: string, editId = '') =>
   // the page: the box is `tabindex="-1"`, so a 303 to its id both scrolls to it
   // and focuses it, and the next Tab is the first field. A fragment is never
   // sent to the server, so nothing about where this goes changes.
-  go(`?error=${code}${editId ? `&edit=${editId}` : ''}#form-errors`)
+  //
+  // `show=done` rides along for the same reason it rides on a good save: a
+  // refusal that also folds up the Finished list has taken something away from
+  // him on top of not doing what he asked.
+  go(
+    `?error=${code}${editId ? `&edit=${editId}` : ''}` +
+      `${Astro.url.searchParams.get('show') === 'done' ? '&show=done' : ''}#form-errors`,
+  )
 
 /** The drivers and trucks a reminder may be attached to. */
 const [{ data: driverRows }, { data: vehicleRows }] = await Promise.all([
@@ -83,9 +91,19 @@ const vehicles = (vehicleRows ?? []) as { id: string; unit_number: string | null
  * driver AND a truck — a row the check constraint refuses and no screen could
  * label. The value carries its own kind: 'driver:<id>', 'vehicle:<id>', or ''.
  */
-function parseSubject(raw: unknown): { driver_id: string | null; vehicle_id: string | null } | null {
+function parseSubject(
+  raw: unknown,
+): { driver_id: string | null; vehicle_id: string | null; subject_scope: string | null } | null {
   const text = typeof raw === 'string' ? raw.trim() : ''
-  if (text === '') return { driver_id: null, vehicle_id: null }
+  if (text === '') return { driver_id: null, vehicle_id: null, subject_scope: null }
+
+  // THE TWO FLEET-WIDE SCOPES (0032). Matched before the `kind:id` split
+  // because they carry no id at all — one reminder that belongs to every driver
+  // or every truck, rather than a row per record that drifts the first time he
+  // edits one. The database refuses a scope alongside an id, and so does this.
+  if (text === 'all_drivers' || text === 'all_vehicles') {
+    return { driver_id: null, vehicle_id: null, subject_scope: text }
+  }
 
   const [kind, id] = text.split(':')
   if (!UUID.test(id ?? '')) return null
@@ -94,10 +112,10 @@ function parseSubject(raw: unknown): { driver_id: string | null; vehicle_id: str
   // trigger in 0023. Both refuse a driver from another carrier; only this one
   // refuses it with a sentence about a driver instead of a database exception.
   if (kind === 'driver' && drivers.some((d) => d.id === id)) {
-    return { driver_id: id, vehicle_id: null }
+    return { driver_id: id, vehicle_id: null, subject_scope: null }
   }
   if (kind === 'vehicle' && vehicles.some((v) => v.id === id)) {
-    return { driver_id: null, vehicle_id: id }
+    return { driver_id: null, vehicle_id: id, subject_scope: null }
   }
   return null
 }
@@ -147,6 +165,48 @@ if (Astro.request.method === 'POST') {
   const intent = String(form.get('intent') ?? '')
   const id = String(form.get('id') ?? '')
 
+  /**
+   * WHICH LIST THE BUTTON WAS PRESSED IN, and it settles two things at once.
+   *
+   * The owner's words: "when I click show finished reminders or done or change
+   * or delete, it refreshes the page and it goes all the way up. It's closed
+   * up." Two separate faults in one sentence:
+   *
+   *   1. IT GOES ALL THE WAY UP. Every action is a POST and a 303, and a fresh
+   *      document starts at the top — so pressing Done on the ninth row put him
+   *      at the add form with no idea whether anything had happened. The
+   *      fragment is what HTML gives us instead, and it costs no script.
+   *   2. IT'S CLOSED UP. `?show=done` is the whole of what keeps the Finished
+   *      list open, and every redirect dropped it — so deleting one finished
+   *      reminder shut the list he was working through. Twice over, because
+   *      Delete exists in BOTH lists and the handler could not tell them apart.
+   *
+   * `delete_reminder` is the reason this is a posted value rather than
+   * something read off the row: it is the same intent from two places, and
+   * where he goes back to is the one thing only the button knows.
+   *
+   * Checked against the two names we write, never pasted through — it ends up
+   * in a Location header.
+   */
+  const pressedIn = String(form.get('from') ?? '')
+  const where = pressedIn === 'open' || pressedIn === 'finished' ? pressedIn : ''
+  /**
+   * IS THE FINISHED LIST OPEN RIGHT NOW? Read off the address the form posted
+   * to, because none of these forms carries an `action` — so each one submits
+   * to the page it is standing on, `?show=done` and all.
+   *
+   * This is deliberately NOT derived from `where`. Tying the two together was
+   * the first thing I wrote and it was wrong: pressing Done in the OPEN list
+   * shut the Finished list underneath it, which is the same "it's closed up"
+   * with a different button. The fold is a property of the screen, not of the
+   * list the button happened to be in.
+   */
+  const stillShowingDone = Astro.url.searchParams.get('show') === 'done'
+
+  /** `a=1` in, `?a=1&show=done#open` out. One place, every exit. */
+  const land = (query: string) =>
+    go(`?${query}${stillShowingDone ? '&show=done' : ''}${where ? `#${where}` : ''}`)
+
   if (intent === 'add_reminder') {
     const fields = readFields(form)
     if (!fields.ok) return fail(fields.code)
@@ -160,7 +220,7 @@ if (Astro.request.method === 'POST') {
       ...fields.value,
     })
     if (error) return fail('save')
-    return go('?added=1')
+    return land('added=1')
   }
 
   if (intent === 'save_reminder') {
@@ -183,7 +243,7 @@ if (Astro.request.method === 'POST') {
     // An UPDATE matching nothing is not an error in Postgres, so without this
     // the page reports a cheerful "Saved" for a reminder deleted in another tab.
     if (!data || data.length === 0) return fail('gone')
-    return go('?saved=1')
+    return land('saved=1')
   }
 
   if (intent === 'done_reminder') {
@@ -220,7 +280,7 @@ if (Astro.request.method === 'POST') {
         .eq('id', id)
         .is('completed_at', null)
       if (error) return fail('save')
-      return go(`?next=${toDateOnly(next)}`)
+      return land(`next=${toDateOnly(next)}`)
     }
 
     const { error } = await supabase
@@ -229,7 +289,7 @@ if (Astro.request.method === 'POST') {
       .eq('id', id)
       .is('completed_at', null)
     if (error) return fail('save')
-    return go('?done=1')
+    return land('done=1')
   }
 
   if (intent === 'reopen_reminder') {
@@ -240,7 +300,7 @@ if (Astro.request.method === 'POST') {
       .eq('id', id)
       .not('completed_at', 'is', null)
     if (error) return fail('save')
-    return go('?reopened=1&show=done')
+    return land('reopened=1')
   }
 
   if (intent === 'delete_reminder') {
@@ -250,7 +310,7 @@ if (Astro.request.method === 'POST') {
     // a line he typed by mistake goes away when he says so.
     const { error } = await supabase.from('reminders').delete().eq('id', id)
     if (error) return fail('save')
-    return go('?deleted=1')
+    return land('deleted=1')
   }
 
   // An unknown intent is a form from an older deploy. Redirect rather than fall
@@ -362,8 +422,80 @@ const hint = 'field-hint block'
 const cell = 'block px-4 sm:table-cell sm:py-3'
 
 /** The value the subject `<select>` posts for a row we already hold. */
-const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
-  item.subject.id ? `${item.subject.kind}:${item.subject.id}` : ''
+const subjectValue = (item: { subject: { kind: string; id: string | null } }) => {
+  // A scope is its own value with no id after it — the same string
+  // `parseSubject` accepts, so editing a fleet-wide reminder reopens on the
+  // option it was saved with rather than falling back to "Whole company".
+  if (item.subject.kind === 'all_drivers' || item.subject.kind === 'all_vehicles') {
+    return item.subject.kind
+  }
+  return item.subject.id ? `${item.subject.kind}:${item.subject.id}` : ''
+}
+
+/**
+ * The record a truck or driver page sent him here to add a reminder for.
+ *
+ * `?for=vehicle:<id>` is written by src/components/Reminders.astro, and the
+ * value is the same `kind:id` string this page's own `<select>` already uses —
+ * so the two cannot drift, and there is no second way of naming a subject.
+ *
+ * MATCHED AGAINST THE OPTIONS, NEVER ECHOED. It is only ever compared to ids
+ * this carrier can already see in the two lists below; an id belonging to
+ * somebody else, a typo, or a hand-edited value matches nothing and the select
+ * falls back to "Whole company". Nothing out of the query string reaches the
+ * page, and nothing reaches the save either — the POST re-reads the select.
+ *
+ * Ignored entirely while EDITING: an existing reminder's own subject wins over
+ * a link somebody followed to get here.
+ */
+const prefillSubject = params.get('for') ?? ''
+
+/**
+ * A suggestion he tapped instead of thinking of one himself.
+ *
+ * Resolved against the catalogue, so `?suggest=` can only ever name a row we
+ * wrote — anything else is null and the form opens empty, which is exactly
+ * where it started. Nothing out of the query string is rendered.
+ *
+ * It fills the TITLE and the REPEAT and stops there. The due date stays on
+ * today, because a suggestion knows what the job is and cannot know when he
+ * last did it — and a date we invented, sitting in a box he is about to save,
+ * is the product telling him something it does not know.
+ */
+const suggested = editing ? null : suggestionByKey(params.get('suggest'))
+
+/**
+ * WHICH OPTION THE SUBJECT DROPDOWN OPENS ON. Decided once, here, because three
+ * things want a say and only one of them can win:
+ *
+ *   1. EDITING beats everything. A reminder's own subject is a fact; a link
+ *      somebody followed to get here is not.
+ *   2. `?for=` — he pressed "Add a reminder for this truck" on that truck's
+ *      page, so he means that truck.
+ *   3. A SUGGESTION's own shape. In the owner's words: "when they select
+ *      something that applies to the driver, we select the dropdown to driver."
+ *      A suggestion that fits drivers and nothing else can only mean the
+ *      drivers — so "TWIC card expires" opens on All drivers rather than on
+ *      the whole company, which would have filed it where no driver can see it.
+ *      A suggestion that fits more than one kind picks none: "Safety meeting"
+ *      is as much the company's as the drivers'.
+ *
+ * Anything that matches no option leaves the select on its first entry, which
+ * is "Whole company" — the same safe end it has always failed to.
+ */
+const suggestedScope =
+  suggested && suggested.fits.length === 1
+    ? suggested.fits[0] === 'driver'
+      ? 'all_drivers'
+      : suggested.fits[0] === 'vehicle'
+        ? 'all_vehicles'
+        : ''
+    : ''
+const selectedSubject = editing
+  ? subjectValue(editing)
+  : prefillSubject !== ''
+    ? prefillSubject
+    : suggestedScope
 ---
 
 <App title="My reminders" subtitle="Your own reminders. We email you before the date.">
@@ -374,19 +506,25 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
     to federal deadlines on the dashboard, and the owner has to know which is
     which before he decides what to do this morning.
   */}
-  <p class="mb-5 max-w-2xl rounded-xl border border-brand-500/25 bg-brand-500/[0.05] px-4 py-3 text-sm">
+  <p class="mb-5 max-w-2xl rounded-xl border border-brand-500/25 bg-champagne-50 px-4 py-3 text-sm">
     These are your own reminders. They are <strong class="font-medium">not laws</strong>. The
-    deadlines on the <a href="/app" class="link font-medium">Deadlines</a>
+    deadlines on the <a href="/app" class="link font-medium">Deadlines</a>{' '}
     page come from the rules. These come from you.
   </p>
 
   {/* ------------------------------------------------------------ add / edit */}
 
-  <form method="POST" class="rounded-xl border border-ink-100 bg-white p-5">
+  {/* `id` is how Change reaches this form without a script: the link carries
+      `#reminder-form`, so the browser scrolls here and `scroll-padding-top`
+      keeps the sticky header off the heading. */}
+  <form method="POST" id="reminder-form" class="rounded-xl border border-ink-100 bg-white p-5">
     <h2 class="text-lg font-semibold tracking-tight">
       {editing ? 'Change this reminder' : 'Add a reminder'}
     </h2>
     {editing && <input type="hidden" name="id" value={editing.id} />}
+    {/* A saved reminder shows up in the list below, so that is where the 303
+        puts him — not back at the top of the form he has finished with. */}
+    <input type="hidden" name="from" value="open" />
 
     {/* The designed error state. `fail()` redirects to this box's id, so the
         browser scrolls to it and focuses it with no script running, and each
@@ -409,7 +547,7 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
           name="title"
           required
           maxlength={MAX_TITLE}
-          value={editing?.title ?? ''}
+          value={editing?.title ?? suggested?.title ?? ''}
           placeholder="Pay truck insurance"
           class={`${field} mt-1`}
           {...invalid('title')}
@@ -449,7 +587,10 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
         <select id="repeat_months" name="repeat_months" class={`${field} mt-1`} {...invalid('repeat_months')}>
             {
               REPEAT_OPTIONS.map((o) => (
-                <option value={o.value} selected={(editing?.repeatMonths ?? 0) === o.value}>
+                <option
+                  value={o.value}
+                  selected={(editing?.repeatMonths ?? suggested?.repeatMonths ?? 0) === o.value}
+                >
                   {o.label}
                 </option>
               ))
@@ -492,14 +633,34 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
       <div>
         <label class={label} for="subject">Who or what is it for?</label>
         <select id="subject" name="subject" class={`${field} mt-1`} {...invalid('subject')}>
-            <option value="" selected={!editing?.subject.id}>Whole company</option>
+            {/* Still the default, and still the fallback for a `?for=` that
+                matches nothing — but it must not stay selected when a truck
+                page has just named the truck. Two selected options in one
+                select is the LAST one winning, silently. */}
+            <option value="" selected={selectedSubject === ''}>Whole company</option>
+            {/* THE FLEET-WIDE PAIR, right under the company and above the
+                individual records — because that is the order of the question
+                he is answering: everyone, every one of a kind, or this one.
+                Drawn only when there is something for them to mean: "All
+                drivers" on a carrier with no drivers is an option that saves a
+                reminder nobody will ever see. */}
+            {drivers.length > 0 && (
+              <option value="all_drivers" selected={selectedSubject === 'all_drivers'}>
+                All drivers
+              </option>
+            )}
+            {vehicles.length > 0 && (
+              <option value="all_vehicles" selected={selectedSubject === 'all_vehicles'}>
+                All trucks
+              </option>
+            )}
             {
               drivers.length > 0 && (
                 <optgroup label="Drivers">
                   {drivers.map((d) => (
                     <option
                       value={`driver:${d.id}`}
-                      selected={editing ? subjectValue(editing) === `driver:${d.id}` : false}
+                      selected={selectedSubject === `driver:${d.id}`}
                     >
                       {`${d.first_name} ${d.last_name}`.trim()}
                     </option>
@@ -513,7 +674,7 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
                   {vehicles.map((v) => (
                     <option
                       value={`vehicle:${v.id}`}
-                      selected={editing ? subjectValue(editing) === `vehicle:${v.id}` : false}
+                      selected={selectedSubject === `vehicle:${v.id}`}
                     >
                       {v.unit_number || v.vin || 'Truck'}
                     </option>
@@ -556,9 +717,67 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
     </div>
   </form>
 
+  {/* -------------------------------------------------------- the suggestions
+
+      THE BLANK PAGE PROBLEM. In the owner's words: "how can we have options
+      for my reminders — things he should do but are not tracked by federal
+      rules, like tyre check." He knows he wants reminders and cannot think of
+      them standing at the screen, so he sets one and never comes back.
+
+      Every one of these is something the catalogue does NOT track. A suggestion
+      for the annual DOT inspection would put a second row on his dashboard for
+      a deadline we already watch — one with a citation, one without — and the
+      day the two disagree he stops believing both.
+
+      They fill the TITLE and the REPEAT and nothing else. The due date stays on
+      today, because a suggestion knows what the job is and cannot know when he
+      last did it.
+
+      Links, not buttons: each one is an address, so the back button undoes a
+      tap and no script is needed to fill a form.
+  */}
+  {
+    !editing && (
+      <section class="mt-6">
+        <h2 class="text-sm font-semibold tracking-tight">Not sure what to put?</h2>
+        <p class="mt-1 max-w-2xl text-sm text-ink-700">
+          These are the ones owners usually set. None of them is a rule, and nothing here is
+          already on your deadlines list. Tap one to fill the form, then change anything you
+          like.
+        </p>
+        {/* GROUPED, because there are two dozen of them. A flat row of 25 chips
+            is a wall, and the owner reading it is looking for one of three
+            things: something about the company, something about a truck, or
+            something about a driver. So that is the split. */}
+        {(
+          [
+            ['carrier', 'Your company'],
+            ['vehicle', 'Your trucks'],
+            ['driver', 'Your drivers'],
+          ] as const
+        ).map(([fit, heading]) => (
+          <div class="mt-4">
+            <h3 class="text-xs font-semibold tracking-wide text-ink-500 uppercase">{heading}</h3>
+            <div class="mt-2 flex flex-wrap gap-2">
+              {suggestionsFor(fit).map((sg) => (
+                <a
+                  href={`/app/reminders?suggest=${sg.key}${prefillSubject ? `&for=${encodeURIComponent(prefillSubject)}` : ''}${showDone ? '&show=done' : ''}#reminder-form`}
+                  class="filter-tab border border-ink-100 bg-white text-sm"
+                  title={sg.note}
+                >
+                  {sg.title}
+                </a>
+              ))}
+            </div>
+          </div>
+        ))}
+      </section>
+    )
+  }
+
   {/* ---------------------------------------------------------- the open list */}
 
-  <section class="mt-8">
+  <section id="open" class="mt-8">
     <h2 class="text-lg font-semibold tracking-tight">
       Your reminders
       <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">{open.length}</span>
@@ -662,15 +881,20 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
                           >
                             Done
                           </button>
+                          <input type="hidden" name="from" value="open" />
                         </form>
+                        {/* `show=done` rides along or the Finished list below
+                            shuts itself the moment he edits something in this
+                            one — "it's closed up", in his words. */}
                         <a
-                          href={`/app/reminders?edit=${r.id}`}
+                          href={`/app/reminders?edit=${r.id}${showDone ? '&show=done' : ''}#reminder-form`}
                           class="btn btn-tertiary btn-sm w-full flex-1 sm:w-auto sm:flex-none"
                         >
                           Change
                         </a>
                         <form method="POST" class="flex-1 sm:flex-none">
                           <input type="hidden" name="id" value={r.id} />
+                          <input type="hidden" name="from" value="open" />
                           <button
                             type="submit"
                             name="intent"
@@ -694,10 +918,13 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
 
   {/* ------------------------------------------------------------- done list */}
 
-  <section class="mt-8">
+  <section id="finished" class="mt-8">
     {
       !showDone ? (
-        <a href="/app/reminders?show=done" class="btn btn-secondary btn-sm">
+        /* The fragment is the whole point: opening the finished list used to
+           reload the page and drop him at the top, so the list he had just
+           asked for was three screens below the fold. */
+        <a href="/app/reminders?show=done#finished" class="btn btn-secondary btn-sm">
           Show finished reminders
         </a>
       ) : (
@@ -724,6 +951,10 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
                   </span>
                   <form method="POST" class="shrink-0">
                     <input type="hidden" name="id" value={r.id} />
+                    {/* `from=finished` is what keeps `?show=done` on the way
+                        back. Without it this button closes the very list it
+                        stands in. */}
+                    <input type="hidden" name="from" value="finished" />
                     <button
                       type="submit"
                       name="intent"
@@ -735,6 +966,7 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
                   </form>
                   <form method="POST" class="shrink-0">
                     <input type="hidden" name="id" value={r.id} />
+                    <input type="hidden" name="from" value="finished" />
                     <button
                       type="submit"
                       name="intent"
@@ -749,7 +981,9 @@ const subjectValue = (item: { subject: { kind: string; id: string | null } }) =>
             </ul>
           )}
 
-          <a href="/app/reminders" class="btn btn-secondary btn-sm mt-4">Hide finished</a>
+          <a href="/app/reminders#finished" class="btn btn-secondary btn-sm mt-4">
+            Hide finished
+          </a>
         </>
       )
     }

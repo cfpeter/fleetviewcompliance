@@ -180,6 +180,11 @@ export const DRIVER_DOCUMENT_KINDS: readonly DocumentKind[] = [
   { key: 'previous_employer_check', label: 'Past employer check' },
   { key: 'road_test', label: 'Road test certificate' },
   { key: 'spe_certificate', label: 'SPE certificate' },
+  // Added with the driver links (0034–0037). Without them an accepted zone
+  // exemption or assessment filed as "Other paper", which is what the owner
+  // saw: he ticked "Intracity zone exemption" and got back a nameless other.
+  { key: 'intracity_exemption', label: 'Intracity zone exemption' },
+  { key: 'medical_assessment', label: 'Medical assessment' },
   { key: 'training_certificate', label: 'Training certificate' },
   { key: 'other', label: 'Other paper' },
 ]

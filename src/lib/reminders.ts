@@ -38,13 +38,23 @@ export interface ReminderRow {
   lead_days: number
   driver_id: string | null
   vehicle_id: string | null
+  /** 'all_drivers' | 'all_vehicles', or NULL for the original three cases. */
+  subject_scope: string | null
   completed_at: string | null
   last_done_on: string | null
 }
 
-/** What the reminder is about. Both ids null means the whole company. */
+/**
+ * What the reminder is about.
+ *
+ * FIVE ANSWERS, not three. `carrier` is the whole company; `driver` and
+ * `vehicle` name one record; `all_drivers` and `all_vehicles` are one reminder
+ * that belongs to every one of them (0032). The last two carry no id — there is
+ * no single record to open — and that is why `id` is nullable rather than the
+ * kind being folded into it.
+ */
 export interface ReminderSubject {
-  kind: 'carrier' | 'driver' | 'vehicle'
+  kind: 'carrier' | 'driver' | 'vehicle' | 'all_drivers' | 'all_vehicles'
   id: string | null
   label: string
   /** The record's own page, when there is one to open. */
@@ -95,6 +105,17 @@ export const REPEAT_OPTIONS: readonly { value: number; label: string }[] = [
   { value: 3, label: 'Every 3 months' },
   { value: 6, label: 'Every 6 months' },
   { value: 12, label: 'Every year' },
+  // YEARS, added with 0033. The research behind the suggestion list turned up
+  // several dates a small carrier actually keeps that no month-sized repeat can
+  // express — a TWIC card and a hazmat background check both run five years, a
+  // forklift re-evaluation three, an LLC's Statement of Information two. Each
+  // of those used to ship as a reminder that fires once and never again, from a
+  // product whose job is to tell him again.
+  //
+  // The words are "2 years", not "every 24 months". Nobody says 24 months.
+  { value: 24, label: 'Every 2 years' },
+  { value: 36, label: 'Every 3 years' },
+  { value: 60, label: 'Every 5 years' },
 ]
 
 export function isRepeatMonths(value: number): boolean {
@@ -286,7 +307,7 @@ export function parseReminderLeadDays(raw: unknown): Parsed<number> {
  */
 export const REMINDER_ORIGIN = {
   label: 'Your reminder',
-  className: 'bg-brand-500/10 text-brand-700',
+  className: 'bg-champagne text-brand-700',
 } as const
 
 /** The one sentence that says what the badge means, wherever the rows appear. */
@@ -294,6 +315,9 @@ export const REMINDER_ORIGIN_NOTE = 'Rows marked "Your reminder" are yours. They
 
 /** What a reminder with no driver and no truck is about. */
 export const WHOLE_COMPANY = 'Whole company'
+/** The two fleet-wide scopes, in the words the dropdown uses. One place. */
+export const ALL_DRIVERS = 'All drivers'
+export const ALL_TRUCKS = 'All trucks'
 
 // ---------------------------------------------------------------- the digest
 
@@ -451,7 +475,7 @@ export function reminderEmailLine(item: ReminderItem): string {
  * `string` to the compiler.
  */
 const REMINDER_COLUMNS =
-  'id, title, note, due_on, repeat_months, lead_days, driver_id, vehicle_id, completed_at, last_done_on'
+  'id, title, note, due_on, repeat_months, lead_days, driver_id, vehicle_id, subject_scope, completed_at, last_done_on'
 
 /** The same columns plus the labels for whatever the reminder is about. */
 const REMINDER_COLUMNS_WITH_SUBJECT = `${REMINDER_COLUMNS}, drivers(first_name, last_name), vehicles(unit_number, vin)`
@@ -496,6 +520,15 @@ export function subjectOf(
       label: v?.unit_number || v?.vin || 'Truck',
       href: `/app/vehicles/${row.vehicle_id}`,
     }
+  }
+  // The fleet-wide scopes, before the whole-company fallback: a scoped row has
+  // no driver_id and no vehicle_id either, so reading them in the other order
+  // would label every "All drivers" reminder as the company's.
+  if (row.subject_scope === 'all_drivers') {
+    return { kind: 'all_drivers', id: null, label: ALL_DRIVERS, href: '/app/drivers' }
+  }
+  if (row.subject_scope === 'all_vehicles') {
+    return { kind: 'all_vehicles', id: null, label: ALL_TRUCKS, href: '/app/vehicles' }
   }
   return { kind: 'carrier', id: null, label: WHOLE_COMPANY, href: null }
 }
@@ -545,14 +578,63 @@ export function compareReminders(a: ReminderItem, b: ReminderItem): number {
  * The digest calls this with the service key, which has no RLS, so it passes the
  * carrier explicitly — hence the parameter being used in exactly one place.
  */
+export interface ReminderScope {
+  kind: 'driver' | 'vehicle'
+  id: string
+}
+
+/**
+ * The subject filter is built as a PostgREST `or(...)` STRING, and a string
+ * filter is a place a value can break out of.
+ *
+ * `,` separates the two conditions and `.` separates column from operator, so
+ * an id carrying either would not error — it would quietly become a different
+ * query, and a query on this table returns another carrier's reminders. RLS
+ * still stands behind it, which is why this is a second lock rather than the
+ * only one; but a filter built by hand has to check its own inputs.
+ *
+ * Fails CLOSED: an id that is not a uuid selects nothing. Every caller passes a
+ * route parameter, and a route parameter that is not a uuid is not a record.
+ */
+const SUBJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export async function loadReminders(
   supabase: SupabaseClient,
   carrierId: string | null,
   today = new Date(),
+  /**
+   * One record's reminders instead of the whole carrier's.
+   *
+   * The truck and driver pages ask for this. It is a FILTER and never a second
+   * meaning of the function: the whole-company reminders (both ids null) are
+   * deliberately left out of a record's list, because a reminder about the
+   * company is not a fact about this truck, and printing it on every truck page
+   * would be the same note repeated across the yard.
+   */
+  scope?: ReminderScope,
 ): Promise<ReminderItem[]> {
+  // Before any query is built, and before any string is interpolated.
+  if (scope && !SUBJECT_ID.test(scope.id)) return []
+
   const build = (columns: string) => {
-    const query = supabase.from('reminders').select(columns).is('completed_at', null)
-    return carrierId ? query.eq('carrier_id', carrierId) : query
+    let query = supabase.from('reminders').select(columns).is('completed_at', null)
+    if (carrierId) query = query.eq('carrier_id', carrierId)
+    if (scope) {
+      const idColumn = scope.kind === 'driver' ? 'driver_id' : 'vehicle_id'
+      const fleetWide = scope.kind === 'driver' ? 'all_drivers' : 'all_vehicles'
+      // THIS RECORD, PLUS THE ONES THAT BELONG TO EVERY RECORD OF ITS KIND.
+      //
+      // "Safety meeting · All drivers" is a reminder about this driver as much
+      // as one naming him, and the whole point of the scope (0032) — in the
+      // owner's words, "when the user chooses all drivers we show it to all
+      // drivers". Filtering on the id alone would store it and then show it
+      // nowhere but the reminders page.
+      //
+      // Whole-company reminders still stay off a record's page: one is not a
+      // fact about this truck, and it would read identically on every one.
+      query = query.or(`${idColumn}.eq.${scope.id},subject_scope.eq.${fleetWide}`)
+    }
+    return query
   }
 
   let result = await build(REMINDER_COLUMNS_WITH_SUBJECT)

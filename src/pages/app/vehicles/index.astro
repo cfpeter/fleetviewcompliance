@@ -11,6 +11,7 @@
 import Figure from '../../../components/charts/Figure.astro'
 import Ring from '../../../components/charts/Ring.astro'
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import { monthBuckets } from '../../../lib/charts/scale.ts'
 import {
   COVERAGE_NOTE,
@@ -46,7 +47,8 @@ const rawKind = params.get('kind') ?? ''
 const kind: VehicleKind | null =
   rawKind === 'power_unit' || rawKind === 'trailer' ? rawKind : null
 const q = (params.get('q') ?? '').trim()
-const error = params.get('error')
+// Read only when the browser says the request came from this site.
+const error = flashText(Astro.url, Astro.request)
 // A flag, not a sentence. The wording is in src/lib/fleet/remove.ts and never
 // comes out of the query string — /app/billing documents why this app refuses to
 // print query-string text back at the owner.
@@ -514,8 +516,10 @@ const said = 'text-ink-500 sm:hidden'
             ? 'Add a power unit or a trailer. You can start with just the unit number. Add the VIN, the weight and the dates later.'
             : 'No vehicle in this view matches. Try the All tab, or type a shorter part of the VIN.'}
         </p>
+        {/* Secondary: the one Primary on this screen is the "Add a vehicle" at
+            the top, which is on screen at the same time as this card. */}
         {emptyAll && (
-          <a href={addHref} class="btn btn-primary btn-sm mt-4">
+          <a href={addHref} class="btn btn-secondary btn-sm mt-4">
             Add a vehicle →
           </a>
         )}
@@ -529,7 +533,8 @@ const said = 'text-ink-500 sm:hidden'
           pushes the first truck down the page.
         */}
         <div class="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
-          <span class="text-ink-500">
+          {/* ink-700: this line sits on the page tint, where ink-500 is 4.41:1. */}
+          <span class="text-ink-700">
             <span class="tabular-nums">{shown.length}</span>
             {shown.length === 1 ? ' unit' : ' units'}
           </span>
@@ -625,7 +630,9 @@ const said = 'text-ink-500 sm:hidden'
                                 </span>
                               </span>
                             ) : (
-                              <span class="text-ink-500">
+                              /* ink-700: the strip is 12px, and the floor at
+                                 12px and under is ink-700 on any surface. */
+                              <span class="text-ink-700">
                                 <span aria-hidden="true">·</span>
                                 <span class="sr-only">none</span>
                               </span>
@@ -752,7 +759,15 @@ const said = 'text-ink-500 sm:hidden'
                       the back of it. This is how a unit is recognised standing
                       in front of it. */}
                   <td class={`${cell} order-3 mt-1 sm:mt-0`}>
-                    {ymm || <span class="text-ink-500">Not given</span>}
+                    {/* "2019 Freightliner Cascadia" explains itself on a phone;
+                        "Not given" on its own is a line about nothing, so the
+                        missing case says which column it is. */}
+                    {ymm || (
+                      <>
+                        <span class={said}>Year and make </span>
+                        <span class="text-ink-500">Not given</span>
+                      </>
+                    )}
                   </td>
                   <td class={`${cell} order-4 mt-1 whitespace-nowrap sm:mt-0`}>
                     <span class={said}>Plate </span>

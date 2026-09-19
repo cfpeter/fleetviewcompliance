@@ -378,6 +378,18 @@ export const federalCarrierRules: RuleDefinition[] = [
     consequence:
       'Vehicle placed out of service at roadside, plus 49 U.S.C. 521(b) penalties. ' +
       'A parked truck is the bill, not the fine.',
+    /**
+     * `truck`. docs/product/DATE-PRIORITY.md § 5.2 records a disagreement with
+     * the TONE of the sentence above — it reads like a company-stopper — but
+     * lands on the same tier this value comes from, and agrees with
+     * src/lib/dispatch/eligibility.ts that this warns rather than blocks: an
+     * expired annual inspection does not make the DRIVER unqualified, and a
+     * shop can do the inspection the same afternoon. So the value is unchanged
+     * by that disagreement; what the document asks for is that this row read
+     * LOUDER than the other warn-level vehicle rows beside it, which is a
+     * ranking within `truck` that this field cannot express.
+     */
+    impact: 'truck',
     applies: isCmv,
   },
 
@@ -395,6 +407,7 @@ export const federalCarrierRules: RuleDefinition[] = [
       'The inspection report, or a sticker or decal carrying the four data ' +
       'elements in 396.17(c)(2), on the trailer itself.',
     consequence: 'Trailer placed out of service at roadside, plus 49 U.S.C. 521(b) penalties.',
+    impact: 'truck',
     applies: isCmv,
   },
 
@@ -417,6 +430,7 @@ export const federalCarrierRules: RuleDefinition[] = [
       'Destroying it before this date is the violation: recordkeeping penalties of ' +
       '$1,584 a day up to $15,846 (49 CFR 386 App. B(a)(1), 2025 amounts). After ' +
       'this date it may be discarded.',
+    impact: 'record',
     applies: isCmv,
   },
 
@@ -434,6 +448,7 @@ export const federalCarrierRules: RuleDefinition[] = [
     consequence:
       'Destroying it before this date is the violation: recordkeeping penalties of ' +
       '$1,584 a day up to $15,846. After this date it may be discarded.',
+    impact: 'record',
     applies: isCmv,
   },
 
@@ -465,6 +480,7 @@ export const federalCarrierRules: RuleDefinition[] = [
     consequence:
       'Vehicle out of service until repaired, plus recordkeeping penalties of ' +
       '$1,584 a day up to $15,846.',
+    impact: 'audit',
     applies: isCmv,
   },
 
@@ -491,6 +507,7 @@ export const federalCarrierRules: RuleDefinition[] = [
       'principal place of business or where the inspector works, for employment ' +
       'plus one year.',
     consequence: 'Non-recordkeeping penalties up to $19,246 per violation (App. B(a)(3)).',
+    impact: 'audit',
   },
 
   // -------------------------------------------------------------------------
@@ -532,6 +549,7 @@ export const federalCarrierRules: RuleDefinition[] = [
       'Deactivation of the USDOT number — which puts every vehicle in violation of ' +
       '392.9b — plus penalties under 49 U.S.C. 521(b)(2)(B) or 14901(a) ' +
       '($1,365–$10,269 under App. B(g)(16)).',
+    impact: 'company',
     applies: filesMcs150,
   },
 
@@ -566,12 +584,22 @@ export const federalCarrierRules: RuleDefinition[] = [
     consequence:
       'Citations and fines at roadside under state law — the amounts are purely ' +
       'state law, and California is a participating state.',
+    impact: 'money',
     applies(ctx: RuleContext): Applicability {
       // UCR reaches interstate carriers, brokers, freight forwarders and leasing
-      // companies. An intrastate-only carrier is outside it, but 'B' and 'C' are
-      // self-reported operation codes and a carrier that crosses a state line
-      // once is interstate — so only a positive interstate answer is acted on.
-      return ctx.carrierOperation === 'A' ? true : 'unknown'
+      // companies (49 U.S.C. 14504a(a)(1)). An intrastate-only carrier is
+      // outside it, so a positive intrastate code — 'B' or 'C' — answers no,
+      // the same answer the IFTA and IRP gates in ./california.ts give on the
+      // same code, and the answer docs/product/DATE-PRIORITY.md § 4.1 expects.
+      //
+      // This gate used to answer 'unknown' for 'B'/'C' on the ground that the
+      // code is self-reported. It is — but the same is true of the IFTA and IRP
+      // gates, and the three disagreeing put an intrastate carrier's UCR on his
+      // board while his IFTA was off it. The self-report is now something the
+      // owner can correct on /app/settings, and a missing code still fails
+      // open here.
+      if (ctx.carrierOperation === undefined) return 'unknown'
+      return ctx.carrierOperation === 'A'
     },
   },
 
@@ -599,6 +627,7 @@ export const federalCarrierRules: RuleDefinition[] = [
     consequence:
       'Penalties and interest, and — the one that actually bites — the state will ' +
       'not register or re-register the vehicle without the stamped Schedule 1.',
+    impact: 'truck',
     applies: maybeHvutTaxable,
   },
 
@@ -624,6 +653,7 @@ export const federalCarrierRules: RuleDefinition[] = [
     consequence:
       'Suspension and then revocation — revocation only after a compliance order ' +
       'and 30 days of wilful non-compliance (49 U.S.C. 13905(e)).',
+    impact: 'company',
   },
 
   {
@@ -640,8 +670,9 @@ export const federalCarrierRules: RuleDefinition[] = [
      * bulk high-hazard commodities. Unchanged since 1985 in nominal terms; the
      * 2014 proposal to raise them was withdrawn in 2017.
      *
-     * We cannot scope this to for-hire carriers: `RuleContext` has no for-hire
-     * flag, only interstate/intrastate. A private carrier will see this row.
+     * SCOPING THIS TO FOR-HIRE CARRIERS: the gate is written, and today it
+     * still lets every carrier through. See `applies` below for exactly why,
+     * and for the one field that would close it.
      */
     code: 'fed.387.9.liability-insurance-filing',
     title: 'Liability insurance on file with FMCSA',
@@ -657,6 +688,53 @@ export const federalCarrierRules: RuleDefinition[] = [
     consequence:
       'Financial-responsibility penalties up to $21,114 per day, then suspension and ' +
       'revocation of the authority the filing supports.',
+    /**
+     * `company` — the top of the ranking, and the top of the whole catalogue.
+     *
+     * docs/product/DATE-PRIORITY.md § 5.5 disagrees with the sentence above:
+     * it leads with the money, and the money is the least of it. If the filing
+     * drops off, the authority is suspended, every truck stops, and a broker
+     * sees it the same day because it is on the public record. The value
+     * follows the document rather than the sentence.
+     *
+     * This row resolves to `unsupported`, so `impact` does not lift it on the
+     * dashboard: `STANDING_RANK` puts `unsupported` below `current`, and
+     * impact only orders WITHIN a standing. That is deliberate and it is a
+     * product problem, not a sort-key problem — the document's B1 and B3 are
+     * where it gets fixed.
+     */
+    impact: 'company',
+    /**
+     * THE ONLY DIRECTION THIS GATE IS ALLOWED TO BE WRONG IN.
+     *
+     * Showing a private carrier a filing it may not owe costs one wrong row at
+     * the top of its dashboard. Hiding this row from a for-hire carrier hides
+     * the single most consequential obligation in the catalogue — the one whose
+     * lapse suspends the authority and stops every truck. So the gate returns
+     * `false` only where BOTH deciding facts are known and negative, which is
+     * house rule 3 at the top of this file.
+     *
+     * `hazmat` is in the test and not decoration. Part 387's reach over a
+     * PRIVATE carrier hauling hazardous materials is not something this file
+     * has verified, and an unverified widening of an exemption is the one kind
+     * of guess that takes an obligation away from somebody who owes it. Until
+     * that is checked, a hazmat or unknown-hazmat carrier keeps the row
+     * whatever `forHire` says.
+     *
+     * WHERE THE TWO FACTS COME FROM. `carriers.for_hire` and `carriers.hazmat`
+     * (supabase/migrations/0031_carrier_operation.sql) — nullable, three-valued,
+     * never defaulted to either answer. Signup copies them off the FMCSA
+     * census row: `for_hire` from `classdef` ("AUTHORIZED FOR HIRE", "PRIVATE
+     * PROPERTY", …, mapped by `forHireFromClassdef` in src/lib/fmcsa.ts) and
+     * `hazmat` from `hm_ind`. The owner can correct both on /app/settings, and
+     * src/lib/deadlines.ts puts them on the context of every subject. A row
+     * that predates 0031 holds NULL in both, and NULL reaches here as
+     * `undefined`, which is 'unknown', which keeps the row on the board.
+     */
+    applies(ctx: RuleContext): Applicability {
+      if (ctx.forHire === false && ctx.hazmat === false) return false
+      return 'unknown'
+    },
   },
 
   {
@@ -688,6 +766,7 @@ export const federalCarrierRules: RuleDefinition[] = [
     consequence:
       'Destroying the entry before this date is the violation: recordkeeping ' +
       'penalties of $1,584 a day up to $15,846.',
+    impact: 'record',
   },
 
   // -------------------------------------------------------------------------
@@ -711,6 +790,7 @@ export const federalCarrierRules: RuleDefinition[] = [
     warningDays: [],
     evidence: 'The records of duty status themselves, for at least the last six months.',
     consequence: 'Recordkeeping penalties of $1,584 a day up to $15,846.',
+    impact: 'record',
   },
 
   {
@@ -733,6 +813,7 @@ export const federalCarrierRules: RuleDefinition[] = [
       'The documents themselves, matchable to the driver and the day. Each ' +
       'fleet-management communication record counts as one document.',
     consequence: 'Recordkeeping penalties of $1,584 a day up to $15,846.',
+    impact: 'record',
   },
 
   {
@@ -755,6 +836,7 @@ export const federalCarrierRules: RuleDefinition[] = [
     warningDays: [],
     evidence: 'A back-up copy of the ELD records on a device separate from the original.',
     consequence: 'Recordkeeping penalties of $1,584 a day up to $15,846.',
+    impact: 'record',
   },
 
   // -------------------------------------------------------------------------
@@ -791,6 +873,17 @@ export const federalCarrierRules: RuleDefinition[] = [
     consequence:
       'One of the few penalties with a statutory MINIMUM: knowing training ' +
       'violations are not less than $617 and up to $102,348.',
+    /**
+     * `money`, from the tier-3 table in docs/product/DATE-PRIORITY.md § 2 —
+     * and the caveat that document states in the same breath: for a carrier
+     * who actually hauls hazmat this belongs beside the insurance filing, at
+     * `company`. `impact` is static data on the rule and cannot vary with the
+     * carrier, and `isHazmat` answers 'unknown' for everyone whose flag is
+     * unset, so ranking the row at `company` would lift it for the majority of
+     * carriers who do not haul hazmat at all. Ranked as the tier table ranks
+     * it; a context-aware value is what would close this.
+     */
+    impact: 'money',
     applies: isHazmat,
   },
 
@@ -822,6 +915,10 @@ export const federalCarrierRules: RuleDefinition[] = [
       'business AND carried on board each truck and truck tractor, though not on ' +
       'trailers. Electronic form has been permitted since 2026-09-03.',
     consequence: 'Hazmat penalties up to $102,348 per violation.',
+    // Same tier-3 ranking and the same caveat as the recurrent-training row
+    // above: tier 1 for a carrier who really hauls hazmat, and `impact` cannot
+    // say "it depends".
+    impact: 'money',
     applies: isHazmat,
   },
 ]

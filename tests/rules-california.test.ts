@@ -9,9 +9,26 @@
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { eligibility } from '../src/lib/dispatch/eligibility.ts'
+import { returnDueOn } from '../src/lib/ifta/compute.ts'
 import { californiaRules } from '../src/lib/rules/california.ts'
 import { nextDue, status } from '../src/lib/rules/compute.ts'
+import { evaluate } from '../src/lib/rules/index.ts'
 import type { Outcome, RuleContext, RuleDefinition } from '../src/lib/rules/types.ts'
+
+/**
+ * Every rule in the catalogue that reports on a driver's medical certificate,
+ * federal or Californian. The B13 tests at the bottom of this file assert that
+ * exactly one of them reaches any given driver.
+ */
+const MEDICAL_RULE_CODES = new Set([
+  'medical_certificate_general',
+  'medical_certificate_by_exam_date',
+  'medical_certificate_intracity_zone',
+  'medical_certificate_insulin_treated',
+  'medical_certificate_alternative_vision',
+  'ca_intrastate_medical_certificate',
+])
 
 /** The day this catalogue was written; every expected date below is read from it. */
 const TODAY = new Date(Date.UTC(2026, 8, 15))
@@ -136,21 +153,25 @@ test('a sale never reported stays a single blown deadline, not a monthly chore',
 // -----------------------------------------------------------------------------
 
 test('BIT vehicle inspection runs on a 90-day cycle from the last inspection', () => {
+  // 20 Aug + 90 days is 18 Nov. Three calendar months would say 20 Nov, and
+  // that is the wrong answer in the dangerous direction: two days the owner
+  // does not have.
   const c = ctx({ gvwrLbs: 33_000, anchors: { bit_last_inspection: utc(2026, 8, 20) } })
-  assert.equal(dueOn('ca_bit_inspection', c), '2026-11-20')
+  assert.equal(dueOn('ca_bit_inspection', c), '2026-11-18')
 
-  // Pinned explicitly: three months, not twenty-five.
+  // Pinned explicitly: a count of DAYS, ninety of them, never a count of months.
   const r = rule('ca_bit_inspection').recurrence
   assert.equal(r.type, 'rolling')
   if (r.type !== 'rolling') return
-  assert.equal(r.intervalMonths, 3)
+  assert.equal(r.intervalDays, 90)
+  assert.equal(r.intervalMonths, undefined)
 })
 
 test('a truck under 26,001 lb is not declared exempt from BIT', () => {
   // CVC 34500 also reaches lighter combinations, placarded hazmat and buses, so
   // 'unknown' keeps the rule on the board rather than asserting an exemption.
   const c = ctx({ gvwrLbs: 20_000, anchors: { bit_last_inspection: utc(2026, 8, 20) } })
-  assert.equal(dueOn('ca_bit_inspection', c), '2026-11-20')
+  assert.equal(dueOn('ca_bit_inspection', c), '2026-11-18')
 })
 
 test('the CHP terminal visit itself has no predictable cycle', () => {
@@ -204,13 +225,37 @@ test('a vehicle under 10,001 lb pays ordinary registration, not CVRA', () => {
 // -----------------------------------------------------------------------------
 
 test('IFTA quarterly returns fall on the last day of the month after each quarter', () => {
+  // 31 Oct 2026 is a Saturday, so the return is due Monday 2 Nov. The IFTA
+  // screens already said so; the catalogue used to say 31 Oct, and one return
+  // had two due dates depending on the page.
   const c = ctx({ carrierOperation: 'A' })
-  assert.equal(dueOn('ca_ifta_quarterly_return', c), '2026-10-31')
+  assert.equal(dueOn('ca_ifta_quarterly_return', c), '2026-11-02')
+
+  // The whole point of the roll: on Sunday 1 Nov the Q3 return is not late,
+  // it is due tomorrow. Without the roll the catalogue skipped straight to
+  // January here and the dashboard would have called the return overdue on a
+  // day it was not.
+  const sunday = ctx({ carrierOperation: 'A', today: utc(2026, 11, 1) })
+  assert.equal(dueOn('ca_ifta_quarterly_return', sunday), '2026-11-02')
 
   // And the Q4 return in the new year, which is the one carriers forget because
-  // it shares a month with nothing else.
-  const january = ctx({ carrierOperation: 'A', today: utc(2026, 11, 1) })
-  assert.equal(dueOn('ca_ifta_quarterly_return', january), '2027-01-31')
+  // it shares a month with nothing else. 31 Jan 2027 is a Sunday.
+  const november = ctx({ carrierOperation: 'A', today: utc(2026, 11, 15) })
+  assert.equal(dueOn('ca_ifta_quarterly_return', november), '2027-02-01')
+})
+
+test('the catalogue and the IFTA screen give one return one due date', () => {
+  // Two implementations of the same statutory date is how the dashboard said
+  // 31 Oct while /app/ifta said 2 Nov. Pinned equal for the next four quarters.
+  for (const [y, m] of [[2026, 6], [2026, 9], [2027, 0], [2027, 3]] as const) {
+    const quarterStart = utc(y, m + 1, 1)
+    // Asked mid-way through the quarter's second month: the previous quarter's
+    // return has passed even after a weekend roll, and this quarter's is the
+    // next configured date.
+    const today = utc(y, m + 2, 15)
+    const fromRule = dueOn('ca_ifta_quarterly_return', ctx({ carrierOperation: 'A', today }))
+    assert.equal(fromRule, returnDueOn(quarterStart).toISOString().slice(0, 10))
+  }
 })
 
 test('an intrastate-only carrier owes no IFTA return', () => {
@@ -315,4 +360,207 @@ test('no rule invents an annual IIPP review', () => {
   for (const r of californiaRules) {
     assert.ok(!/iipp/i.test(`${r.code} ${r.title}`), `${r.code} invents an IIPP deadline`)
   }
+})
+
+// -----------------------------------------------------------------------------
+// The intrastate medical certificate (B13)
+// -----------------------------------------------------------------------------
+
+test('NO CALIFORNIA DRIVER FALLS BETWEEN THE FEDERAL AND STATE MEDICAL RULES', () => {
+  // THE TEST THIS WHOLE RULE EXISTS FOR, and the one to read before changing
+  // either gate.
+  //
+  // The five federal medical rules gate on `interstateDriver`, which returns
+  // false for operation code 'B' or 'C'. California's rule gates on a POSITIVE
+  // 'B' or 'C'. Between them they must cover every value the code can take,
+  // with no gap and no double-count — and they live in two different files, so
+  // nothing but this assertion keeps them in step.
+  //
+  // A gap here is not a cosmetic bug. src/lib/dispatch/eligibility.ts blocks a
+  // dispatch on a medical rule code; a driver with no medical row at all cannot
+  // trigger a block, and goes out with an expired card and nothing said.
+  const EXPIRED = utc(2025, 10, 1)
+
+  for (const carrierOperation of [undefined, 'A', 'B', 'C']) {
+    const rows = evaluate(
+      [
+        {
+          type: 'driver',
+          id: 'd1',
+          label: 'A Driver',
+          context: { carrierOperation, registrationState: 'CA', cdl: true },
+          anchors: { medical_certificate_expires: EXPIRED },
+        },
+      ],
+      TODAY,
+    ).filter((i) => MEDICAL_RULE_CODES.has(i.rule.code))
+
+    assert.ok(
+      rows.length >= 1,
+      `operation code ${String(carrierOperation)}: NO medical rule at all — this driver ` +
+        'can be dispatched with an expired card and nothing will say so',
+    )
+    assert.equal(
+      rows.length,
+      1,
+      `operation code ${String(carrierOperation)}: ${rows.length} rules report on one ` +
+        `certificate (${rows.map((r) => r.rule.code).join(', ')})`,
+    )
+    assert.equal(
+      rows[0]?.status.standing,
+      'overdue',
+      `operation code ${String(carrierOperation)}: an expired card must read overdue`,
+    )
+  }
+})
+
+test('the intrastate rule takes exactly the drivers the federal rules let go', () => {
+  const codeFor = (carrierOperation?: string) =>
+    evaluate(
+      [
+        {
+          type: 'driver',
+          id: 'd1',
+          label: 'D',
+          context: { carrierOperation, registrationState: 'CA', cdl: true },
+          anchors: { medical_certificate_expires: utc(2027, 1, 1) },
+        },
+      ],
+      TODAY,
+    ).find((i) => MEDICAL_RULE_CODES.has(i.rule.code))?.rule.code
+
+  // Interstate and unknown belong to the federal rule, which fails open on a
+  // missing code. Intrastate belongs to California.
+  assert.equal(codeFor('A'), 'medical_certificate_general')
+  assert.equal(codeFor(undefined), 'medical_certificate_general')
+  assert.equal(codeFor('B'), 'ca_intrastate_medical_certificate')
+  assert.equal(codeFor('C'), 'ca_intrastate_medical_certificate')
+})
+
+test('an out-of-state intrastate carrier gets no medical rule, and that is a known hole', () => {
+  // A DELIBERATE, DOCUMENTED GAP — asserted so that adding a second state has
+  // to look at it rather than inherit it.
+  //
+  // `interstateDriver` in federal-driver.ts returns false for any 'B'/'C'
+  // carrier, wherever it is based, on the stated assumption that the state
+  // catalogue carries the replacement. California's now does. Texas has no
+  // catalogue here, and a California Vehicle Code row must not be shown to a
+  // Texas carrier — so a Texas intrastate driver has NO medical row.
+  //
+  // This is correct for a product sold in California and wrong the day it is
+  // sold anywhere else. When this test fails because Arizona was added, that is
+  // the fix landing, not a regression.
+  const rows = evaluate(
+    [
+      {
+        type: 'driver',
+        id: 'd1',
+        label: 'D',
+        context: { carrierOperation: 'B', registrationState: 'TX', cdl: true },
+        anchors: { medical_certificate_expires: utc(2025, 10, 1) },
+      },
+    ],
+    TODAY,
+  ).filter((i) => MEDICAL_RULE_CODES.has(i.rule.code))
+
+  assert.deepEqual(
+    rows.map((r) => r.rule.code),
+    [],
+    'a state catalogue now covers this carrier — update the federal gate too',
+  )
+})
+
+test('the California rule is not the federal rule with the word changed', () => {
+  const ca = rule('ca_intrastate_medical_certificate')
+
+  // The authority is the licence statute, not the CHP motor-carrier statute.
+  // Veh. Code 34501(a)(1) does not list driver medical qualification among what
+  // CHP may regulate, and 34501.12 is the terminal-inspection section.
+  assert.match(ca.citation, /12804\.9/)
+  assert.doesNotMatch(ca.citation, /34501/)
+  assert.doesNotMatch(ca.citation, /391\.45/)
+  assert.ok(ca.sourceUrl.startsWith('https://leginfo.legislature.ca.gov/'))
+
+  // Two years, and it is the printed date that governs — not 24 months assumed
+  // from the examination.
+  assert.equal(ca.maxTermMonths, 24)
+  assert.equal(ca.recurrence.type, 'expiry')
+
+  // It must NOT gate on holding a CDL. Veh. Code 12804.9(a)(2)(A) reaches "a
+  // class A or class B driver's license, or class C driver's license with a
+  // commercial endorsement", which takes in non-commercial class A and B
+  // holders. Gating on `cdl` would drop them.
+  const withoutCdl = nextDue(ca, ctx({ carrierOperation: 'B', cdl: false }))
+  assert.notEqual(withoutCdl.kind, 'not_applicable', 'a non-CDL class A driver still owes this')
+
+  // The California-specific fact an owner will otherwise miss: the certificate
+  // has to reach the DMV, not just the driver's folder.
+  assert.match(ca.evidence, /DMV/)
+
+  // And no invented instrument. DL 51 and DL 51B could not be confirmed against
+  // any primary source, so they must not appear anywhere in the row.
+  const text = `${ca.title} ${ca.citation} ${ca.evidence} ${ca.consequence}`
+  assert.doesNotMatch(text, /DL\s*51/i, 'an unconfirmed form number reached the rule row')
+  // No downgrade timeline either: 12804.9(c) states no grace period and no
+  // notice, and the federal 60-day CDL downgrade is a different mechanism.
+  assert.doesNotMatch(text, /60 days/i)
+})
+
+test('an expired intrastate certificate is overdue, so a dispatch block can see it', () => {
+  const expired = status(
+    rule('ca_intrastate_medical_certificate'),
+    ctx({ carrierOperation: 'B', anchors: { medical_certificate_expires: utc(2026, 8, 1) } }),
+    utc(2026, 8, 1),
+  )
+  assert.equal(expired.standing, 'overdue')
+
+  // And with no date at all it is a gap, never green.
+  const blank = status(
+    rule('ca_intrastate_medical_certificate'),
+    ctx({ carrierOperation: 'B' }),
+    null,
+  )
+  assert.equal(blank.standing, 'unknown')
+  assert.deepEqual([...(blank.needs ?? [])], ['medical_certificate_expires'])
+})
+
+test('the dispatch block does NOT yet stop a truck on the intrastate certificate', () => {
+  // A TRIPWIRE, NOT AN ENDORSEMENT. Written the way the "no rule claims to have
+  // been verified" test is written: it pins a state that is wrong, so that
+  // fixing it is a deliberate act rather than something discovered later.
+  //
+  // `BLOCKING_RULE_CODES` in src/lib/dispatch/eligibility.ts is a hand-written
+  // set of the five FEDERAL medical codes plus the CDL. Those five all answer
+  // "not applicable" for a carrier marked intrastate, so before this rule the
+  // set matched NOTHING for them: an expired certificate produced a row on the
+  // dashboard and no block at all on the assignment screen.
+  //
+  // THAT FIX HAS LANDED: the code is in BLOCKING_RULE_CODES, and the two
+  // assertions below now pin the block rather than its absence. They are what
+  // stops somebody tidying the set and quietly making an intrastate driver
+  // dispatchable on an expired card again.
+  const items = evaluate(
+    [
+      {
+        type: 'driver',
+        id: 'd1',
+        label: 'A Driver',
+        context: { carrierOperation: 'B', registrationState: 'CA', cdl: true },
+        anchors: { medical_certificate_expires: utc(2025, 10, 1) },
+      },
+    ],
+    TODAY,
+  )
+  const issues = eligibility({ items, label: 'A Driver' })
+
+  assert.equal(
+    issues.some((i) => i.ruleCode === 'ca_intrastate_medical_certificate'),
+    true,
+    'eligibility.ts must know this rule, or an intrastate driver is never blocked',
+  )
+  assert.equal(
+    issues.some((i) => i.severity === 'block'),
+    true,
+    'an intrastate driver with an expired medical card must not be dispatchable',
+  )
 })

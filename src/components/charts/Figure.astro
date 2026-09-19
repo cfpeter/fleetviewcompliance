@@ -49,9 +49,14 @@ const caveats = (Array.isArray(coverage) ? coverage : coverage ? [coverage] : []
           not a place to save ink. */}
       {subtitle && <p class="mt-0.5 text-xs text-ink-700">{subtitle}</p>}
     </div>
+    {/* `.link`, so it is underlined at rest like every other body link, and a
+        44px target. The negative vertical margin keeps the layout height at one
+        line of text: the frame around a chart must not grow 24px because its
+        corner holds a link, and a caller's page-height budget (the truck and
+        driver pages) is measured on that. */}
     {
       action && (
-        <a href={action.href} class="text-xs font-medium text-brand-600 hover:underline">
+        <a href={action.href} class="link -my-3.5 inline-flex min-h-11 items-center text-xs font-medium">
           {action.label}
         </a>
       )

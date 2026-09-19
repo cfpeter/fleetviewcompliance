@@ -335,7 +335,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
               'mt-5 rounded-lg px-4 py-3 text-sm',
               // Amber is for a clock that is running out. Seven days is where
               // this stops being background information.
-              plan.daysLeft <= 7 ? 'bg-amber-50 text-amber-900' : 'bg-brand-500/[0.08] text-brand-700',
+              plan.daysLeft <= 7 ? 'bg-amber-50 text-amber-900' : 'bg-champagne-50 text-brand-700',
             ]}
           >
             <p class="font-medium">
@@ -463,10 +463,10 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
               {formatMoney(nowCents)} each month.
             </p>
             {/*
-              Brand blue, not amber. Amber is the colour of the box because a
+              Brand, not amber. Amber is the colour of the box because a
               stale count is a clock the owner is losing money on; the button
               inside it is the one action on this view, and inside /app the
-              action colour is blue. It cannot collide with "Pay with card"
+              action colour is Emerald Ink. It cannot collide with "Pay with card"
               either — that button only appears while the plan is trial, trial
               over or ended, and this block only appears while it is paying.
             */}
@@ -533,15 +533,15 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
         !checkoutOn && (
           // Blue, not amber: this is a standing fact to read, not a clock
           // running out. docs/stack.md, and the reason the two are kept apart.
-          <section class="rounded-xl border border-brand-500/20 bg-brand-500/[0.06] p-5">
-            <h2 class="font-medium tracking-tight text-brand-700">
+          <section class="rounded-xl border border-blue-100 bg-blue-50 p-5">
+            <h2 class="font-medium tracking-tight text-blue-900">
               Card payment is not switched on yet
             </h2>
-            <p class="mt-2 text-sm text-brand-700">
+            <p class="mt-2 text-sm text-blue-900">
               You cannot pay on this page today. Nothing is being charged. Everything in your
               account keeps working.
             </p>
-            <p class="mt-2 text-sm text-brand-700">
+            <p class="mt-2 text-sm text-blue-900">
               The price above is the real price. We will tell you before your first bill.
             </p>
           </section>

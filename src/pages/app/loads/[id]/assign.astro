@@ -25,6 +25,7 @@
  * screen as one at a desk, and the URL is a thing she can send to the owner.
  */
 import App from '../../../../layouts/App.astro'
+import { flashText } from '../../../../lib/flash.ts'
 import { loadDeadlines } from '../../../../lib/deadlines.ts'
 import {
   conflicts,
@@ -639,7 +640,8 @@ const currentDriver = current?.driver_id
   ? driverName(drivers.find((d) => d.id === current.driver_id))
   : null
 
-const error = params.get('error')
+// Only honoured when the request came from our own 303. See src/lib/flash.ts.
+const error = flashText(Astro.url, Astro.request)
 const customerName = load.customer_id
   ? ((await supabase.from('customers').select('name').eq('id', load.customer_id).maybeSingle())
       .data?.name ?? null)
@@ -1198,7 +1200,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
         </a>
       </div>
 
-      <div class="rounded-xl border border-brand-500/30 bg-brand-500/[0.04] p-4">
+      <div class="rounded-xl border border-brand-500/30 bg-champagne-50 p-4">
         <p class="text-sm text-brand-700">
           A driver can be qualified on Monday and not qualified by Thursday. This check uses today's
           date every time you open the page. It does not use the date the load was booked.

@@ -9,6 +9,7 @@
  * that the constraints refuse rows the pages refuse.
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { describe, test } from 'node:test'
 import type { Preference } from '../src/lib/notify/select.ts'
 import {
@@ -19,6 +20,7 @@ import {
   parseReminderLeadDays,
   parseTitle,
   REMINDER_ORIGIN,
+  REPEAT_OPTIONS,
   type ReminderItem,
   type ReminderRow,
   reminderEmailLine,
@@ -80,10 +82,42 @@ test('a quarterly repeat lands on the same day of the month all year', () => {
 })
 
 test('only the offered intervals are accepted', () => {
-  for (const good of [0, 1, 3, 6, 12]) assert.equal(isRepeatMonths(good), true)
-  // 24 is not on the list and the check constraint refuses it; a page that let
-  // it through would store a repeat no label on any screen names.
-  for (const bad of [2, 5, 24, -12]) assert.equal(isRepeatMonths(bad), false)
+  // The years arrived with 0033. Several dates a small carrier actually keeps
+  // run longer than a year — a TWIC card and a hazmat background check are both
+  // five — and a reminder that cannot repeat on their cycle is one that fires
+  // once and then never again.
+  for (const good of [0, 1, 3, 6, 12, 24, 36, 60]) assert.equal(isRepeatMonths(good), true)
+  // Still a whitelist, not an integer. `nextCycle` steps whole months, and a
+  // free number invites 18, 30, 45 and a dropdown nobody can read — plus the
+  // check constraint would refuse it, so a page that let one through would
+  // store a repeat no label on any screen names.
+  for (const bad of [2, 5, 18, 48, 72, -12]) assert.equal(isRepeatMonths(bad), false)
+})
+
+test('the form and the database offer exactly the same intervals', () => {
+  // `reminders_repeat_known` in 0033 and REPEAT_OPTIONS here are the same list
+  // written twice, in two languages. Drift either way is invisible until a save
+  // fails: an option the constraint refuses is a dropdown entry that errors,
+  // and a value the constraint allows but the form omits is a repeat nobody can
+  // pick or read back.
+  assert.deepEqual(
+    REPEAT_OPTIONS.map((o) => o.value),
+    [0, 1, 3, 6, 12, 24, 36, 60],
+  )
+  const sql = readFileSync(
+    new URL('../supabase/migrations/0033_reminder_repeat_years.sql', import.meta.url),
+    'utf8',
+  )
+  assert.match(sql, /repeat_months in \(0, 1, 3, 6, 12, 24, 36, 60\)/)
+  // And every one reads as words a person says out loud. "Every 3 months" is
+  // fine; "Every 24 months" is not, because past a year nobody counts in
+  // months — and the people reading this screen often do not read English as a
+  // first language, so a unit they have to convert is a unit they misread.
+  for (const o of REPEAT_OPTIONS) {
+    assert.ok(o.label.trim().length > 0, `${o.value} has a label`)
+    const months = Number((o.label.match(/(\d+) months/) ?? [])[1] ?? 0)
+    assert.ok(months <= 12, `"${o.label}" — past a year, say it in years`)
+  }
 })
 
 // --- standing ---------------------------------------------------------------
@@ -163,6 +197,7 @@ function item(over: Partial<ReminderItem> & { dueOn: Date; id: string }): Remind
     lead_days: over.leadDays ?? 7,
     driver_id: null,
     vehicle_id: null,
+    subject_scope: null,
     completed_at: null,
     last_done_on: null,
   }
@@ -311,6 +346,7 @@ test('a reminder with no driver and no truck belongs to the company', () => {
     lead_days: 30,
     driver_id: null,
     vehicle_id: null,
+    subject_scope: null,
     completed_at: null,
     last_done_on: null,
   }

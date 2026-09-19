@@ -16,6 +16,7 @@
  * 0009_loads.sql was written to avoid.
  */
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import {
   EQUIPMENT_TYPES,
   loadLabel,
@@ -246,6 +247,18 @@ if (Astro.request.method === 'POST') {
     // a record deliberately, and the text box is usually just left over from
     // typing before she spotted the customer in the list.
     if (!UUID.test(chosen)) return reject('We could not read that customer. Pick it again.')
+    // The id must be one of OUR customers. The foreign key alone does not say
+    // so: a foreign-key check runs as the table owner and ignores RLS, so a
+    // pasted id from another carrier's book was accepted and the load recorded
+    // that carrier's broker as ours. This read goes through RLS, so somebody
+    // else's customer simply is not there.
+    const { data: ours, error: ownError } = await supabase
+      .from('customers')
+      .select('id')
+      .eq('id', chosen)
+      .maybeSingle()
+    if (ownError) return reject('We could not check that customer. Try again.')
+    if (!ours) return reject('That customer is not in your book. Pick one from the list.')
     customerId = chosen
   } else if (typedName) {
     // Match an existing customer BEFORE inserting. Without this, every
@@ -311,7 +324,11 @@ if (Astro.request.method === 'POST') {
     .select('id')
     .single()
 
-  if (error || !data) return reject(error?.message ?? 'We could not save this load.')
+  if (error || !data) {
+    // Postgres words are for an operator, not for the person at the desk.
+    if (error) console.error('load insert failed:', error.message)
+    return reject('We could not save this load. Wait a moment and try again.')
+  }
 
   // 303, spelled out. Astro.redirect() defaults to 302, and a 302 lets the
   // browser repeat the POST on a refresh or a back — which here books the same
@@ -326,7 +343,8 @@ if (Astro.request.method === 'POST') {
 // --- GET: render, prefilled from whatever a rejected save handed back --------
 
 const params = Astro.url.searchParams
-const error = params.get('error')
+// Only honoured when the request came from our own 303. See src/lib/flash.ts.
+const error = flashText(Astro.url, Astro.request)
 const prior = (key: string): string => params.get(key) ?? ''
 
 /**
@@ -337,7 +355,7 @@ const prior = (key: string): string => params.get(key) ?? ''
  */
 const dupId = params.get('dup') ?? ''
 const duplicateHref = UUID.test(dupId) ? `/app/loads/${dupId}` : null
-const duplicateName = (params.get('dup_name') ?? '').trim()
+const duplicateName = (flashText(Astro.url, Astro.request, 'dup_name') ?? '').trim()
 
 // The customer list for the dropdown. RLS scopes it to this carrier; no
 // .eq('carrier_id', ...) belongs here.

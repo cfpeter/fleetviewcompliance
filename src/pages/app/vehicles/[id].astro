@@ -12,9 +12,11 @@
  * the unit was in order during the period it covers, so it is never overwritten
  * and never deleted — the grant on the table does not even include DELETE.
  */
+import { sourceLabel } from '../../../lib/drivers.ts'
 import Figure from '../../../components/charts/Figure.astro'
 import Ring from '../../../components/charts/Ring.astro'
 import Documents from '../../../components/Documents.astro'
+import RemindersSection from '../../../components/Reminders.astro'
 import { type AnswerEntry, anchorSlot, planAnchorWrites } from '../../../lib/anchors/plan.ts'
 import {
   readUnboxedDates,
@@ -32,6 +34,7 @@ import {
   truckLine,
   truckRing,
 } from '../../../lib/charts/truck-rings.ts'
+import { pillFor } from '../../../lib/charts/driver-status.ts'
 import { loadDeadlines } from '../../../lib/deadlines.ts'
 import {
   type DocumentRow,
@@ -52,6 +55,8 @@ import {
   vehicleHistory,
 } from '../../../lib/fleet/remove.ts'
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
+import { loadReminders } from '../../../lib/reminders.ts'
 import {
   anchorByKey,
   anchorsForKind,
@@ -59,6 +64,7 @@ import {
   gvwrReading,
   kindLabel,
   parseAnchorDate,
+  CTC_VIS_REPORTABLE_EVENT,
   parseOptionalInt,
   parseStateCode,
   parseVin,
@@ -201,7 +207,7 @@ if (Astro.request.method === 'POST') {
       return fail(
         error.message.includes('vehicles_vin_unique')
           ? 'Another vehicle in your fleet already has that VIN.'
-          : error.message,
+          : 'We could not save that. Nothing changed. Try again.',
       )
     }
     return go('?saved=1')
@@ -381,8 +387,13 @@ if (Astro.request.method === 'POST') {
 
 // --- GET -------------------------------------------------------------------
 
-const [{ data: anchorRows }, { data: historyRows }, { data: documentRows }, allDeadlines] =
-  await Promise.all([
+const [
+  { data: anchorRows },
+  { data: historyRows },
+  { data: documentRows },
+  allDeadlines,
+  reminders,
+] = await Promise.all([
   supabase
     .from('current_compliance_anchors')
     .select('id, anchor_key, occurred_on, source')
@@ -408,6 +419,11 @@ const [{ data: anchorRows }, { data: historyRows }, { data: documentRows }, allD
   // dashboard's own ring is drawn from, so the circle in the sidebar and the
   // count on the front page cannot disagree about this unit.
   loadDeadlines(supabase, carrierId),
+  // The owner's own reminders for this record, scoped in the query rather than
+  // filtered after — see `loadReminders`. Whole-company reminders are
+  // deliberately not here: one is not a fact about this record, and it would
+  // read identically on every one of them.
+  loadReminders(supabase, null, undefined, { kind: 'vehicle', id }),
 ])
 
 const documents = (documentRows ?? []) as unknown as DocumentRow[]
@@ -649,14 +665,16 @@ const MARK_STYLE: Record<Mark, { dot: string; pill: string; edge: string; big: s
   },
 }
 
-/** The word on the pill. `act` says how late it is, so it is built per row. */
-const MARK_WORD: Record<Mark, string> = {
-  act: 'Overdue',
-  nodate: 'Missing a date',
-  soon: 'Due soon',
-  ok: 'On file',
-  read: 'Check yourself',
-}
+/*
+ * The word on the pill comes from `pillFor` in src/lib/charts/driver-status.ts
+ * — the same function that words the pills on the driver page, the driver
+ * roster and the printed file. This page had its own five words ("Missing a
+ * date", "On file", "Due soon" …) beside a driver page saying "no date on
+ * file", "on file", "in 2 days" for the same states, so the two record pages
+ * an owner reads back to back called one thing by two names. `markFor` above
+ * makes the same decision `toneFor` makes, so the colour here and the word from
+ * there cannot disagree.
+ */
 
 /**
  * The glyph inside the dot: a flag, a clock, a tick, an upright bar for "read
@@ -730,6 +748,19 @@ const unboxed = unboxedQuestions({
   onFile: (key) => current.get(key)?.on ?? '',
 })
 const unboxedByKey = new Map(unboxed.map((q) => [q.key, q]))
+
+/**
+ * The empty boxes the engine is actually waiting on: every anchor with no date
+ * behind it, plus the rule-code questions nobody has answered — EXCEPT the
+ * "bought or sold" box. Blank there is an answer (the unit has not changed
+ * hands) and the engine draws no grey row for it, so counting it put a 3 in
+ * the rail beside a headline that said 2. It is named on its own line instead.
+ */
+const optionalBlank =
+  anchors.find((a) => a.key === CTC_VIS_REPORTABLE_EVENT && !current.has(a.key)) ?? null
+const stillWanted =
+  anchors.filter((a) => !current.has(a.key) && a.key !== CTC_VIS_REPORTABLE_EVENT).length +
+  unboxed.filter((q) => q.on === '').length
 // Every key this kind could ever be asked for, drawn or not. The history table
 // reads it, because a date recorded months ago must still get its name even
 // when its question has since been answered and left the list above.
@@ -786,7 +817,8 @@ function detailOf(i: DeadlineItem, mark: Mark): string {
 }
 
 const params = Astro.url.searchParams
-const error = params.get('error')
+// Read only when the browser says the request came from this site.
+const error = flashText(Astro.url, Astro.request)
 const added = params.get('added') === '1'
 const saved = params.get('saved') === '1'
 const withdrew = params.get('withdrew') === '1'
@@ -954,7 +986,7 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
           {datesCount === 1 ? ' date' : ' dates'} recorded.
         </p>
       ) : (
-        <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+        <p class="mb-5 rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
           Nothing changed. Every date you sent was already the one on file.
         </p>
       ))
@@ -1194,6 +1226,7 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
             name="model_year"
             value={vehicle.model_year ?? ''}
             inputmode="numeric"
+            maxlength="4"
             class="field-input mt-1 tabular-nums"
           />
         </label>
@@ -1420,11 +1453,14 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
                 read 0 on a truck whose headline two cards up said three dates
                 were not on file — the same screen answering one question two
                 ways, which teaches him to believe neither. */}
-            <dd class="text-right font-medium tabular-nums">
-              {anchors.filter((a) => !current.has(a.key)).length +
-                unboxed.filter((q) => q.on === '').length}
-            </dd>
+            <dd class="text-right font-medium tabular-nums">{stillWanted}</dd>
           </div>
+          {optionalBlank && (
+            <div class="py-2 text-xs text-ink-700">
+              One more box, "{optionalBlank.label}", only needs a date if this unit changed
+              hands.
+            </div>
+          )}
         </dl>
       </div>
     </div>
@@ -1501,7 +1537,7 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
                     <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                       {/* The word, always, beside the colour. */}
                       <span class:list={['badge', MARK_STYLE[r.mark].pill]}>
-                        {r.mark === 'act' ? lateWords(r.item) : MARK_WORD[r.mark]}
+                        {pillFor(r.item, day0).text}
                       </span>
                       {/* 12px, so ink-700: this line says what the pill beside it
                           is about, and it is the half a reader acts on. */}
@@ -1860,6 +1896,15 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
     noun="this truck"
   />
 
+  {/* Straight after the papers, because that is the order he thinks in: what
+      the law wants, then what he wants. */}
+  <RemindersSection
+    subjectType="vehicle"
+    subjectId={vehicle.id}
+    reminders={reminders}
+    noun="this truck"
+  />
+
   <!-- ----------------------------------------------------------- history -->
 
   {
@@ -1961,7 +2006,7 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
                           into the line above on a phone: two words on a line of
                           their own is a line an owner skips. */}
                       <td class="hidden px-4 text-ink-500 sm:table-cell sm:py-3">
-                        {r.source === 'fmcsa' ? 'Federal record' : r.source === 'import' ? 'Import' : 'You'}
+                        {sourceLabel(r.source)}
                       </td>
                       {/*
                         This one cell spells its own classes out rather than

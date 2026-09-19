@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { DEFAULT_LEAD_DAYS, isDefaultLeadDays } from '../src/lib/notify/preferences.ts'
 import {
   type CategoryPreference,
   deservesSms,
   isCritical,
   isSnoozed,
+  leadDaysForItem,
   type Preference,
   reachedWindow,
   selectForRecipient,
@@ -147,6 +149,206 @@ test('a finished one-time obligation never earns a message, on any channel', () 
   // `reachedWindow` to reject a finished item.
   assert.equal(reachedWindow(-2040, [30, 7, 1, -1]), -1)
   assert.equal(deservesSms({ status: { standing: 'current' }, daysUntil: -2040 }), true)
+})
+
+// -------------------------------------------------- both sides of zero
+
+/**
+ * The guard that must not be removed.
+ *
+ * `daysUntil <= d` is true of EVERY window in a list once the date is behind us,
+ * so a date long past reaches the widest window on the row and comes back as a
+ * warning about something months away. It only ever looked harmless because
+ * every list in production happened to end in -1, which made the minimum come
+ * out negative by luck. A rule's own window list is not required to end in -1 —
+ * `[30]` and `[90]` are both real rows in the catalogue — and the moment one of
+ * those is used, a lapsed date is announced as a 90-day heads-up and
+ * `deservesSms` reads the same item as critical and texts it through quiet
+ * hours. If these assertions go red, that path is open again.
+ */
+test('a date already behind us cannot reach a window in front of us', () => {
+  assert.equal(reachedWindow(-2040, [90]), null, 'five years past is not a 90-day warning')
+  assert.equal(reachedWindow(-1, [30]), null)
+  assert.equal(
+    reachedWindow(-3, [30, 7, 1]),
+    null,
+    'no post-lapse window, so no post-lapse message',
+  )
+
+  // And the other side of zero, which is the half that keeps working.
+  assert.equal(reachedWindow(-3, [90, 45, 14, -1]), -1)
+  assert.equal(reachedWindow(-40, [90, -1, -30]), -30, 'the most urgent nudge, not the first')
+})
+
+test('due today is not overdue', () => {
+  // Zero belongs with the future, not with the past: the deadline has not gone
+  // by yet, and a post-lapse nudge on the day itself would be a lie.
+  assert.equal(reachedWindow(0, [30, 7, 1, -1]), 1)
+  assert.equal(reachedWindow(0, [14, 7, 0, -7]), 0, 'a window of 0 is "on the day"')
+  assert.equal(reachedWindow(0, [-1]), null)
+})
+
+// -------------------------------------------------- the rule's own window
+
+/**
+ * An item carrying a rule row's hand-tuned warning window.
+ *
+ * `status` is rebuilt rather than passed through: `mk` spreads the override last,
+ * so naming a standing there would drop `nextDue` with it and the item would be
+ * skipped as undated long before any window was consulted.
+ */
+const withWindows = (
+  windows: number[],
+  over: { days?: number; standing?: DeadlineItem['status']['standing'] } = {},
+): DeadlineItem =>
+  mk({
+    days: over.days,
+    status: { standing: over.standing ?? 'current', nextDue: utcDate(2026, 10, 15) },
+    rule: {
+      code: 'medical_certificate_general',
+      title: 'Medical certificate',
+      warningDays: windows,
+    },
+  } as never)
+
+/** A medical card: 90 days, because a DOT physical is an appointment. */
+const MEDICAL = [90, 45, 14, -1]
+
+test('a rule with a long window is warned about at its own distance', () => {
+  // The defect. All 51 rules carry a window chosen for how long the remedy
+  // takes, nothing read it, and a medical certificate was first mentioned at 30
+  // days — the same as a fee you can pay online in an afternoon.
+  const c = run([withWindows(MEDICAL, { days: 80 })])
+  assert.equal(c.length, 1, '80 days out has reached the 90-day window on the rule')
+  assert.equal(c[0].leadDays, 90)
+})
+
+test('the rule window is added to the ladder, never swapped for it', () => {
+  // A 90-day warning that then goes quiet until the deadline is worse than the
+  // flat 30 it replaced. The point is an earlier warning, not a lonelier one.
+  const item = (days: number) => run([withWindows(MEDICAL, { days })])[0]
+
+  assert.equal(item(80).leadDays, 90)
+  assert.equal(item(40).leadDays, 45)
+  assert.equal(item(20).leadDays, 30, 'the default rung survives the merge')
+  assert.equal(item(5).leadDays, 7, 'and so do the near ones')
+  assert.equal(item(1).leadDays, 1)
+
+  // Stated as the property, because it is the property that matters: the merged
+  // ladder can only ever be a superset of the one in use today, so no item comes
+  // out of this change with fewer warnings than it gets now.
+  for (const d of DEFAULT_LEAD_DAYS) {
+    assert.ok(
+      leadDaysForItem(withWindows(MEDICAL), DEFAULT_LEAD_DAYS).includes(d),
+      `the merge dropped the ${d}-day window`,
+    )
+  }
+})
+
+test('a window longer than a year is not a window', () => {
+  // The same cap `parseLeadDays` puts on what a person types, for the same
+  // reason: `reachedWindow` fires as soon as daysUntil <= lead, so a window
+  // longer than the obligation's own cycle is reached permanently — an annual
+  // item would alert the morning it was renewed and every morning after.
+  assert.deepEqual(leadDaysForItem(withWindows([400, 90]), DEFAULT_LEAD_DAYS), [90, 30, 7, 1, -1])
+})
+
+test('a rule with nothing to say gets the default, not silence', () => {
+  // Eight rows in the catalogue carry an empty window list. They resolve to
+  // "check this yourself" and never reach here, but an empty list must mean "no
+  // opinion" rather than "warn me never" whatever produced it.
+  assert.deepEqual(leadDaysForItem(withWindows([]), DEFAULT_LEAD_DAYS), DEFAULT_LEAD_DAYS)
+  assert.equal(run([withWindows([], { days: 5 })]).length, 1)
+  // `mk` builds a rule row with no window field at all — the same answer.
+  assert.equal(run([mk({ days: 5 })])[0].leadDays, 7)
+})
+
+test('post-lapse nudges are NOT taken from the rule', () => {
+  // Deliberately out of scope. A window after the date is the one `deservesSms`
+  // can turn into a text message, and this change is about warning EARLIER. Six
+  // rows carry a -30 or a -7; reading those here would add a text per cycle to
+  // items that are already texting, which is a separate decision from this one.
+  assert.deepEqual(
+    leadDaysForItem(withWindows([90, 45, 14, -1, -30]), DEFAULT_LEAD_DAYS),
+    [90, 45, 30, 14, 7, 1, -1],
+  )
+
+  const c = run([withWindows([90, 45, 14, -1, -30], { days: -35, standing: 'overdue' })])
+  assert.equal(c.length, 1)
+  assert.equal(c[0].leadDays, -1, 'the default nudge, not the rule row -30')
+})
+
+// -------------------------------------------------- whose setting wins
+
+test("an owner's own lead times are not overridden by the rule row", () => {
+  // The rule window is a better DEFAULT. It is not a better answer than a person
+  // who sat down and typed what he wanted.
+  const his = [catPref({ leadDays: [14, 3] })]
+  assert.equal(run([withWindows(MEDICAL, { days: 80 })], { categoryPreferences: his }).length, 0)
+
+  const inside = run([withWindows(MEDICAL, { days: 10 })], { categoryPreferences: his })
+  assert.equal(inside.length, 1)
+  assert.equal(inside[0].leadDays, 14, 'his ladder, his rungs')
+})
+
+test("a wider setting than the rule's window is still his", () => {
+  const his = [catPref({ leadDays: [120, 30] })]
+  const c = run([withWindows(MEDICAL, { days: 110 })], { categoryPreferences: his })
+  assert.equal(c[0].leadDays, 120)
+})
+
+test('a stored row nobody moved is not a choice', () => {
+  // The alerts form upserts a lead-time row for EVERY category on every save, so
+  // a person who ticked a channel box owns a row holding 30, 7, 1, -1 he never
+  // typed. Reading that row's existence as a preference would freeze him on the
+  // flat ladder forever, which is the defect wearing a different hat.
+  const untouched = run([withWindows(MEDICAL, { days: 80 })], { categoryPreferences: [catPref()] })
+  assert.equal(untouched.length, 1)
+  assert.equal(untouched[0].leadDays, 90)
+
+  const noRow = run([withWindows(MEDICAL, { days: 80 })], { categoryPreferences: [] })
+  assert.equal(noRow[0].leadDays, 90, 'and no row at all reads the same way')
+
+  // Order is not a preference: the column default and parseLeadDays both sort
+  // largest-first, a hand-written row need not.
+  assert.equal(isDefaultLeadDays([-1, 1, 7, 30]), true)
+  assert.equal(isDefaultLeadDays([30, 7, 1, -1]), true)
+  assert.equal(isDefaultLeadDays(undefined), true, 'never chosen is not a choice either')
+  assert.equal(isDefaultLeadDays([30, 7, 1]), false)
+  assert.equal(isDefaultLeadDays([60, 30, 7, -1]), false)
+})
+
+// -------------------------------------------------- and not one more text
+
+test('an earlier email window does not become an earlier text', () => {
+  // SMS is rationed to what is overdue or due within a day, and widening the
+  // email windows must not quietly widen that. It cannot: the merged ladder
+  // still holds 1 and -1, so everything at or inside a day reports the same
+  // window it reports today, and every window this change adds is above 1.
+  for (const days of [1, 0]) {
+    const c = run([withWindows(MEDICAL, { days })])
+    assert.equal(c[0].leadDays, 1, 'inside a day is still the 1-day window')
+  }
+
+  const early = run([withWindows(MEDICAL, { days: 80 })])[0]
+  assert.equal(deservesSms(early.item), false, 'a 90-day warning is an email')
+  assert.equal(isCritical(early.item), false, 'and it must not break through quiet hours')
+})
+
+test('an overdue interval rule keeps the flat ladder, so it cannot text early', () => {
+  // The inverse trap. A rolling obligation that is overdue carries a POSITIVE
+  // countdown, because its next cycle is still ahead — and it is already
+  // critical on standing alone, so `deservesSms` says yes whatever the number
+  // is. Handing it the rule's 90 would make it a candidate, and therefore a text
+  // message, three months before a date it has already missed.
+  const behind = withWindows(MEDICAL, { days: 80, standing: 'overdue' })
+  assert.equal(deservesSms(behind), true, 'overdue by standing, with days in hand')
+  assert.deepEqual(leadDaysForItem(behind, DEFAULT_LEAD_DAYS), DEFAULT_LEAD_DAYS)
+  assert.equal(run([behind]).length, 0, 'unchanged: nothing goes out 80 days ahead')
+
+  // It still reaches the ladder it always reached, at the distance it always did.
+  const near = withWindows(MEDICAL, { days: 20, standing: 'overdue' })
+  assert.equal(run([near])[0].leadDays, 30)
 })
 
 // ---------------------------------------------------------------- selection

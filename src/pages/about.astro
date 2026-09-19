@@ -35,12 +35,13 @@ const principles = [
   title="About"
   description="Why FleetView Compliance exists and how it is built."
 >
-  <section class="border-b border-ink-100 bg-ink-50">
+  <section class="border-b border-ink-100 bg-champagne-50">
     <div class="mx-auto max-w-3xl px-4 py-14 sm:px-6 sm:py-20">
       <h1 class="text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
         Why we built FleetView.
       </h1>
-      <p class="mt-4 text-lg text-ink-500">
+      {/* ink-700: on `bg-champagne-50`, where ink-500 is 4.30:1. */}
+      <p class="mt-4 text-lg text-ink-700">
         A carrier with 12 trucks has to follow the same rules as a carrier with 500 trucks, but
         with no staff to do it. Software built for the big fleets costs more than a truck payment
         and needs a full-time person to run it. So most small fleets use a spreadsheet and a wall
@@ -86,15 +87,16 @@ const principles = [
       adding rules to a list. The next state has to work the same way.
     </p>
 
-    <div class="mt-12 rounded-2xl border border-brand-500/30 bg-brand-500/[0.04] p-6 sm:p-8">
+    <div class="mt-12 rounded-2xl border border-brand-500/30 bg-champagne p-6 sm:p-8">
       <h2 class="text-2xl font-semibold tracking-tight">Talk to a person</h2>
       {/* The old line opened "We are small." Marketing copy here never states
           the company's size or where it is, so the sentence that carries the
-          actual promise stands on its own. */}
-      <p class="mt-2 text-ink-500">
+          actual promise stands on its own. ink-700: Champagne is a tint, and
+          ink-500 on it is 3.89:1. */}
+      <p class="mt-2 text-ink-700">
         When you write to us, you reach someone who built this.
       </p>
-      {/* Marketing chrome keeps the dark button. */}
+      {/* Marketing chrome keeps `.btn-dark`, which is Emerald Ink. */}
       <a href="/check" class="btn btn-dark mt-5 rounded-xl px-7 py-3.5 font-semibold">
         Start with your DOT number →
       </a>

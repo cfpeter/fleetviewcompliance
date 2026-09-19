@@ -35,11 +35,16 @@
  * by `groupHeading`, which prints the tone's word in the same cell.
  */
 
-/** The app's own tokens, from src/styles/global.css. Hex, because email. */
+/** The app's own tokens, from src/styles/global.css. Hex, because email.
+ *  brand700 is Emerald Ink, the brand; champagne is the warm tint it sits on.
+ *  Change a value there, change it here — tests/brand-tokens.test.ts holds
+ *  the two files to the same numbers. */
 export const PALETTE = {
-  brand500: '#1d63d1',
-  brand600: '#1750ac',
-  brand700: '#123f88',
+  brand500: '#0e8264',
+  brand600: '#00694f',
+  brand700: '#064e3b',
+  brand800: '#003f2c',
+  champagne: '#f8e7c9',
   ink50: '#f6f7f8',
   ink100: '#eaecef',
   ink500: '#6b7480',
@@ -68,6 +73,16 @@ const SMALL_SIZE = '14px'
  * `word` is not optional and not decoration: it is what makes the colour
  * readable. Every tint/ink pair here is at or above 7:1, which clears the app's
  * own floor for text on a tinted panel (ink-700) with room to spare.
+ *
+ * The hex values are the app's status tokens from src/styles/global.css:
+ * emerald-100/800/700 for on track, amber-100/800/700 for due soon, red for
+ * overdue, ink for no record. The green is a grass green and not the brand's
+ * Emerald Ink, and "your own reminders" — the one group that IS the brand
+ * talking — sits on Champagne with Ink text, so nothing brand-coloured can be
+ * read as a deadline state and nothing deadline-coloured can be read as us.
+ *
+ *   ontrack  #006017 on #d2fdda  7.00:1     soon  #823501 on #ffef93  7.33:1
+ *   overdue  #991b1b on #fee2e2  6.87:1     own   #064e3b on #f8e7c9  7.99:1
  */
 export type Tone = 'overdue' | 'nodate' | 'soon' | 'ontrack' | 'own'
 
@@ -99,21 +114,21 @@ export const TONES: Record<Tone, ToneStyle> = {
   soon: {
     word: 'Due soon',
     note: 'inside 45 days',
-    tint: '#fef3c7',
-    ink: '#92400e',
-    bar: '#b45309',
+    tint: '#ffef93',
+    ink: '#823501',
+    bar: '#bb4d00',
   },
   ontrack: {
     word: 'On track',
     note: 'nothing to do today',
-    tint: '#d1fae5',
-    ink: '#065f46',
-    bar: '#047857',
+    tint: '#d2fdda',
+    ink: '#006017',
+    bar: '#007925',
   },
   own: {
     word: 'Your own reminders',
     note: 'you wrote these, they are not laws',
-    tint: '#e8f0fb',
+    tint: PALETTE.champagne,
     ink: PALETTE.brand700,
     bar: PALETTE.brand500,
   },
@@ -221,10 +236,10 @@ function renderButton(label: string, href: string, showUrl: boolean): string {
   const button = td(
     `padding:18px 22px 0 22px;background-color:${PALETTE.white};`,
     `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">` +
-      `<tr><td bgcolor="${PALETTE.brand600}" style="background-color:${PALETTE.brand600};border-radius:8px;">` +
+      `<tr><td bgcolor="${PALETTE.brand700}" style="background-color:${PALETTE.brand700};border-radius:8px;">` +
       `<a href="${url}" style="display:inline-block;padding:13px 24px;font-family:${FONT};` +
       `font-size:${BODY_SIZE};line-height:1.2;font-weight:700;color:${PALETTE.white};` +
-      `background-color:${PALETTE.brand600};text-decoration:none;border-radius:8px;">` +
+      `background-color:${PALETTE.brand700};text-decoration:none;border-radius:8px;">` +
       `${escapeHtml(label)}</a></td></tr></table>`,
   )
   if (!showUrl) return button

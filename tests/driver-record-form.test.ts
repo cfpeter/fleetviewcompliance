@@ -103,9 +103,12 @@ test('the fold opens by itself when a save was refused', () => {
     PAGE.includes('<details open={recordOpen}'),
     'the fold is not wired to recordOpen',
   )
+  // The page error is read through flashText, never straight off the query
+  // string: the words are shown only when the browser says the request came
+  // from this site (src/lib/flash.ts).
   assert.match(
     PAGE,
-    /const error = params\.get\('error'\)/,
+    /const error = flashText\(Astro\.url, Astro\.request\)/,
     'recordOpen reads an `error` that is no longer the page error',
   )
 })
@@ -125,15 +128,26 @@ test('the closed fold still shows what the page is opened to read', () => {
   )
 })
 
-test('the way off the page is not behind the fold', () => {
+test('the way off the page is not behind the fold, or behind a tab', () => {
   // Both links used to live in the form's own button row. Left there they would
   // only exist once an edit form was open — and for a driver who is not active
   // there is no ring card either, so the qualification file would have no link
   // to it at all.
-  const foldEnd = PAGE.indexOf('</details>')
-  assert.ok(
-    PAGE.indexOf('Qualification file') > foldEnd,
-    'the qualification file link is inside the fold',
-  )
-  assert.ok(PAGE.indexOf('Back to drivers') > foldEnd, 'the way back is inside the fold')
+  //
+  // THE BAR MOVED UP WHEN THE PAGE GREW TABS. The record is one tab out of
+  // four, so "outside the fold" stopped being enough: on the other three tabs
+  // the card is not rendered at all and both links went with it. They now sit
+  // in the header row beside the tab strip, which is the only place on this
+  // page that every tab draws — so the test asserts they come BEFORE the first
+  // tab block rather than merely after the fold.
+  const strip = PAGE.indexOf('<nav aria-label="Driver sections"')
+  const firstTabBlock = PAGE.indexOf('{tab === ')
+  assert.ok(strip > -1, 'the tab strip is gone — this test is checking nothing')
+  assert.ok(firstTabBlock > strip, 'the tab blocks no longer follow the strip')
+
+  for (const label of ['Qualification file', 'Back to drivers']) {
+    const at = PAGE.indexOf(label)
+    assert.ok(at > strip, `the "${label}" link is not in the header row`)
+    assert.ok(at < firstTabBlock, `the "${label}" link only exists on one tab`)
+  }
 })

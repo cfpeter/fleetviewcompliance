@@ -16,6 +16,7 @@
  * carry the token in a URL, which is the leak this was fixing — and the page
  * says in plain words that the link is shown one time.
  */
+import { daysBetween, toUtcMidnight } from '../../lib/rules/dates.ts'
 import Figure from '../../components/charts/Figure.astro'
 import ErrorSummary from '../../components/ui/ErrorSummary.astro'
 import App from '../../layouts/App.astro'
@@ -75,7 +76,25 @@ if (Astro.request.method === 'POST') {
     const subjectId = String(form.get('subject_id') ?? '').trim() || null
     const days = Number(form.get('days') ?? 30)
 
+    // Only the two scopes the <select> offers. Anything else is a hand-made
+    // POST, and the enum in the database would refuse it with an operator's
+    // sentence; this refuses it with ours.
+    if (scope !== 'carrier_summary' && scope !== 'driver_file') return fail('unknown_intent')
     if (scope === 'driver_file' && !subjectId) return fail('driver_needed')
+    if (scope === 'driver_file') {
+      // The driver must be OURS. The database functions behind /proof/<token>
+      // already join on the carrier, so a link minted for somebody else's
+      // driver shows nothing — but a link that shows nothing is a dead link
+      // handed to a broker. Refuse it here, through RLS, so it is never made.
+      const shape = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      if (!shape.test(subjectId ?? '')) return fail('driver_needed')
+      const { data: mine } = await supabase
+        .from('drivers')
+        .select('id')
+        .eq('id', subjectId as string)
+        .maybeSingle()
+      if (!mine) return fail('driver_needed')
+    }
     // Clamped rather than trusted: a hand-edited form must not mint a link that
     // outlives the conversation it was made for.
     const validDays = Number.isFinite(days) && days > 0 && days <= 365 ? days : 30
@@ -158,7 +177,6 @@ const dead = ([...(links ?? [])] as LinkRow[])
   .filter((l) => !isLive(l))
   .sort((a, b) => endedAt(b) - endedAt(a))
 
-const DAY = 86_400_000
 
 /**
  * Days until it stops working.
@@ -174,8 +192,16 @@ const DAY = 86_400_000
  * out of step — but unguarded it would print "in -1 days" and draw the bar
  * backwards.
  */
+//
+// CALENDAR DAYS, the way every deadline in this app is counted — not 24-hour
+// buckets. Floored buckets made a link created a minute ago on a seven-day term
+// read "Stops working in 6 days", and the owner reported it as a wrong number,
+// which it was: he had asked for seven days and the screen told him six. Both
+// ends truncated to their UTC day agree with `daysUntil` everywhere else, and
+// on the last day it reads "today", which is true — the link still works until
+// its hour.
 const daysLeft = (l: LinkRow) =>
-  Math.max(0, Math.floor((new Date(l.expires_at).getTime() - now) / DAY))
+  Math.max(0, daysBetween(toUtcMidnight(new Date(now)), toUtcMidnight(new Date(l.expires_at))))
 
 const stopsIn = (l: LinkRow) => {
   const d = daysLeft(l)
@@ -334,12 +360,25 @@ const driverName = (id: string | null) => {
 
       <label class="mt-4 block">
         <span class="text-sm font-medium">Who is it for</span>
-        <input name="recipient" placeholder="e.g. Acme Logistics" class={field} />
+        <input
+          type="text"
+          name="recipient"
+          maxlength="120"
+          autocomplete="organization"
+          placeholder="e.g. Acme Logistics"
+          class={field}
+        />
       </label>
 
       <label class="mt-4 block">
         <span class="text-sm font-medium">Label <span class="font-normal text-ink-500">(optional)</span></span>
-        <input name="label" placeholder="e.g. insurance renewal" class={field} />
+        <input
+          type="text"
+          name="label"
+          maxlength="120"
+          placeholder="e.g. insurance renewal"
+          class={field}
+        />
       </label>
 
       <label class="mt-4 block">
@@ -370,7 +409,7 @@ const driverName = (id: string | null) => {
         size the rest of the app gives a number that answers a question.
 
         The countdown bar under it answers the other one. See `lifeLeft` for why
-        the bar is blue and not amber.
+        the bar is the brand colour and not amber.
       */}
       <Figure
         title={

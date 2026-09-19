@@ -17,6 +17,7 @@ import {
 } from '../../../lib/charts/receivables.ts'
 import { type RevenueLoad, topCustomers } from '../../../lib/charts/revenue.ts'
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import { searchFilter } from '../../../lib/customers.ts'
 import { formatCents } from '../../../lib/loads.ts'
 import { formatPhone } from '../../../lib/phone.ts'
@@ -153,7 +154,8 @@ function loadCountOf(row: ListRow): number | null {
   return row.loads[0]?.count ?? 0
 }
 
-const notice = params.get('error') ?? (error ? error.message : null)
+// Only honoured when the request came from our own 303. See src/lib/flash.ts.
+const notice = flashText(Astro.url, Astro.request) ?? (error ? error.message : null)
 
 /**
  * Concentration risk, which an alphabetical list cannot show.

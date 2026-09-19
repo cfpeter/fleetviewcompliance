@@ -15,6 +15,7 @@ import Columns from '../../../components/charts/Columns.astro'
 import Figure from '../../../components/charts/Figure.astro'
 import Proportion from '../../../components/charts/Proportion.astro'
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import {
   type DatedLoad,
   agingSource,
@@ -142,7 +143,11 @@ if (Astro.request.method === 'POST') {
       .eq('id', id)
       .select('id')
 
-    if (error) return fail(error.message)
+    if (error) {
+      // Postgres words are for an operator, not for the person at the desk.
+      console.error('customer update failed:', error.message)
+      return fail('We could not save that. Wait a moment and try again.')
+    }
     // An UPDATE that matches nothing is not an error in Postgres, so without
     // this the page would report a cheerful "Saved." for a customer that does
     // not exist or belongs to somebody else.
@@ -529,7 +534,8 @@ const authorityRows =
 const noActiveAuthority = authorityRows.length > 0 && !hasActiveAuthority(authorityRows)
 
 const params = Astro.url.searchParams
-const error = params.get('error')
+// Only honoured when the request came from our own 303. See src/lib/flash.ts.
+const error = flashText(Astro.url, Astro.request)
 const added = params.get('added') === '1'
 const saved = params.get('saved') === '1'
 
@@ -610,8 +616,9 @@ const said = 'text-ink-500 sm:hidden'
   {
     added && (
       <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-        Customer added. Add their USDOT number when you have it. Then we will check their
-        operating authority every time you open this page.
+        {customer.dot_number
+          ? 'Customer added. Their operating authority, from the federal record, is below. We check it every time you open this page.'
+          : 'Customer added. Add their USDOT number when you have it. Then we will check their operating authority every time you open this page.'}
       </p>
     )
   }
@@ -652,6 +659,9 @@ const said = 'text-ink-500 sm:hidden'
             type="text"
             name="mc_number"
             value={customer.mc_number ?? ''}
+            autocapitalize="characters"
+            autocomplete="off"
+            maxlength="12"
             placeholder="MC123456"
             class={`${field} tabular-nums`}
           />
@@ -662,6 +672,8 @@ const said = 'text-ink-500 sm:hidden'
             type="text"
             name="dot_number"
             inputmode="numeric"
+            maxlength="12"
+            autocomplete="off"
             value={customer.dot_number ?? ''}
             placeholder="1234567"
             class={`${field} tabular-nums`}
@@ -687,6 +699,8 @@ const said = 'text-ink-500 sm:hidden'
           */}
           <input
             type="tel"
+            inputmode="tel"
+            autocomplete="tel"
             name="phone"
             value={formatPhone(customer.phone)}
             placeholder="(818) 334-0168"
@@ -706,12 +720,21 @@ const said = 'text-ink-500 sm:hidden'
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="block">
           <span class="field-label">Email</span>
-          <input type="email" name="email" value={customer.email ?? ''} class={field} />
+          <input
+            type="email"
+            inputmode="email"
+            autocomplete="email"
+            name="email"
+            value={customer.email ?? ''}
+            class={field}
+          />
         </label>
         <label class="block">
           <span class="field-label">Billing email</span>
           <input
             type="email"
+            inputmode="email"
+            autocomplete="email"
             name="billing_email"
             value={customer.billing_email ?? ''}
             class={field}

@@ -76,13 +76,32 @@ export async function loadDeadlines(
    */
   const carrierState = c?.phy_state ?? undefined
 
+  /**
+   * The three facts that decide which half of the catalogue applies, read
+   * off the columns 0031 added and put on EVERY subject for the same reason
+   * as the state above: `interstateDriver` reads `carrierOperation` on the
+   * DRIVER subject, `isCmv` and the hazmat training row read `hazmat` on
+   * the vehicle and driver subjects, and a fact set only on the carrier
+   * subject would leave those gates failing open exactly as they did before
+   * the column existed.
+   *
+   * NULL stays undefined. The engine reads undefined as UNKNOWN and keeps
+   * the rule on the board; it must never become false here, because false is
+   * the one value that can take an obligation away.
+   */
+  const operation = {
+    carrierOperation: c?.carrier_operation ?? undefined,
+    forHire: c?.for_hire ?? undefined,
+    hazmat: c?.hazmat ?? undefined,
+  }
+
   subjects.push({
     type: 'carrier',
     id: carrierId,
     label: c?.legal_name ?? 'This carrier',
     context: {
       dotNumber: c?.dot_number ?? undefined,
-      carrierOperation: c?.carrier_operation ?? undefined,
+      ...operation,
       registrationState: carrierState,
       // Active power units — the same population billing charges for and the
       // same number the dashboard's roster tile counts, because the query above
@@ -121,7 +140,7 @@ export async function loadDeadlines(
       type: 'driver',
       id: d.id,
       label: `${d.first_name} ${d.last_name}`.trim(),
-      context: { cdl: Boolean(d.cdl_number), registrationState: carrierState },
+      context: { cdl: Boolean(d.cdl_number), registrationState: carrierState, ...operation },
       anchors: a,
     })
   }
@@ -133,6 +152,7 @@ export async function loadDeadlines(
       label: v.unit_number || v.vin || 'Unnumbered unit',
       context: {
         registrationState: carrierState,
+        ...operation,
         // NULL GVWR stays undefined, which the engine reads as UNKNOWN and
         // therefore as fully regulated. It must never become a 0 here — that
         // would read as "under every weight threshold" and exempt the truck.

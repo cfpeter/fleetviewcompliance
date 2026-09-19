@@ -35,7 +35,190 @@ export interface CensusRow {
   total_cdl?: string
   safety_rating?: string
   safety_rating_date?: string
+  /** 'Y' or 'N'. Live on 2026-09-18 the column held nothing else across the whole file. */
   hm_ind?: string
+  /**
+   * Operation classification, as FMCSA prints it on the SAFER snapshot.
+   *
+   * Semicolon-separated when a carrier ticked more than one box on the
+   * MCS-150. Verified live on 2026-09-18 by grouping the whole census file on
+   * this column; the tokens that appear, with row counts, are:
+   *
+   *   AUTHORIZED FOR HIRE               2,593,968
+   *   PRIVATE PROPERTY                  1,792,668
+   *   EXEMPT FOR HIRE                     310,620
+   *   PRIVATE PASSENGER, BUSINESS          30,791
+   *   PRIVATE PASSENGER, NON-BUSINESS      30,428
+   *   OTHER-<free text>                    17,797   ("OTHER-APPLYING FOR MC", "OTHER-LEASED", …)
+   *   OTHER                                   594
+   *   FEDERAL GOVERNMENT / LOCAL GOVERNMENT / STATE GOVERNMENT / MIGRANT /
+   *   U. S. MAIL / INDIAN TRIBE / 18 USC §31      a few hundred between them
+   *
+   * The commonest whole strings: "AUTHORIZED FOR HIRE", "PRIVATE PROPERTY",
+   * "PRIVATE PROPERTY;AUTHORIZED FOR HIRE", "AUTHORIZED FOR HIRE;EXEMPT FOR HIRE".
+   * See `forHireFromClassdef` for how these become a three-valued answer.
+   */
+  classdef?: string
+}
+
+// ---------------------------------------------------------------------------
+// What kind of carrier this is
+// ---------------------------------------------------------------------------
+//
+// Three facts decide which half of the rule catalogue applies to a carrier:
+// whether it crosses state lines, whether it hauls for other people for pay,
+// and whether it carries placarded hazmat. Every gate in src/lib/rules reads
+// them off `RuleContext` as `carrierOperation`, `forHire` and `hazmat`, and
+// every gate treats a missing value as UNKNOWN, which keeps the rule on the
+// board. So the one rule for everything in this section: a value that cannot
+// be read with confidence is `null`, never a guess in either direction. A
+// private carrier shown a filing it does not owe costs one wrong row; a
+// for-hire carrier told it owes nothing is the failure this product exists to
+// prevent.
+//
+// Column names match `carriers` (0031_carrier_operation.sql) so a row can be
+// spread straight into an update.
+
+/** The federal single-letter operation code. */
+export type CarrierOperationCode = 'A' | 'B' | 'C'
+
+export interface CarrierOperationFacts {
+  /** 'A' interstate · 'B' intrastate hazmat · 'C' intrastate non-hazmat · null unknown. */
+  carrier_operation: CarrierOperationCode | null
+  /** true hauls for others for pay · false private only · null unknown. */
+  for_hire: boolean | null
+  /** true placarded hazmat · false none · null unknown. */
+  hazmat: boolean | null
+}
+
+/** 'A', 'B' or 'C' as the census prints it; anything else — including the
+ *  186,115 rows with no code at all — is null. */
+export function operationCode(v: string | null | undefined): CarrierOperationCode | null {
+  const t = (v ?? '').trim().toUpperCase()
+  return t === 'A' || t === 'B' || t === 'C' ? t : null
+}
+
+/** 'Y' → true, 'N' → false, anything else → null. */
+export function hazmatFromHmInd(v: string | null | undefined): boolean | null {
+  const t = (v ?? '').trim().toUpperCase()
+  if (t === 'Y') return true
+  if (t === 'N') return false
+  return null
+}
+
+/**
+ * The classification strings that mean "hauls for other people for pay".
+ *
+ * EXEMPT FOR HIRE is for-hire: the exemption is from operating authority
+ * (49 U.S.C. 13506 commodities), not from being a for-hire carrier, and the
+ * only rule that reads `forHire` is the Part 387 insurance filing, which
+ * reaches for-hire carriers. Reading "exempt" as "private" would take that
+ * row off the board for a carrier who may owe it.
+ */
+const FOR_HIRE_TOKENS = new Set(['AUTHORIZED FOR HIRE', 'EXEMPT FOR HIRE'])
+
+/** The strings that mean "carries only its own goods or people". */
+const PRIVATE_TOKENS = new Set([
+  'PRIVATE PROPERTY',
+  'PRIVATE PASSENGER, BUSINESS',
+  'PRIVATE PASSENGER, NON-BUSINESS',
+])
+
+/**
+ * `classdef` → for-hire, or null when the federal record does not settle it.
+ *
+ *   any for-hire token present           → true   ("PRIVATE PROPERTY;AUTHORIZED
+ *                                                  FOR HIRE" is for hire)
+ *   only private tokens, one or more     → false  ("PRIVATE PROPERTY")
+ *   anything else                        → null   empty, absent, "OTHER",
+ *                                                  "OTHER-APPLYING FOR MC",
+ *                                                  government, "MIGRANT",
+ *                                                  "U. S. MAIL", "INDIAN TRIBE",
+ *                                                  "18 USC §31", and any private
+ *                                                  token mixed with one of those
+ *
+ * The last line is deliberate. "OTHER-APPLYING FOR MC;PRIVATE PROPERTY" is a
+ * carrier in the middle of becoming for-hire, and a government fleet is
+ * outside the private/for-hire question altogether. Neither is a "no".
+ */
+export function forHireFromClassdef(v: string | null | undefined): boolean | null {
+  const tokens = (v ?? '')
+    .split(';')
+    .map((t) => t.trim().toUpperCase())
+    .filter((t) => t !== '')
+  if (tokens.length === 0) return null
+  if (tokens.some((t) => FOR_HIRE_TOKENS.has(t))) return true
+  if (tokens.every((t) => PRIVATE_TOKENS.has(t))) return false
+  return null
+}
+
+/**
+ * The three facts off one census row, ready to copy onto the carrier.
+ *
+ * Returns null when the row settles none of them, so the caller can skip the
+ * write instead of stamping three NULLs and a source over a row — the same
+ * shape as `censusAddress` in onboarding.ts.
+ */
+export function censusOperation(row: CensusRow | null | undefined): CarrierOperationFacts | null {
+  if (!row) return null
+  const facts: CarrierOperationFacts = {
+    carrier_operation: operationCode(row.carrier_operation),
+    for_hire: forHireFromClassdef(row.classdef),
+    hazmat: hazmatFromHmInd(row.hm_ind),
+  }
+  return Object.values(facts).some((v) => v !== null) ? facts : null
+}
+
+/** What the settings form can say about each question. */
+export type OperationAnswer = 'yes' | 'no' | 'unsure'
+
+export function operationAnswer(v: FormDataEntryValue | null | undefined): OperationAnswer | null {
+  const t = typeof v === 'string' ? v.trim() : ''
+  return t === 'yes' || t === 'no' || t === 'unsure' ? t : null
+}
+
+/**
+ * The owner's three answers → the same three columns the census fills.
+ *
+ * "unsure" stores NULL. That is the whole reason the option exists: an owner
+ * who does not know whether he crosses a state line must be able to say so and
+ * keep every interstate rule on his board, rather than be forced to pick a
+ * side to get past the form.
+ *
+ * The letter for an intrastate carrier is 'B' when he says he carries placarded
+ * hazmat and 'C' otherwise. No rule reads the B/C half of the code — every
+ * hazmat gate reads the `hazmat` column, which is stored beside it from the
+ * third answer — so a "not sure" on hazmat with a "no" on state lines is
+ * stored as 'C' plus a NULL `hazmat`, and the NULL is what the rules see.
+ */
+export function operationFromAnswers(answers: {
+  crossesStateLines: OperationAnswer
+  forHire: OperationAnswer
+  hazmat: OperationAnswer
+}): CarrierOperationFacts {
+  const asBool = (a: OperationAnswer): boolean | null =>
+    a === 'yes' ? true : a === 'no' ? false : null
+  const hazmat = asBool(answers.hazmat)
+  let carrier_operation: CarrierOperationCode | null = null
+  if (answers.crossesStateLines === 'yes') carrier_operation = 'A'
+  else if (answers.crossesStateLines === 'no') carrier_operation = hazmat === true ? 'B' : 'C'
+  return { carrier_operation, for_hire: asBool(answers.forHire), hazmat }
+}
+
+/** The stored facts → which radio is checked on the settings form. */
+export function operationAnswers(row: {
+  carrier_operation?: string | null
+  for_hire?: boolean | null
+  hazmat?: boolean | null
+}): { crossesStateLines: OperationAnswer; forHire: OperationAnswer; hazmat: OperationAnswer } {
+  const fromBool = (b: boolean | null | undefined): OperationAnswer =>
+    b === true ? 'yes' : b === false ? 'no' : 'unsure'
+  const code = operationCode(row.carrier_operation)
+  return {
+    crossesStateLines: code === 'A' ? 'yes' : code === null ? 'unsure' : 'no',
+    forHire: fromBool(row.for_hire),
+    hazmat: fromBool(row.hazmat),
+  }
 }
 
 export interface AuthorityRow {
@@ -152,7 +335,10 @@ export function statusLabel(code: string | undefined): { label: string; tone: st
  * Accepts what a person actually types: "MC 116200", "mc-116200", "116200".
  */
 export function normalizeDocket(input: string): string | null {
-  const raw = (input ?? '').trim().toUpperCase().replace(/[\s\-_.]/g, '')
+  const raw = (input ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s\-_.]/g, '')
   if (!raw) return null
 
   const m = raw.match(/^(MC|MX|FF)?(\d{1,8})$/)

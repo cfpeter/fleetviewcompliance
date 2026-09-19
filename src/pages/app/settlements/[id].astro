@@ -42,6 +42,7 @@
 import Bars from '../../../components/charts/Bars.astro'
 import Figure from '../../../components/charts/Figure.astro'
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import { formatDate, fullName, todayInCalifornia } from '../../../lib/drivers.ts'
 import { formatCents, loadLabel, parseMoneyToCents, textOrNull } from '../../../lib/loads.ts'
 import {
@@ -361,6 +362,12 @@ if (Astro.request.method === 'POST') {
     if (amount.value === null) return fail('Enter the amount.')
 
     const loadId = String(form.get('load_id') ?? '') || null
+    // Shape-checked before Postgres sees it. A hand-edited value that is not a
+    // uuid came back as "invalid input syntax for type uuid" across the top of
+    // the page; whether the load is this driver's is still the trigger's call.
+    if (loadId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(loadId)) {
+      return fail('Pick the load from the list, or leave it blank.')
+    }
 
     const { error } = await supabase.from('settlement_lines').insert({
       carrier_id: carrierId,
@@ -818,7 +825,8 @@ function lineTerms(l: LineRow): string {
 }
 
 const params = Astro.url.searchParams
-const error = params.get('error') ?? lineError?.message ?? null
+// Only honoured when the request came from our own 303. See src/lib/flash.ts.
+const error = flashText(Astro.url, Astro.request) ?? lineError?.message ?? null
 const notice = params.has('created')
   ? 'Pay statement started. Pay from an agreement below, or add lines by hand.'
   : params.has('added')
@@ -903,7 +911,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
     }
     {
       settlement.supersedes_id && (
-        <p class="mb-5 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+        <p class="mb-5 rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
           This is revision <span class="tabular-nums">{settlement.revision}</span>, correcting an
           earlier statement.{' '}
           <a
@@ -1216,7 +1224,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
   <div data-screen-only>
     {
       locked ? (
-        <div class="mt-6 rounded-xl border border-brand-500/30 bg-brand-500/[0.04] p-5">
+        <div class="mt-6 rounded-xl border border-brand-500/30 bg-champagne-50 p-5">
           <h2 class="font-semibold tracking-tight">
             This statement is {settlement.status === 'paid' ? 'paid' : 'void'} and locked
           </h2>
@@ -1308,6 +1316,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                                   : 'How many'}
                             </span>
                             <input
+                              type="text"
                               name="quantity"
                               required
                               inputmode="decimal"
@@ -1393,6 +1402,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
                   <div class="field-affix mt-1">
                     <span class="pl-3 text-ink-500">$</span>
                     <input
+                      type="text"
                       name="amount"
                       required
                       inputmode="decimal"

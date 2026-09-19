@@ -127,6 +127,18 @@ const badgeFor = (tone: string): string =>
       control in the product shares. `rounded-xl` is kept: a Tailwind utility
       outranks the component class, so the marketing shape survives.
     */}
+    {/* The page had no heading until a carrier was found: a visitor who
+        followed "Check my fleet" landed on a lone input with no line saying
+        what the page is. The H1 moves onto the carrier's name once there is one. */}
+    {!carrier && (
+      <div class="mb-6">
+        <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">Check your USDOT number</h1>
+        <p class="mt-1 text-sm text-ink-700">
+          See your federal record and your next MCS-150 deadline. No account, no email, no card.
+        </p>
+      </div>
+    )}
+
     <form method="GET" action="/check" class="mb-8 max-w-md">
       <label class="field-label" for="dot">Your USDOT number</label>
       <div class="mt-1 flex flex-col gap-3 sm:flex-row">
@@ -241,7 +253,7 @@ const badgeFor = (tone: string): string =>
                   ? 'border-red-200 bg-red-50/60'
                   : mcs150.state === 'unknown'
                     ? 'border-ink-100 bg-white'
-                    : 'border-brand-500/30 bg-brand-500/[0.04]',
+                    : 'border-brand-500/30 bg-champagne-50',
               ]}
             >
               <div class="flex flex-wrap items-center gap-2">
@@ -359,15 +371,16 @@ const badgeFor = (tone: string): string =>
           )}
         </div>
 
-        <div class="mt-10 rounded-2xl border border-ink-100 bg-ink-50 p-6 sm:p-8">
+        <div class="mt-10 rounded-2xl border border-brand-500/30 bg-champagne p-6 sm:p-8">
           <h2 class="text-xl font-semibold tracking-tight">What we cannot see here</h2>
-          <p class="mt-2 text-sm text-ink-500">
+          {/* ink-700: this box is Champagne, where ink-500 is 3.89:1. */}
+          <p class="mt-2 text-sm text-ink-700">
             The federal file has no driver records. Medical card dates, CDL dates, yearly MVR
             reviews, Clearinghouse checks, your CHP terminal inspection and your Clean Truck Check
             dates are only in your office. These are the dates that stop a truck. We set them up
             with you one time, then we watch them for you.
           </p>
-          {/* Marketing chrome keeps the dark button. */}
+          {/* Marketing chrome keeps `.btn-dark`, which is Emerald Ink. */}
           <a href="/pricing" class="btn btn-dark mt-5 rounded-xl px-7 py-3.5 font-semibold">
             See the price →
           </a>

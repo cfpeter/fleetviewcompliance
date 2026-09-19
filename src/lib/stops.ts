@@ -571,6 +571,13 @@ export function stopClock(
    * page. Under-promising is the cheap error.
    */
   const rate = terms.detention_rate_cents
+  // WHOLE HOURS, on purpose, and the test that pins it says why: 2h 24m past
+  // free time at $50/h invoices as $100, and putting $120 on screen puts a
+  // number there the broker will not pay. The owner who reads 1h 30m → $50 as
+  // "you threw away half an hour" is not wrong either — so the screen has to
+  // SAY it bills whole hours, rather than leave him to discover the rounding.
+  // A per-load increment (15 or 30 minutes on some rate confirmations) is a
+  // real term the load does not store yet; nothing here invents one.
   const billableCents =
     rate === null || rate === undefined ? null : Math.floor(overMinutes / 60) * rate
 

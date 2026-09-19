@@ -25,6 +25,7 @@
 import Bars from '../../../components/charts/Bars.astro'
 import Figure from '../../../components/charts/Figure.astro'
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import {
   BILLING_STATUSES,
   EQUIPMENT_TYPES,
@@ -114,7 +115,7 @@ async function findDuplicate(
       .eq(column, value)
       .neq('id', id)
       .limit(1)
-    if (error) return { ok: false, message: error.message }
+    if (error) return { ok: false, message: 'We could not check that number against your other loads. Try again.' }
     const row = data?.[0]
     if (row) return { ok: true, hit: { id: row.id, name: loadLabel(row), column, value } }
   }
@@ -127,6 +128,8 @@ function toBoard(message: string): Response {
 }
 
 const NOT_YOURS = 'That load is not in your account.'
+/** A database failure, said in plain words. The engine's own message never crosses the screen. */
+const SAVE_FAILED = 'We could not save that. Nothing changed. Try again.'
 
 // A hand-edited URL like /app/loads/abc is not a missing row, it is a failed
 // uuid cast — Postgres raises, and without this check the dispatcher gets
@@ -155,7 +158,7 @@ if (Astro.request.method === 'POST') {
       // is what stops anyone moving a load into a different tenancy.
       .eq('id', id)
       .select('id')
-    if (error) return fail(error.message)
+    if (error) return fail(SAVE_FAILED)
     if (!data || data.length === 0) return toBoard(NOT_YOURS)
     return null
   }
@@ -342,7 +345,7 @@ if (Astro.request.method === 'POST') {
       const { data: existing, error: lookupError } = await supabase
         .from('customers')
         .select('id, name')
-      if (lookupError) return fail(lookupError.message)
+      if (lookupError) return fail('We could not look up your customers. Try again.')
 
       const hit = matchCustomerName(existing, typedName)
       if (hit) {
@@ -356,7 +359,7 @@ if (Astro.request.method === 'POST') {
           .select('id')
           .single()
         if (createError || !created) {
-          return fail(createError?.message ?? 'We could not save that customer.')
+          return fail('We could not save that customer. Try again.')
         }
         customerId = created.id
       }
@@ -406,7 +409,7 @@ const { data: load, error: loadError } = await supabase
   .eq('id', id)
   .maybeSingle()
 
-if (loadError) return toBoard(loadError.message)
+if (loadError) return toBoard('We could not open that load. Try again.')
 // maybeSingle() returns null both for "no such id" and for "belongs to another
 // carrier", because RLS makes the second one look exactly like the first. That
 // is the point: this page cannot be used to find out whether a load exists
@@ -568,7 +571,8 @@ const profitCoverage = [
 ].filter((c): c is string => typeof c === 'string')
 
 const params = Astro.url.searchParams
-const error = params.get('error')
+// Read only when the browser says the request came from this site.
+const error = flashText(Astro.url, Astro.request)
 /**
  * The load a refused save is pointing at.
  *
@@ -599,7 +603,7 @@ const moneyInput = 'field-affix-input tabular-nums'
  * The three sidebar setters.
  *
  * Secondary, not the dark button this used to be. Inside /app the action colour
- * is brand blue and a dark fill reads as a second Primary competing with "Save
+ * is Emerald Ink and a second Ink fill reads as a second Primary competing with "Save
  * load" three inches to the left; dark is marketing chrome. `.btn` is 44px, so
  * these also stop being 30px targets on a phone.
  */

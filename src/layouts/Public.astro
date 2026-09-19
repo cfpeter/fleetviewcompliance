@@ -48,10 +48,48 @@ const path = Astro.url.pathname
  * phone, and it is in the footer.
  */
 const nav = [
-  { href: '/', label: 'Home', short: 'Home' },
-  { href: '/features', label: 'Features', short: 'Features' },
-  { href: '/pricing', label: 'Pricing', short: 'Pricing' },
-  { href: '/about', label: 'About', short: 'About', desktopOnly: true },
+  { href: '/', label: 'Home' },
+  { href: '/features', label: 'Features' },
+  { href: '/pricing', label: 'Pricing' },
+  { href: '/about', label: 'About' },
+  { href: '/login', label: 'Sign in' },
+]
+
+/**
+ * MEASURED, NOT ASSUMED: the one-line header did not fit on a phone.
+ *
+ * At 375px the row above — wordmark, Home, Features, Pricing, Sign in, Check —
+ * was 414px wide. The browser answered the way a phone answers content wider
+ * than the screen: it zoomed the whole page out to 0.9 so the row would fit,
+ * on every public page, and the "331 of 343 usable" in the old note was a
+ * measurement taken before Home and the 44px pills were added. The items were
+ * also 2px apart, where two targets a thumb aims at need 8px.
+ *
+ * So under `md` the public header does what the signed-in header does: one
+ * line — the wordmark, the page you are on in the tinted pill with a chevron,
+ * and the one button — and the sections open from the pill as a column of
+ * 48px rows. No category word: the pill names the page, and the list is the
+ * same five words the desktop row shows, whole, in the same order. About is
+ * back on the phone, where it used to be hidden. The `<details>` opens on
+ * touch and from the keyboard on its own, and every line in it is a link, so
+ * the page load closes it; the site still ships no client JavaScript.
+ *
+ * From `md` up the row is one deck, 8px between pills, full labels. At 768px
+ * it needs about 620px of the 720px inside the padding.
+ */
+const active = (href: string) => path === href
+
+/** The word in the closed phone pill; 'Menu' on the pages that are not sections. */
+const current = nav.find((n) => active(n.href))?.label ?? 'Menu'
+
+const row = (href: string) => [
+  'nav-item flex min-h-12 px-3 text-base transition',
+  active(href) && 'is-current',
+]
+
+const pill = (href: string) => [
+  'nav-item px-3 whitespace-nowrap transition',
+  active(href) && 'is-current',
 ]
 ---
 
@@ -86,7 +124,7 @@ const nav = [
     <meta name="twitter:card" content="summary" />
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <meta name="theme-color" content="#171b21" />
+    <meta name="theme-color" content="#064e3b" />
   </head>
 
   <body class="min-h-dvh bg-white font-sans text-ink-900 antialiased">
@@ -98,69 +136,102 @@ const nav = [
     </a>
 
     <header class="sticky top-0 z-40 border-b border-ink-100 bg-white/85 backdrop-blur">
-      <div class="mx-auto flex max-w-6xl items-center gap-2 px-4 py-3.5 sm:gap-4 sm:px-6">
+      {/*
+        UNDER `md`: wordmark, the page you are on, the one button. The bar is
+        `relative` so the open list can hang under it at full width instead of
+        growing the sticky header. The wordmark is a 44px target, like every
+        other link; it was a 24px line of text.
+      */}
+      <div class="relative mx-auto flex max-w-6xl items-center gap-3 px-4 py-2 sm:px-6 md:hidden">
         <a
           href="/"
-          class="shrink-0 text-base font-semibold tracking-tight whitespace-nowrap md:text-lg"
+          class="inline-flex min-h-11 shrink-0 items-center font-semibold tracking-tight whitespace-nowrap"
         >
           FleetView<span class="hidden text-brand-600 sm:inline">Compliance</span>
         </a>
 
-        <nav class="ml-auto flex items-center gap-0.5 text-sm sm:gap-1">
-          {
-            /*
-              `.nav-item` and `.is-current` from global.css: one 44px target and
-              one selected mark, the same two the signed-in header uses. The page
-              you are on used to be marked by darker text alone, which is the
-              weakest signal on the page — a tinted pill and semibold survive a
-              sunlit screen and colour blindness both, and `aria-current` says it
-              to a screen reader either way.
+        <details class="group ml-auto">
+          {/* The closed pill: the same `.is-current` mark the signed-in header
+              uses, the page name in words, and a chevron that says "this opens"
+              without being a word in any language. Not a link — the list under
+              it carries `aria-current`. */}
+          <summary
+            class="nav-item is-current cursor-pointer list-none gap-1.5 px-2.5 text-sm whitespace-nowrap transition select-none [&::-webkit-details-marker]:hidden"
+          >
+            {current}
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="size-4 shrink-0 transition-transform group-open:rotate-180"
+            >
+              <path d="M5 8l5 5 5-5"></path>
+            </svg>
+          </summary>
+          <nav
+            aria-label="Menu"
+            class="absolute inset-x-0 top-full border-b border-ink-100 bg-white px-2 pt-2 pb-3 shadow-lg"
+          >
+            {
+              nav.map((n) => (
+                <a
+                  href={n.href}
+                  aria-current={active(n.href) ? 'page' : undefined}
+                  class:list={row(n.href)}
+                >
+                  {n.label}
+                </a>
+              ))
+            }
+          </nav>
+        </details>
 
-              The horizontal padding is written back over the class on purpose.
-              `.nav-item` is px-3, and the measurements in the comment above are
-              px-2 below `sm` with 12px of the 375px header to spare; px-3 on
-              three items spends 24px of it. The height is what this fix is
-              about, and the height is free.
-            */
+        {/* Emerald Ink, the same fill as `.btn-primary` and `.btn-dark`: the
+            one button in the marketing chrome is the brand colour. Outside the
+            `<details>`, so it never fights the pill for a tap. */}
+        <a
+          href="/check"
+          class="inline-flex min-h-11 shrink-0 items-center rounded-lg bg-brand-700 px-3 py-2 font-medium whitespace-nowrap text-white transition hover:bg-brand-800"
+        >
+          <span class="sm:hidden">Check</span>
+          <span class="hidden sm:inline">Check my fleet</span>
+        </a>
+      </div>
+
+      {/*
+        FROM `md`: one deck. `.nav-item` and `.is-current` from global.css: one
+        44px target and one selected mark, the same two the signed-in header
+        uses. `gap-2` between the pills is the 8px floor between two targets.
+
+        Sign in is a plain link in the row, never the button. The button is for
+        the visitor we do not have yet; the link is for the customer we do, who
+        knows exactly what he is looking for and will find a text link.
+      */}
+      <div class="mx-auto hidden max-w-6xl items-center gap-4 px-4 py-2 sm:px-6 md:flex">
+        <a
+          href="/"
+          class="inline-flex min-h-11 shrink-0 items-center text-lg font-semibold tracking-tight whitespace-nowrap"
+        >
+          FleetView<span class="text-brand-600">Compliance</span>
+        </a>
+
+        <nav class="ml-auto flex items-center gap-2 text-sm" aria-label="Site">
+          {
             nav.map((n) => (
-              <a
-                href={n.href}
-                aria-current={path === n.href ? 'page' : undefined}
-                class:list={[
-                  'nav-item px-2 whitespace-nowrap transition sm:px-3',
-                  n.desktopOnly && 'hidden sm:inline-flex',
-                  path === n.href && 'is-current',
-                ]}
-              >
-                <span class="sm:hidden">{n.short}</span>
-                <span class="hidden sm:inline">{n.label}</span>
+              <a href={n.href} aria-current={active(n.href) ? 'page' : undefined} class:list={pill(n.href)}>
+                {n.label}
               </a>
             ))
           }
-          <!-- Sign in is a plain link, never the button. The button is for the
-               visitor we do not have yet; this is for the customer we do, who
-               knows exactly what he is looking for and will find a text link.
-               It existed nowhere in the site until now: /login was reachable
-               only by being redirected to it, so anybody who signed up and came
-               back the next day had no way in from the marketing pages. -->
-          <a
-            href="/login"
-            class="nav-item shrink-0 px-1.5 whitespace-nowrap transition sm:px-2"
-          >
-            Sign in
-          </a>
-          {/* Dark is marketing chrome and stays dark here — this is the one
-              header in the product where it is not competing with a blue
-              primary. What it gains is the 44px: py-2 on 14px type was 36px,
-              which is a miss away from the one control this page is built to
-              get tapped. The padding is unchanged, so the measurements in the
-              comment above still hold. */}
           <a
             href="/check"
-            class="ml-0.5 inline-flex min-h-11 shrink-0 items-center rounded-lg bg-ink-900 px-2.5 py-2 font-medium whitespace-nowrap text-white transition hover:bg-ink-700 sm:ml-1 sm:px-3.5"
+            class="ml-2 inline-flex min-h-11 shrink-0 items-center rounded-lg bg-brand-700 px-3.5 py-2 font-medium whitespace-nowrap text-white transition hover:bg-brand-800"
           >
-            <span class="sm:hidden">Check</span>
-            <span class="hidden sm:inline">Check my fleet</span>
+            Check my fleet
           </a>
         </nav>
       </div>
@@ -168,11 +239,11 @@ const nav = [
 
     <main id="main"><slot /></main>
 
-    <footer class="mt-20 border-t border-ink-100 bg-ink-50">
+    <footer class="mt-20 border-t border-ink-100 bg-champagne-50">
       <div class="mx-auto grid max-w-6xl gap-8 px-4 py-12 sm:grid-cols-3 sm:px-6">
         <div>
           <p class="font-semibold tracking-tight">{BRAND}</p>
-          {/* The whole footer sits on `bg-ink-50`, and on a tint the floor is
+          {/* The whole footer sits on `bg-champagne-50`, and on a tint the floor is
               ink-700 at every size — ink-500 is measured against white and gets
               no credit here. That is the rule for the three paragraphs below as
               well; two of them are also 12px, where ink-700 is the floor anyway. */}
@@ -183,19 +254,21 @@ const nav = [
         </div>
         <div>
           <p class="text-xs tracking-wide text-ink-700 uppercase">Product</p>
-          {/* `.link` on every one of these, here and in the Company column: blue
-              AND underlined at rest. They used to be plain ink-900 that turned
-              blue on hover — and on a phone there is no hover, so the whole
+          {/* `.link` on every one of these, here and in the Company column: the
+              brand colour AND underlined at rest. They used to be plain ink-900
+              that changed colour on hover — and on a phone there is no hover, so the whole
               footer read as two lists of words with nothing to say that any of
               them went anywhere. A link this audience can see is a link that
               looks like one before it is touched. */}
-          <ul class="mt-3 space-y-2 text-sm">
-            <li><a href="/features" class="link">Features</a></li>
-            <li><a href="/pricing" class="link">Pricing</a></li>
-            <li><a href="/check" class="link">Check your DOT number</a></li>
-            <li><a href="/login" class="link">Sign in</a></li>
+          {/* Each line is a 44px target. They were 17px lines 8px apart, which
+              on a phone is a column of eight things one thumb covers three of. */}
+          <ul class="mt-1 text-sm">
+            <li><a href="/features" class="link inline-flex min-h-11 min-w-11 items-center">Features</a></li>
+            <li><a href="/pricing" class="link inline-flex min-h-11 min-w-11 items-center">Pricing</a></li>
+            <li><a href="/check" class="link inline-flex min-h-11 min-w-11 items-center">Check your DOT number</a></li>
+            <li><a href="/login" class="link inline-flex min-h-11 min-w-11 items-center">Sign in</a></li>
             <li>
-              <a href="/login?mode=signup" class="link">
+              <a href="/login?mode=signup" class="link inline-flex min-h-11 min-w-11 items-center">
                 Create an account
               </a>
             </li>
@@ -203,10 +276,10 @@ const nav = [
         </div>
         <div>
           <p class="text-xs tracking-wide text-ink-700 uppercase">Company</p>
-          <ul class="mt-3 space-y-2 text-sm">
-            <li><a href="/about" class="link">About</a></li>
-            <li><a href="/privacy" class="link">Privacy</a></li>
-            <li><a href="/terms" class="link">Terms</a></li>
+          <ul class="mt-1 text-sm">
+            <li><a href="/about" class="link inline-flex min-h-11 min-w-11 items-center">About</a></li>
+            <li><a href="/privacy" class="link inline-flex min-h-11 min-w-11 items-center">Privacy</a></li>
+            <li><a href="/terms" class="link inline-flex min-h-11 min-w-11 items-center">Terms</a></li>
           </ul>
         </div>
       </div>

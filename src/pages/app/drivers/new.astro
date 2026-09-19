@@ -9,6 +9,7 @@
  * arrive later, from the detail page, when the paperwork does.
  */
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import { US_STATE_CODES, formDate, formText, todayInCalifornia } from '../../../lib/drivers.ts'
 import { parsePhone } from '../../../lib/phone.ts'
 
@@ -70,6 +71,26 @@ if (Astro.request.method === 'POST') {
     const phone = parsePhone(form.get('phone'), 'Phone')
     if (!phone.ok) return back(phone.message, fromSetup)
 
+    // The browser's <select> and <input type="date"> guard these on a real
+    // form. A hand-made POST does not get that guard, and without this an
+    // unknown state or a malformed date reached Postgres and came back as a
+    // database sentence across the top of the page.
+    const cdlState = formText(form, 'cdl_state')
+    if (cdlState !== null && !US_STATE_CODES.includes(cdlState)) {
+      return back('Pick the CDL state from the list.', fromSetup)
+    }
+    const DATE_SHAPE = /^\d{4}-\d{2}-\d{2}$/
+    for (const [field, label] of [
+      ['cdl_expires_on', 'CDL expiry date'],
+      ['hired_on', 'Hire date'],
+      ['date_of_birth', 'Date of birth'],
+    ] as const) {
+      const value = formDate(form, field)
+      if (value !== null && !DATE_SHAPE.test(value)) {
+        return back(`${label}: pick the date from the calendar, or leave it blank.`, fromSetup)
+      }
+    }
+
     const { data, error } = await supabase
       .from('drivers')
       .insert({
@@ -83,7 +104,7 @@ if (Astro.request.method === 'POST') {
         phone: phone.value,
         email: formText(form, 'email'),
         cdl_number: formText(form, 'cdl_number'),
-        cdl_state: formText(form, 'cdl_state'),
+        cdl_state: cdlState,
         cdl_expires_on: formDate(form, 'cdl_expires_on'),
         hired_on: formDate(form, 'hired_on'),
         date_of_birth: formDate(form, 'date_of_birth'),
@@ -91,7 +112,11 @@ if (Astro.request.method === 'POST') {
       .select('id')
       .single()
 
-    if (error || !data) return back(error?.message ?? 'That driver could not be saved.', fromSetup)
+    if (error || !data) {
+      // Postgres words are for an operator, not for the person at the desk.
+      if (error) console.error('driver insert failed:', error.message)
+      return back('That driver could not be saved. Wait a moment and try again.', fromSetup)
+    }
 
     // Straight to the driver rather than back to the list: the next thing she
     // has in her hand is the medical card, and the Compliance dates section is
@@ -112,7 +137,8 @@ if (Astro.request.method === 'POST') {
 }
 
 const params = Astro.url.searchParams
-const error = params.get('error')
+// Only honoured when the request came from our own 303. See src/lib/flash.ts.
+const error = flashText(Astro.url, Astro.request)
 // A yes/no, re-emitted below as a literal. Echoing the query string straight
 // into a hidden field would let anybody choose what this form posts.
 const fromSetup = params.get('from') === 'setup'
@@ -152,6 +178,8 @@ const today = todayInCalifornia()
           </span>
           <input
             type="tel"
+            inputmode="tel"
+            autocomplete="tel"
             name="phone"
             placeholder="(818) 334-0168"
             class="field-input mt-1 tabular-nums"
@@ -165,7 +193,7 @@ const today = todayInCalifornia()
           <span class="field-label">
             Email <span class="font-normal text-ink-500">(optional)</span>
           </span>
-          <input type="email" name="email" class="field-input mt-1" />
+          <input type="email" inputmode="email" autocomplete="email" name="email" class="field-input mt-1" />
         </label>
       </div>
 
@@ -174,7 +202,15 @@ const today = todayInCalifornia()
           <span class="field-label">
             CDL number <span class="font-normal text-ink-500">(optional)</span>
           </span>
-          <input type="text" name="cdl_number" class="field-input mt-1 tabular-nums" />
+          <input
+            type="text"
+            name="cdl_number"
+            autocapitalize="characters"
+            autocomplete="off"
+            spellcheck="false"
+            maxlength="25"
+            class="field-input mt-1 tabular-nums"
+          />
         </label>
         <label class="block">
           <span class="field-label">

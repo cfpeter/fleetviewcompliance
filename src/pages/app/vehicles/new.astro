@@ -16,6 +16,7 @@
  * gets. There is no safe default for that.
  */
 import App from '../../../layouts/App.astro'
+import { flashText } from '../../../lib/flash.ts'
 import {
   parseOptionalInt,
   parseStateCode,
@@ -147,9 +148,14 @@ if (Astro.request.method === 'POST') {
     // nothing to an owner — and the useful thing to say is not "constraint
     // violated" but "you already have this truck".
     const raw = error?.message ?? 'The vehicle was not saved.'
+    // The one collision a person actually causes gets its own sentence. Every
+    // other database message is for an operator, not for the person at the
+    // desk: it names columns and constraints, so it goes to the log, not the
+    // page.
+    if (!raw.includes('vehicles_vin_unique')) console.error('vehicle insert failed:', raw)
     const message = raw.includes('vehicles_vin_unique')
       ? 'That VIN is already on a vehicle in your fleet. Find it from the list instead of adding it twice.'
-      : raw
+      : 'The vehicle was not saved. Wait a moment and try again.'
     return reject(message)
   }
 
@@ -173,7 +179,8 @@ if (Astro.request.method === 'POST') {
 // --- GET: render, prefilled from whatever a rejected save handed back --------
 
 const params = Astro.url.searchParams
-const error = params.get('error')
+// Only honoured when the request came from our own 303. See src/lib/flash.ts.
+const error = flashText(Astro.url, Astro.request)
 const prior = (key: string) => params.get(key) ?? ''
 const priorKind = prior('kind')
 // Read as a yes/no and re-emitted below as a literal, never echoed. A value
@@ -278,6 +285,7 @@ const field = 'field-input mt-1'
             name="model_year"
             value={prior('model_year')}
             inputmode="numeric"
+            maxlength="4"
             placeholder="e.g. 2018"
             class={`${field} tabular-nums`}
           />
@@ -348,7 +356,7 @@ const field = 'field-input mt-1'
         is about to leave this blank is exactly the person who needs to know that
         blank is not the same as exempt.
       */}
-      <p class="mt-3 rounded-lg bg-brand-500/[0.08] px-4 py-3 text-sm text-brand-700">
+      <p class="mt-3 rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
         Leave the GVWR blank if you do not know it. Blank means unknown. We treat a truck of
         unknown weight as fully regulated, so you will see every weight-based deadline until you
         fill it in. Do not guess: a wrong weight can switch off a real deadline.

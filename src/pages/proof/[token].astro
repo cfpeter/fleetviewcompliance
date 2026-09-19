@@ -34,6 +34,14 @@ import { anonClient } from '../../lib/supabase/server.ts'
 const { token = '' } = Astro.params
 const db = anonClient()
 
+// A driver's qualification record, or a carrier's dated checks, behind a
+// secret link. Public in the sense of "no sign-in", not in the sense of
+// "cacheable": a shared cache between here and the broker's browser must not
+// keep a copy, and a revoked link must stop showing the page at once rather
+// than for as long as some proxy remembers it. The /app middleware sets this
+// for signed-in pages; this route is outside /app, so it says so itself.
+Astro.response.headers.set('Cache-Control', 'private, no-store')
+
 const { data: resolved } = await db.rpc('resolve_share_token', { p_token: token })
 const link = (Array.isArray(resolved) ? resolved[0] : resolved) as
   | { carrier_id: string; scope: string; subject_id: string | null; expires_at: string }
@@ -61,7 +69,22 @@ const observedAt = new Date()
  * exactly this field, which is what makes the two agree.
  */
 let carrier:
-  | { legal_name?: string; dba_name?: string; dot_number?: string; phy_state?: string }
+  | {
+      legal_name?: string
+      dba_name?: string
+      dot_number?: string
+      phy_state?: string
+      /**
+       * The three facts that decide which rules apply — read here and never
+       * printed, for the same job as `phy_state`. share_carrier returns them
+       * since 0031 so that this page and the owner's dashboard build their rule
+       * context from the same columns. NULL arrives as null and is passed on
+       * as undefined, which the engine reads as UNKNOWN and keeps tracking.
+       */
+      carrier_operation?: string | null
+      for_hire?: boolean | null
+      hazmat?: boolean | null
+    }
   | undefined
 let driver: { id: string; first_name: string; last_name: string; cdl_number?: string; cdl_state?: string; cdl_expires_on?: string } | undefined
 let counts: { active_drivers: number; power_units: number; trailers: number } | undefined
@@ -116,6 +139,19 @@ const anchorsFor = (type: string, id: string | null) => {
   return out
 }
 
+/**
+ * Which half of the catalogue applies, on every subject this page evaluates —
+ * exactly as src/lib/deadlines.ts spreads the same three onto every subject
+ * for the owner. The driver file needs them as much as the summary does:
+ * `interstateDriver` decides whether the federal or the California medical
+ * rule reports on a card, and it reads `carrierOperation` off the DRIVER.
+ */
+const operation = {
+  carrierOperation: carrier?.carrier_operation ?? undefined,
+  forHire: carrier?.for_hire ?? undefined,
+  hazmat: carrier?.hazmat ?? undefined,
+}
+
 let dqfItems: ReturnType<typeof assembleDqf> = []
 
 if (link?.scope === 'driver_file' && driver) {
@@ -127,7 +163,11 @@ if (link?.scope === 'driver_file' && driver) {
     type: 'driver',
     id: driver.id,
     label: `${driver.first_name} ${driver.last_name}`.trim(),
-    context: { cdl: Boolean(driver.cdl_number) },
+    context: {
+      cdl: Boolean(driver.cdl_number),
+      registrationState: carrier?.phy_state ?? undefined,
+      ...operation,
+    },
     anchors: a,
   }
   const items = evaluate([subject], observedAt).filter((i) => i.subjectId === driver!.id)
@@ -163,14 +203,12 @@ const ring = dqfItems.length > 0 ? dqRing(dqfItems, observedAt) : undefined
  * footnote, because a shape is taken in before any prose on the page is.
  *
  * WHY IT AGREES WITH THE OWNER'S OWN SCREEN. Same engine, same anchors, same
- * `registrationState`, and no `lastDone` on either side — see
- * src/lib/deadlines.ts. The one fact this page cannot have is
- * `carrierOperation`, which share_carrier does not return; today no carrier rule
- * can be ruled out by it (the two rules that read it answer 'unknown' rather
- * than false for a non-interstate code, and 'unknown' is tracked), so the two
- * screens count the same rows. If a rule is ever added that reads it, this ring
- * will count a row the owner's dashboard drops, and it will count it as
- * something for him to answer rather than as a pass.
+ * `registrationState`, the same `carrierOperation` / `forHire` / `hazmat`
+ * (share_carrier returns all three since 0031), and no `lastDone` on either
+ * side — see src/lib/deadlines.ts. Before 0031 this page could not see the
+ * operation facts at all, and the review of 2026-09-18 caught the result: a
+ * broker was told an intrastate private carrier was "missing 12 dates out of
+ * 13", most of them for filings it does not owe.
  *
  * `buildHealth` decides the buckets; nothing here does. Grey is its own arc and
  * its own number, it is never folded into green, and the count in the hole is
@@ -188,6 +226,7 @@ const health =
               context: {
                 dotNumber: carrier?.dot_number ?? undefined,
                 registrationState: carrier?.phy_state ?? undefined,
+                ...operation,
               },
               anchors: anchorsFor('carrier', link.carrier_id),
             } satisfies EvaluationSubject,
@@ -478,7 +517,7 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
                 line, 44px tall, and the sentence above it says why to press
                 it. */}
             {saferUrl && (
-              <div class="mt-5 rounded-lg bg-brand-500/[0.06] px-4 py-3 text-sm">
+              <div class="mt-5 rounded-lg bg-champagne-50 px-4 py-3 text-sm">
                 <p>Do not take our word for any of this.</p>
                 <a
                   href={saferUrl}

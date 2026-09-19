@@ -48,6 +48,7 @@ import {
 } from '../../lib/claims.ts'
 import {
   type CensusRow,
+  censusOperation,
   lookupCarrier,
   normalizeDot,
   parseCensusDate,
@@ -430,6 +431,21 @@ if (Astro.request.method === 'POST') {
       // start filling in the rest" was a promise no code kept.
       const address = censusAddress(census)
       if (address) await supabase.from('carriers').update(address).eq('id', newCarrierId)
+
+      // WHICH HALF OF THE RULE CATALOGUE APPLIES. Interstate or not, for hire
+      // or not, hazmat or not — the three facts every applicability gate in
+      // src/lib/rules reads, and until 0031 the carrier row had nowhere to keep
+      // them, so every carrier was shown every rule. They are read off the same
+      // census row as the address. A fact the census does not settle is stored
+      // as NULL, which the rules read as "unknown" and keep tracking; the owner
+      // can correct all three on /app/settings.
+      const operation = censusOperation(census)
+      if (operation) {
+        await supabase
+          .from('carriers')
+          .update({ ...operation, operation_source: 'fmcsa' })
+          .eq('id', newCarrierId)
+      }
 
       // Seed the dates the federal record already knows, so the owner does not
       // type what we were just told. Without this the MCS-150 row computes the

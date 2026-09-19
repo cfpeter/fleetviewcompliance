@@ -1,0 +1,66 @@
+---
+/**
+ * The shell for the one page a driver ever sees.
+ *
+ * NOT `Public.astro`, and the difference is the point. That shell carries the
+ * marketing nav — Pricing, Features, Sign up — which is noise to a man who was
+ * texted a link to send in his medical card, and a "Start free" button is an
+ * invitation to a product he is not the customer of.
+ *
+ * `same-origin`, and NOT `no-referrer`, and the difference is a bug I shipped
+ * and had to take back.
+ *
+ * The token is in the PATH, so the Referer header is a real leak: without a
+ * policy, the first thing the driver taps hands his working credential to
+ * whatever site he lands on. `no-referrer` fixes that and breaks the page,
+ * because of a rule in the Fetch spec that is easy to miss — when a document's
+ * referrer policy is `no-referrer`, the browser sets `Origin: null` on its form
+ * POSTs. Astro's `checkOrigin` then refuses the submission as cross-site, and
+ * the driver gets "Cross-site POST form submissions are forbidden" instead of a
+ * thank-you.
+ *
+ * `same-origin` gives the same protection where it counts and keeps the header:
+ * a cross-origin request gets NO referrer at all, and a same-origin one — our
+ * own stylesheet, this page's own POST — gets the full URL, which is ours
+ * already. There are no external links or subresources on this page, so nothing
+ * off-site ever sees it.
+ *
+ * A fetch() from a test cannot catch this: fetch computes its own referrer
+ * policy and ignores the document's meta. It has to be a real form submit.
+ *
+ * `noindex, nofollow, noarchive` rather than the site's usual `noindex, follow`:
+ * there is nothing here worth following and nothing worth keeping a copy of.
+ *
+ * Zero client JavaScript, like the rest of the site.
+ */
+import '../styles/global.css'
+
+interface Props {
+  title: string
+}
+const { title } = Astro.props
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow, noarchive" />
+    <meta name="referrer" content="same-origin" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>{title}</title>
+  </head>
+  <body class="min-h-dvh bg-ink-50 font-sans text-ink-900 antialiased">
+    <div class="mx-auto w-full max-w-lg px-4 py-8 sm:py-12">
+      {/* The wordmark, and no link on it. Everywhere else in the product this is
+          a way home; here there is no home to go to, and a link out is a link
+          into a signed-in app he cannot open. */}
+      <p class="text-sm font-semibold tracking-tight">
+        FleetView<span class="text-brand-700">Compliance</span>
+      </p>
+      <main class="mt-6">
+        <slot />
+      </main>
+    </div>
+  </body>
+</html>
