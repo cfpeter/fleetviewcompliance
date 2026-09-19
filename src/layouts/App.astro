@@ -512,6 +512,17 @@ const accountCurrent = account.find((s) => active(s.href))
       missing or failed, every form on the page still works, because it is still
       the same plain form posting to the same handler.
     */}
+    {/*
+      WHERE A CONFIRMATION GOES NOW THAT THE PAGE DOES NOT RELOAD.
+      "Saved" printed at the top of `<main>` was read because a save put the
+      reader at the top of a fresh page. He stays where he was now, so the
+      script lifts any `[data-flash]` in here instead, where it can be seen.
+      Empty in the markup and empty with no JavaScript — in that case the
+      message renders where it is written, exactly as it always did.
+      `aria-live="polite"` so it is spoken as well as shown.
+    */}
+    {live && <div id="toasts" aria-live="polite" />}
+
     {
       live && (
         <script>

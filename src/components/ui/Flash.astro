@@ -1,0 +1,41 @@
+---
+/**
+ * A confirmation — "Saved", "Deleted", "3 dates recorded".
+ *
+ * WHY THIS BECAME A COMPONENT. It was one `<p>` written out on every page, and
+ * that was fine while a save reloaded the whole document: the message arrived
+ * at the top of a fresh page, in front of the reader's eyes, because the reader
+ * was at the top of a fresh page.
+ *
+ * Since a save stopped reloading (src/scripts/live-forms.ts) he stays exactly
+ * where he was — which is what he asked for, and it means a confirmation
+ * printed at the top of `<main>` can be a screen and a half above him, saying
+ * "Saved" to nobody. So the script lifts this element into a fixed corner where
+ * it can actually be read. It needs one marker to find it by, and that is the
+ * whole reason this file exists.
+ *
+ * WITH NO JAVASCRIPT NOTHING IS LOST: the element renders exactly where it is
+ * written, at the top of the page, as it always did.
+ *
+ * REFUSALS ARE NOT FLASHES and must never use this. A refusal has to be read
+ * before the person tries again, so it stays beside the form, keeps
+ * `role="alert"`, and `settle()` puts the screen and the keyboard on it. A
+ * message that slides away after five seconds is the wrong shape for "we did
+ * not save that".
+ */
+interface Props {
+  /** `ok` — it happened. `note` — it happened and there is a caveat worth reading. */
+  tone?: 'ok' | 'note'
+  class?: string
+}
+const { tone = 'ok', class: extra = '' } = Astro.props
+
+const TONES = {
+  ok: 'bg-emerald-50 text-emerald-800',
+  note: 'bg-champagne-50 text-brand-700',
+} as const
+---
+
+<p data-flash={tone} class:list={['mb-5 rounded-lg px-4 py-3 text-sm', TONES[tone], extra]}>
+  <slot />
+</p>

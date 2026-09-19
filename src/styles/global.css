@@ -580,3 +580,120 @@
     animation: none !important;
   }
 }
+
+/* ------------------------------------------------------------------ working
+
+   The progress the browser stops giving you once a click stops being a
+   navigation.
+
+   A real form post spins the tab and moves the browser's own bar, so the
+   reader knows his click landed. `fetch` gives him nothing, and on a slow
+   connection a button that looks ignored is a button he presses again. This is
+   the replacement: a two-pixel bar across the top of the window, in the brand
+   tint, on the same `position: fixed` the app header already uses.
+
+   IT ONLY APPEARS AFTER 150ms — see `startWorking` in
+   src/scripts/live-forms.ts. Most answers arrive faster than that and must not
+   flash a bar across the screen on their way past; anything slower than a
+   blink says so out loud.
+
+   `html[data-working]` and not a class, because the attribute is set and
+   removed by one line each and there is no class list to get out of step. */
+html[data-working]::after {
+  content: '';
+  position: fixed;
+  inset: 0 auto auto 0;
+  z-index: 60;
+  height: 2px;
+  width: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--color-brand-500) 40%,
+    var(--color-brand-500) 60%,
+    transparent 100%
+  );
+  animation: live-working 1.1s linear infinite;
+  transform: translateX(-100%);
+}
+
+@keyframes live-working {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* Asked for less motion, so the bar stands still and simply IS. It still says
+   the same thing: something is happening and it is not finished. */
+@media (prefers-reduced-motion: reduce) {
+  html[data-working]::after {
+    animation: none;
+    transform: none;
+    background: var(--color-brand-500);
+    opacity: 0.55;
+  }
+}
+
+/* ------------------------------------------------------------------- toasts
+
+   Where a confirmation goes now that a save does not reload the page.
+
+   BOTTOM RIGHT, and not the top. The app header is already fixed at the top
+   and a second fixed thing up there either covers it or fights it for the same
+   200px — and on a phone the top is where the page title and the tab strip
+   live, which are how somebody knows where he is. The bottom right corner is
+   empty on every screen in this product.
+
+   On a phone it spans the width instead, because a 320px card floated in the
+   corner of a 375px screen is a card with no corner to sit in.
+
+   `pointer-events` is off on the region and on for the message: the corner of
+   the screen must stay clickable for whatever is underneath it, and the
+   message itself takes a click to dismiss. */
+#toasts {
+  position: fixed;
+  z-index: 70;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem;
+  pointer-events: none;
+}
+
+@media (min-width: 640px) {
+  #toasts {
+    left: auto;
+    max-width: 24rem;
+  }
+}
+
+#toasts [data-flash] {
+  pointer-events: auto;
+  cursor: pointer;
+  margin: 0;
+  border: 1px solid var(--color-ink-100);
+  /* The one shadow in the app. Everything else is flat on the page; this is
+     the only thing that is deliberately ON TOP of it, and it has to read that
+     way or it looks like part of whatever it happens to be covering. */
+  box-shadow: 0 10px 25px -5px rgb(23 27 33 / 0.18);
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+#toasts [data-flash][data-leaving] {
+  opacity: 0;
+  transform: translateY(0.5rem);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #toasts [data-flash] {
+    transition: opacity 180ms ease;
+  }
+  #toasts [data-flash][data-leaving] {
+    transform: none;
+  }
+}

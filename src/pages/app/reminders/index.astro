@@ -17,6 +17,7 @@
  * valid value" teaches nothing.
  */
 import ErrorSummary from '../../../components/ui/ErrorSummary.astro'
+import Flash from '../../../components/ui/Flash.astro'
 import App from '../../../layouts/App.astro'
 import { formatDate, todayInCalifornia } from '../../../lib/drivers.ts'
 import { suggestionByKey, suggestionsFor } from '../../../lib/reminder-suggestions.ts'
@@ -508,7 +509,10 @@ const selectedSubject = editing
   broken the page behaves exactly as it did before.
 */}
 <App live title="My reminders" subtitle="Your own reminders. We email you before the date.">
-  {good && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{good}</p>}
+  {/* A confirmation, which the script lifts into the corner of the screen —
+      it used to be read because a save put the reader back at the top of the
+      page, and he stays where he was now. See src/components/ui/Flash.astro. */}
+  {good && <Flash>{good}</Flash>}
 
   {/*
     Said once, at the top, in the plainest words available. These rows sit next

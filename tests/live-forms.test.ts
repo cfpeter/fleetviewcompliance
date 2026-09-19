@@ -115,6 +115,63 @@ test('an in-page anchor costs nothing, and Back still works', () => {
   assert.match(code, /else history\.replaceState/)
 })
 
+test('the page is not frozen while the server works, and it says so', () => {
+  /*
+   * "Does this mean the browser is frozen until it fetches?" — no, and that is
+   * the reason for both of these.
+   *
+   * NOT FROZEN means he can press a second button before the first answers.
+   * Both come back, and without a ticket the one that lands LAST wins, which
+   * may be the older of the two: a screen quietly showing the state before the
+   * thing he just did. Measured in a browser: a slow write followed by a fast
+   * one leaves the fast one's answer on screen.
+   *
+   * NOT FROZEN also means the browser shows nothing at all. A real form post
+   * spins the tab; a fetch does not, so on a slow connection the button looks
+   * ignored and gets pressed again.
+   */
+  assert.match(code, /let sequence = 0/)
+  assert.match(code, /const ticket = \+\+sequence/)
+  assert.match(code, /if \(options\.ticket !== sequence\) return/)
+  assert.match(code, /if \(ticket !== sequence\) return/)
+  // Delayed, so a fast answer never flashes a bar across the screen.
+  assert.match(code, /}, 150\)/)
+  assert.match(code, /document\.documentElement\.setAttribute\('data-working', ''\)/)
+  const css = read('../src/styles/global.css')
+  assert.match(css, /html\[data-working\]::after/)
+  assert.match(css, /@keyframes live-working/)
+})
+
+test('a confirmation is lifted where it can be read, and a refusal is not', () => {
+  /*
+   * "Saved" is written at the top of `<main>`, which was in front of the
+   * reader's eyes back when a save reloaded the page and put him there. He
+   * stays exactly where he was now, so that line can be a screen and a half
+   * above him, confirming something he cannot see.
+   *
+   * MOVED, NEVER COPIED — one sentence, written by the server. With no
+   * JavaScript nothing is lifted and it renders where it is written.
+   */
+  assert.match(code, /region\.appendChild\(flash\)/)
+  assert.match(code, /querySelectorAll<HTMLElement>\('\[data-flash\]'\)/)
+  // On a swap, on the Back button, and on an ordinary page load carrying
+  // `?saved=1` — all three, or a confirmation goes missing on one of them.
+  assert.equal((code.match(/hoistFlash\(/g) ?? []).length, 4)
+
+  // A refusal stays beside the form that was refused and keeps the screen and
+  // the keyboard. It must never be a thing that slides away after 6 seconds.
+  // Comments stripped first: that file EXPLAINS that a refusal keeps
+  // `role="alert"` and this one does not, and prose naming the thing it rules
+  // out must not read as the thing itself.
+  const flash = read('../src/components/ui/Flash.astro').replace(/\/\*[\s\S]*?\*\//g, '')
+  assert.doesNotMatch(flash, /role="alert"/, 'a confirmation is not an alert')
+  assert.match(flash, /data-flash=\{tone\}/)
+  assert.match(code, /querySelector<HTMLElement>\('\[role="alert"\]'\)/, 'refusals take the screen')
+
+  const layout = read('../src/layouts/App.astro')
+  assert.match(layout, /<div id="toasts" aria-live="polite" \/>/, 'and it is spoken, not only shown')
+})
+
 test('the script ships only on a page that asked for it', () => {
   assert.match(layout, /live\?: boolean/, 'the layout takes the flag')
   assert.match(layout, /const \{ title, subtitle, live = false \} = Astro\.props/, 'and it is off by default')

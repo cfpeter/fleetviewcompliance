@@ -73,6 +73,47 @@ const GAVE_UP = 'data-live-gave-up'
 let rendered = location.pathname + location.search
 const addressOnScreen = () => location.pathname + location.search
 
+/**
+ * WHICH ANSWER IS STILL THE CURRENT ONE.
+ *
+ * The page is NOT frozen while a request is in flight — that is the whole
+ * point of doing this with `fetch` — so he can press a second button before
+ * the first has answered. Both come back, and without this the one that
+ * happens to land LAST wins, which may well be the older of the two: a screen
+ * quietly showing the state before the thing he just did.
+ *
+ * Every request takes a ticket. An answer whose ticket is no longer the latest
+ * is dropped on the floor — the write it came from already happened on the
+ * server, and the newer answer is a fresher picture of the same database.
+ */
+let sequence = 0
+
+/**
+ * THE ONE THING A FETCH DOES NOT GET FOR FREE.
+ *
+ * A real form post gives the browser's own progress: the tab spins, the bar
+ * moves, and the reader knows the click landed. A fetch gives him nothing at
+ * all, so on a slow connection the button looks ignored and he presses it
+ * again. That is worse than the reload he asked us to remove.
+ *
+ * Delayed, deliberately: an answer that arrives in 80ms must not flash a bar
+ * across the screen on its way past. Anything slower than a blink says so.
+ */
+let showBusyAfter: number | undefined
+
+function startWorking(main: Element): void {
+  main.setAttribute('aria-busy', 'true')
+  clearTimeout(showBusyAfter)
+  showBusyAfter = window.setTimeout(() => {
+    document.documentElement.setAttribute('data-working', '')
+  }, 150)
+}
+
+function stopWorking(): void {
+  clearTimeout(showBusyAfter)
+  document.documentElement.removeAttribute('data-working')
+}
+
 /** Still the same page: same origin, same path. Only the query may differ. */
 function sameDocument(href: string): boolean {
   try {
@@ -110,6 +151,46 @@ function settle(main: Element, previousY: number, hash: string): void {
   window.scrollTo(0, previousY)
 }
 
+/**
+ * Lift a confirmation out of the page and into the corner.
+ *
+ * WHY: "Saved" is written at the top of `<main>`, which was in front of the
+ * reader's eyes back when a save reloaded the page and put him there. He stays
+ * exactly where he was now, so that line can be a screen and a half above him,
+ * confirming a thing he cannot see.
+ *
+ * MOVED, NEVER COPIED. The server wrote the sentence and there is one of it;
+ * printing it inline AND in the corner would say the same thing twice, and the
+ * two could drift the moment anybody edits one. With no JavaScript nothing is
+ * lifted and the message renders where it is written, as it always did.
+ *
+ * REFUSALS ARE NOT LIFTED. They carry `role="alert"`, stay beside the form
+ * that was refused, and `settle()` puts the screen and the keyboard on them —
+ * a message that slides away after five seconds is the wrong shape for "we did
+ * not save that".
+ */
+const TOAST_LIFE = 6000
+
+function hoistFlash(root: ParentNode): void {
+  const region = document.getElementById('toasts')
+  if (!region) return
+  for (const flash of Array.from(root.querySelectorAll<HTMLElement>('[data-flash]'))) {
+    // The inline spacing belongs to the top of a page, not to a stack in a
+    // corner; the region's own CSS does the gaps.
+    flash.classList.remove('mb-5')
+    region.appendChild(flash)
+
+    const dismiss = () => {
+      flash.setAttribute('data-leaving', '')
+      // Long enough for the fade in global.css, short enough that a second
+      // confirmation is not queued behind a ghost.
+      window.setTimeout(() => flash.remove(), 200)
+    }
+    flash.addEventListener('click', dismiss)
+    window.setTimeout(dismiss, TOAST_LIFE)
+  }
+}
+
 /** The `<main>` out of a whole page, and its title. Null if this is not one of ours. */
 async function pageFrom(response: Response): Promise<{ main: Element; title: string } | null> {
   try {
@@ -131,8 +212,12 @@ async function pageFrom(response: Response): Promise<{ main: Element; title: str
  */
 async function land(
   response: Response,
-  options: { push: boolean; previousY: number; hash: string; address?: string },
+  options: { push: boolean; previousY: number; hash: string; address?: string; ticket: number },
 ): Promise<void> {
+  // Somebody pressed something else while this was in the air. That write has
+  // already happened; this picture of it is simply out of date.
+  if (options.ticket !== sequence) return
+  stopWorking()
   const here = document.getElementById('main')
   if (!here) {
     location.href = response.url
@@ -155,6 +240,7 @@ async function land(
 
   here.replaceWith(page.main)
   if (page.title) document.title = page.title
+  hoistFlash(page.main)
   // The address has to match what is on screen, or a refresh shows something
   // else. `response.url` drops the fragment, so a link's own hash is passed in.
   const address = options.address ?? response.url
@@ -199,10 +285,12 @@ document.addEventListener('submit', (event) => {
   const previousY = window.scrollY
   const wasDisabled = submitter.disabled
   submitter.disabled = true
-  main.setAttribute('aria-busy', 'true')
+  const ticket = ++sequence
+  startWorking(main)
 
   /** The browser's own submit, for anything this script cannot finish. */
   const handOver = () => {
+    stopWorking()
     form.setAttribute(GAVE_UP, '1')
     submitter.disabled = wasDisabled
     form.requestSubmit(submitter)
@@ -226,7 +314,7 @@ document.addEventListener('submit', (event) => {
       handOver()
       return
     }
-    await land(response, { push: false, previousY, hash: '' })
+    await land(response, { push: false, previousY, hash: '', ticket })
   })()
 })
 
@@ -257,7 +345,8 @@ document.addEventListener('click', (event) => {
   const main = document.getElementById('main')
   if (!main) return
   const previousY = window.scrollY
-  main.setAttribute('aria-busy', 'true')
+  const ticket = ++sequence
+  startWorking(main)
 
   void (async () => {
     let response: Response
@@ -267,7 +356,7 @@ document.addEventListener('click', (event) => {
       location.href = to.href
       return
     }
-    await land(response, { push: true, previousY, hash: to.hash, address: to.href })
+    await land(response, { push: true, previousY, hash: to.hash, address: to.href, ticket })
   })()
 })
 
@@ -288,7 +377,8 @@ window.addEventListener('popstate', () => {
   // the browser has already scrolled it. Rebuilding it here would be a round
   // trip for nothing and would throw away whatever is typed into a form.
   if (addressOnScreen() === rendered) return
-  main.setAttribute('aria-busy', 'true')
+  const ticket = ++sequence
+  startWorking(main)
   void (async () => {
     let response: Response
     try {
@@ -297,6 +387,8 @@ window.addEventListener('popstate', () => {
       location.reload()
       return
     }
+    if (ticket !== sequence) return
+    stopWorking()
     // No history write: the browser has already moved the entry.
     const page = await pageFrom(response)
     if (!page) {
@@ -305,6 +397,7 @@ window.addEventListener('popstate', () => {
     }
     main.replaceWith(page.main)
     if (page.title) document.title = page.title
+    hoistFlash(page.main)
     rendered = addressOnScreen()
     settle(page.main, window.scrollY, location.hash)
   })()
@@ -320,3 +413,7 @@ window.addEventListener('popstate', () => {
  * `#print` and delete the inline one — both, in the same change, or the button
  * prints twice. tests/live-forms.test.ts refuses the half of that change.
  */
+
+// A page reached the ordinary way — a real navigation with `?saved=1` on it —
+// carries its confirmation too, and it belongs in the same corner as the rest.
+hoistFlash(document)
