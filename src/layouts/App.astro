@@ -7,8 +7,23 @@ import '../styles/global.css'
 interface Props {
   title: string
   subtitle?: string
+  /**
+   * Submit this page's forms without reloading it. OFF by default.
+   *
+   * The owner's complaint is about buttons, not about links: "i dont care if
+   * going from one page to another to render from server... this is fine, but
+   * the actual content like updates, create, done, finish, add date — this is
+   * what we need". So the page keeps every handler it has and the only thing
+   * that changes is that the answer arrives in place.
+   *
+   * A PAGE AT A TIME, on purpose. Nothing about the server changes, so a page
+   * that has not opted in behaves exactly as it always has — and a page that
+   * has still behaves exactly as it always has whenever the script cannot run,
+   * because the fallback is the plain form submit that is already there.
+   */
+  live?: boolean
 }
-const { title, subtitle } = Astro.props
+const { title, subtitle, live = false } = Astro.props
 const path = Astro.url.pathname
 
 /**
@@ -476,7 +491,7 @@ const accountCurrent = account.find((s) => active(s.href))
       both.
     */}
 
-    <main id="main" class="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+    <main id="main" data-live={live ? '' : undefined} class="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
       <div class="mb-6">
         <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
         {/* ink-700, not ink-500, and the reason is the body under it: the
@@ -489,5 +504,20 @@ const accountCurrent = account.find((s) => active(s.href))
       </div>
       <slot />
     </main>
+
+    {/*
+      THE ONLY SCRIPT IN THE SIGNED-IN APP, and only on pages that asked for it.
+      Rendered conditionally so a page without `live` still ships nothing at all.
+      Everything it does is in src/scripts/live-forms.ts; with it blocked,
+      missing or failed, every form on the page still works, because it is still
+      the same plain form posting to the same handler.
+    */}
+    {
+      live && (
+        <script>
+          import '../scripts/live-forms.ts'
+        </script>
+      )
+    }
   </body>
 </html>

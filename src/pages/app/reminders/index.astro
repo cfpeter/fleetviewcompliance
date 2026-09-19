@@ -498,7 +498,16 @@ const selectedSubject = editing
     : suggestedScope
 ---
 
-<App title="My reminders" subtitle="Your own reminders. We email you before the date.">
+{/*
+  `live` — THE FIRST PAGE TO SUBMIT WITHOUT RELOADING, and it is this one
+  because the owner named it: "when I click show finished reminders or done or
+  change or delete, it refresh the page and it goes all the way up."
+
+  Nothing on the server side of this page changed. Every intent still posts to
+  this address and still answers with a 303, so with the script blocked or
+  broken the page behaves exactly as it did before.
+*/}
+<App live title="My reminders" subtitle="Your own reminders. We email you before the date.">
   {good && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{good}</p>}
 
   {/*
