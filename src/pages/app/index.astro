@@ -21,7 +21,6 @@
  */
 import Donut from '../../components/charts/Donut.astro'
 import Figure from '../../components/charts/Figure.astro'
-import Runway from '../../components/charts/Runway.astro'
 import App from '../../layouts/App.astro'
 import Flash from '../../components/ui/Flash.astro'
 import { flashText } from '../../lib/flash.ts'
@@ -29,14 +28,8 @@ import {
   buildHealth,
   donutSlices,
   healthHeadline,
-  healthMath,
-  type HealthInput,
-  type HealthKey,
   missingLine,
-  openCount,
-  openParts,
 } from '../../lib/charts/health.ts'
-import { buildRunway, weekRangeLabel } from '../../lib/charts/runway.ts'
 import { TONES } from '../../lib/charts/tones.ts'
 import {
   capSection,
@@ -60,6 +53,9 @@ import {
   subjectHrefFor,
 } from '../../lib/dashboard-dates.ts'
 import { loadDeadlines } from '../../lib/deadlines.ts'
+import { eligibility, isBlocked } from '../../lib/dispatch/eligibility.ts'
+import { exposure } from '../../lib/rules/exposure.ts'
+import { effectiveLabel, money, penaltyAmount, RECORDKEEPING } from '../../lib/rules/penalties.ts'
 import {
   REMINDER_ORIGIN,
   REMINDER_ORIGIN_NOTE,
@@ -656,35 +652,97 @@ const showRing = view === 'all' && health.total > 0
  * as a fleet nobody has entered yet. `Donut` already draws its own grey track
  * for this, so the shape costs nothing: the hole holds a real 0 with the words
  * 'nothing tracked' under it, in ink rather than green, because nothing tracked
- * is not the same finding as nothing wrong. The one thing to do about it is the
- * button further down the page, and there is only ever one of those.
+ * is not the same finding as nothing wrong.
  */
 const showGhostRing = view === 'all' && health.total === 0
 const ringDrawn = showRing || showGhostRing
 
 /**
- * The sentence under the ring, and it is the reason the centre number is
- * allowed to exist. "22 need attention" with nothing beside it is a score, and
- * a score is a thing a broker quotes back at a carrier who then cannot take it
- * apart. `healthMath` prints the addition — and then adds the missing dates and
- * the on-track items back on to reach the total, so the number in the hole
- * being smaller than the coloured part of the ring is stated rather than left
- * for him to notice.
- *
- * Built in src/lib/charts/health.ts, not here, and the proof page prints the
- * SAME string. Two hand-written versions of this sentence is how the owner's
- * screen and the broker's screen come to disagree about one carrier.
- */
-const healthArithmetic = healthMath(health)
-
-/**
  * The grey line: the one an owner has to read as "we are missing 119 dates from
- * you". It sits directly under the ring and above the arithmetic, in its own
- * box, because the count used to be inside the headline and is not any more —
- * and a number that leaves the headline has to land somewhere louder than a
- * tile, or it has quietly been softened.
+ * you". It sits directly under the ring, in its own box, because the count used
+ * to be inside the headline and is not any more — and a number that leaves the
+ * headline has to land somewhere louder than a tile, or it has quietly been
+ * softened.
  */
 const healthMissing = ringDrawn ? missingLine(health, 'owner') : null
+
+/**
+ * HOW MANY DRIVERS CANNOT BE DISPATCHED RIGHT NOW.
+ *
+ * The first number on this page that is about money, and it is deliberately not
+ * a money number. The owner asked for "the total price of the unpaid
+ * compliance" — what a missed date is going to cost him. Run against this
+ * carrier, a penalty total answers **zero**: all four of its overdue rows carry
+ * no dollar figure, because the catalogue does not invent one. The medical
+ * certificate's own consequence line says why — an expired card is "the loss of
+ * the licence privilege, not a paperwork fine". A screen that printed "$0 at
+ * risk" over two expired medical cards would be telling him he is fine on the
+ * one morning he is not, which is the single most damaging thing this product
+ * can do. See docs/product/BACKLOG.md § P1.
+ *
+ * So the number that goes in first is the one that is true today: a parked
+ * driver. It is the real cost of these four rows, it needs no legal research,
+ * and it cannot be wrong about a regulation because it is not a claim about
+ * one — it is a claim about this fleet.
+ *
+ * THE ANSWER COMES FROM THE SHARED ENGINE, never from a rule code matched here.
+ * `eligibility()` is what the assignment screen refuses a driver with, so a
+ * dashboard that counted blocks its own way could tell him one driver is parked
+ * on this screen and let him assign a load on the next. `BLOCKING_RULE_CODES`
+ * lives in that file precisely so the decision is made once.
+ *
+ * Counted off the UNFILTERED items, so tapping a tile does not change it: the
+ * number of drivers who cannot work today is not a property of which rows he is
+ * looking at.
+ *
+ * BLOCKS ONLY, NOT WARNINGS. `eligibility()` blocks on overdue and warns on
+ * unknown, and the reason is written out in that file: on day one every date is
+ * unknown, and blocking on unknown would make the product unusable at the exact
+ * moment a carrier is deciding whether to trust it. The grey count is already
+ * on this page, in its own box, saying what not knowing costs.
+ */
+const driverItems = new Map<string, { label: string; items: typeof items }>()
+for (const i of items) {
+  if (i.subjectType !== 'driver' || !i.subjectId) continue
+  const row = driverItems.get(i.subjectId) ?? { label: i.subjectLabel, items: [] }
+  row.items.push(i)
+  driverItems.set(i.subjectId, row)
+}
+const blockedDrivers = [...driverItems.values()].filter((d) =>
+  isBlocked(eligibility({ items: d.items, label: d.label })),
+).length
+
+/**
+ * THE CEILING. What the unanswered dates could cost him, at the very most.
+ *
+ * The owner's ask, finally answerable now that the amounts are data: "add the
+ * total price of the unpaid compliance". The arithmetic and every rule about
+ * what may be counted live in src/lib/rules/exposure.ts; this page only decides
+ * how to say it.
+ *
+ * AND THE WORDS ARE MOST OF THE WORK. Three things have to be true of the
+ * sentence or the figure is worse than no figure at all:
+ *
+ *   - "The most they can fine you", never "you will pay". Appendix B maximums
+ *     are not forecasts; what is billed turns on discretion and settlement and
+ *     is routinely a fraction. A product that overstates once is a product that
+ *     gets checked, and this audience checks.
+ *   - The rows with no figure are printed beside it, every time. Most of this
+ *     catalogue carries no line-item penalty, so a fleet can be in real trouble
+ *     with almost nothing to sum — and "$0" over two expired medical cards is
+ *     the one sentence this product must never write.
+ *   - The amounts carry their date. The research is explicit that DOT appears
+ *     to have skipped the January 2026 cycle, so these are simultaneously
+ *     current and the stalest they have been.
+ *
+ * Counted off the UNFILTERED items, like the parked-driver count above it: what
+ * he is exposed to does not change because he tapped a tile. Reminders are NOT
+ * in it — his own errands are not regulations and carry no penalty.
+ */
+const fleetExposure = exposure(
+  items.map((i) => ({ standing: i.status.standing, penalty: i.rule.penalty })),
+)
+const exposureAtRisk = fleetExposure.counted + fleetExposure.unpriced
 
 // On a filtered view the frame keeps a one-line subtitle: it is what holds the
 // "Show everything" link in the corner clear of the tiles under it.
@@ -710,227 +768,6 @@ const healthCoverage =
     ? `${health.unschedulable} more have no due date we can work out. They are in the list below.`
     : undefined
 
-/**
- * The next quarter drawn as a shape.
- *
- * The list below answers "what is wrong". It cannot answer the question the
- * owner asks in the same breath — "and when does the next pile land" — because
- * that answer is a shape, and a list sorted by date is a shape you can only see
- * by reading forty rows and holding them in your head. Four renewals landing in
- * the same week in November is a bad week whether or not any one of them is
- * alarming alone, and it is invisible until it is drawn.
- *
- * Built from `items`, the same array the list and the tiles are built from, so
- * the chart and the rows under it cannot drift apart.
- */
-const runway = buildRunway(
-  // Mapped, not passed straight through: `buildRunway` takes a standing and a
-  // date, and knows nothing about DeadlineItem. Keeping it that way is what
-  // lets the runway be tested against hand-built fixtures instead of a fleet.
-  items.map((i) => ({ standing: i.status.standing, nextDue: i.status.nextDue })),
-  new Date(),
-)
-
-// What the timeline cannot show. `Figure` renders this in amber above the fold
-// of the chart rather than as a footnote, because the shape is taken in whole,
-// in about a second, before any prose on the page is read.
-const runwayCoverage =
-  [
-    // Terse on purpose. Written out in full this ran to five lines on a phone
-    // and pushed the list — the thing he came for — most of a screen further
-    // down, which is the regression the dashboard filter was added to fix. The
-    // left block already carries the count; this only has to say why it is not
-    // on the timeline.
-    runway.undated > 0 &&
-      `${runway.undated} have no date yet. They are counted on the left, not on the chart.`,
-    runway.unschedulable > 0 &&
-      `${runway.unschedulable} more have no schedule we can work out. They are in the list below.`,
-    // The timeline is drawn from the RULES. Saying so is the honest half of
-    // showing both lists in one table underneath: a shape that counted the
-    // owner's own errands as deadlines would make a quiet November look busy
-    // for a reason no regulation is responsible for.
-    reminders.length > 0 && 'Your own reminders are not on this timeline. They are in the list below.',
-  ]
-    .filter(Boolean)
-    .join(' ') || undefined
-
-/**
- * The timeline's heading says which week, not what the chart is called.
- *
- * It read "The next 13 weeks", which names the shape and leaves the owner to
- * find the answer inside it. The question he is asking is which week is going
- * to hurt, so the heading answers that and the sentence under the bars carries
- * the count. `peak` is null when no week holds more than one item — one item in
- * one week is not a heavy week, it is a Tuesday — so that case says so plainly
- * instead of pointing at a column.
- */
-const runwayTitle = runway.peak
-  ? `Your heaviest week is ${weekRangeLabel(runway.peak)}`
-  : runway.scheduled > 0
-    ? 'No week ahead has more than one deadline'
-    : `Nothing is due in the next ${runway.horizonWeeks} weeks`
-
-/* ====================================================== who to start with ===
- *
- * The tables below answer "what is wrong", one row per rule. They cannot answer
- * the question he asks next — who do I call first — because that answer is a
- * driver or a truck, and one driver's five problems can sit in three different
- * sections, ten rows apart. Working that out by reading is how an owner loses a
- * morning.
- *
- * So the SAME items are counted one more way, per record, and the five records
- * carrying the most are printed in order. Nothing new is decided here: the
- * buckets come from `buildHealth`, the function the ring and the tiles are
- * built from, so a row here cannot disagree with the numbers at the top of the
- * page. It is also what keeps the days arithmetic in one place — a one-time
- * obligation already satisfied reports something like -2040 days and is on
- * track, not due soon, and this page is not allowed to decide that twice.
- *
- * REMINDERS ARE COUNTED, for the same reason the tiles count them: this list
- * ranks the work in front of him, and an overdue insurance renewal on a truck
- * is work in front of him. The runway leaves them out because a shape drawn
- * from the rules cannot also be a shape drawn from his errands; a count of work
- * per record has no such problem.
- */
-const NEEDS_CAP = 5
-
-/** The records with a page of their own to open, and what to call each one. */
-const recordNoun = (type: string): string | null =>
-  type === 'driver'
-    ? 'Driver'
-    : type === 'power_unit'
-      ? 'Truck'
-      : type === 'trailer'
-        ? 'Trailer'
-        : null
-
-interface NeedsRecord {
-  label: string
-  noun: string
-  href: string
-  inputs: HealthInput[]
-}
-
-const needsBy = new Map<string, NeedsRecord>()
-
-/**
- * Everything that is not one driver or one truck: the carrier's own filings,
- * and the reminders he wrote against the whole company.
- *
- * Counted, never dropped. A pile he can see in the list below and cannot find
- * here is a list he stops believing.
- */
-const companyInputs: HealthInput[] = []
-
-const addNeed = (key: string, label: string, noun: string, href: string, input: HealthInput) => {
-  const row = needsBy.get(key) ?? { label, noun, href, inputs: [] as HealthInput[] }
-  row.inputs.push(input)
-  needsBy.set(key, row)
-}
-
-for (const i of items) {
-  const input: HealthInput = { standing: i.status.standing, daysUntil: i.daysUntil }
-  const noun = recordNoun(i.subjectType)
-  if (!noun || !i.subjectId) {
-    companyInputs.push(input)
-    continue
-  }
-  addNeed(
-    `${i.subjectType === 'driver' ? 'driver' : 'vehicle'}:${i.subjectId}`,
-    i.subjectLabel,
-    noun,
-    subjectHref(i.subjectType, i.subjectId),
-    input,
-  )
-}
-
-for (const r of reminders) {
-  const input: HealthInput = { standing: r.status.standing, daysUntil: r.daysUntil }
-  if (!r.subject.id || !r.subject.href) {
-    companyInputs.push(input)
-    continue
-  }
-  // A reminder does not say whether the vehicle is a truck or a trailer, so it
-  // uses the word the rest of this page uses for one. When the rules have
-  // already named the record, that name is the one kept and this is never read.
-  addNeed(
-    `${r.subject.kind}:${r.subject.id}`,
-    r.subject.label,
-    r.subject.kind === 'driver' ? 'Driver' : 'Truck',
-    r.subject.href,
-    input,
-  )
-}
-
-const needsRows = [...needsBy.values()]
-  .map((row) => {
-    const rowHealth = buildHealth(row.inputs)
-    const count = (key: HealthKey) => rowHealth.buckets.find((b) => b.key === key)?.count ?? 0
-    return {
-      ...row,
-      /**
-       * `openParts`, NOT `attentionParts`, and the difference is the whole
-       * point of this list. The ring's centre number is overdue plus due soon;
-       * this list answers a different question — who do I open first — and a
-       * driver with nine blank dates and nothing overdue is top of it. Ranked
-       * on `attentionParts` he would score zero and drop off the page
-       * entirely, which is the grey bucket being hidden by the back door.
-       *
-       * Same three buckets, same order and same words as the tiles above, so
-       * the breakdown beside the number is the number taken apart rather than
-       * a second opinion about it.
-       */
-      parts: openParts(rowHealth),
-      attention: openCount(rowHealth),
-      overdue: count('overdue'),
-      missing: count('unknown'),
-      soon: count('soon'),
-    }
-  })
-  .filter((r) => r.attention > 0)
-  // Overdue first: an expired document is a fact, a missing date is a question.
-  // Missing breaks the tie, and it is the tie that gets broken on the day a
-  // carrier signs up — nothing is overdue yet, so the ranking is entirely about
-  // who has the most dates nobody has typed in. Same ordering as STANDING_RANK
-  // in src/lib/rules/index.ts, applied to counts instead of to rows.
-  .sort(
-    (a, b) =>
-      b.overdue - a.overdue ||
-      b.missing - a.missing ||
-      b.soon - a.soon ||
-      a.label.localeCompare(b.label),
-  )
-
-const needsTop = needsRows.slice(0, NEEDS_CAP)
-const needsRest = needsRows.length - needsTop.length
-// Counted the same way the rows above are — everything not on track, grey
-// included — so the "and your company has N of its own" line is measured on the
-// same ruler as the list it is attached to.
-const companyNeeds = openCount(buildHealth(companyInputs))
-
-/** A ranking across the whole fleet, so it obeys the chart rule: resting view only. */
-const showNeeds = view === 'all' && needsTop.length > 0
-
-// The heading names the record, because the name IS the answer to "who first".
-// With its noun: a truck is usually a number, and "Start with 12" is a count.
-const needsTitle =
-  needsTop.length > 0 ? `Start with ${needsTop[0].noun.toLowerCase()} ${needsTop[0].label}` : ''
-const needsSubtitle =
-  needsRows.length > NEEDS_CAP
-    ? `The ${NEEDS_CAP} with the most to fix. Tap one to open it.`
-    : needsRows.length === 1
-      ? 'This is the only one with something to fix. Tap it to open it.'
-      : `All ${needsRows.length} that have something to fix. Tap one to open it.`
-
-const needsMoreParts: string[] = []
-if (needsRest > 0) {
-  needsMoreParts.push(`${needsRest} more ${needsRest === 1 ? 'is' : 'are'} not on this list.`)
-}
-if (companyNeeds > 0) {
-  needsMoreParts.push(`Your company has ${companyNeeds} of its own.`)
-}
-const needsMore =
-  needsMoreParts.length > 0 ? `${needsMoreParts.join(' ')} They are in the list below.` : null
 
 const params = Astro.url.searchParams
 const errorMessage = flashText(Astro.url, Astro.request)
@@ -994,12 +831,12 @@ const dateField =
 /**
  * ONE HEADING SCALE, TWO STEPS.
  *
- * `h2 text-lg font-semibold` names a section of the page; this names anything a
+ * `h2 text-base font-semibold` names a section of the page; this names anything a
  * level below, at the same size and weight the chart frame already gives its own
  * heading (src/components/charts/Figure.astro). It replaces a 12px grey
  * uppercase treatment that did not match either of the other two on the page.
  */
-const cardHeading = 'text-sm font-semibold tracking-tight'
+const cardHeading = 'card-heading'
 
 /**
  * ON A PHONE THE ROWS ARE NOT ROWS.
@@ -1137,6 +974,23 @@ const backOut = 'btn btn-secondary'
     coverage={healthCoverage}
     action={view !== 'all' ? { href: '/app', label: 'Show everything' } : undefined}
   >
+    {/*
+      THE RING IS BACK, AND THE SENTENCE UNDER IT IS NOT.
+
+      Taking it off the page was the wrong cut. The owner's words: "the charts
+      are simple, you should have some charts to show the owner." He is right
+      about which half was the problem — three stacked cards and three
+      paragraphs of prose were the weight on this screen, not the one shape
+      that says how much of the fleet is a problem in about a second. A row of
+      counts cannot say that: four overdue is a crisis in a fleet of nine and a
+      Tuesday in a fleet of four hundred, and that is a proportion.
+
+      What stays cut is the arithmetic sentence that used to sit under it. Its
+      job was to stop the centre number reading as a score by showing the
+      addition — and the four tiles ARE the addition, in a row, always beside
+      it, each with its swatch and its word and its number. The sentence was a
+      second copy of what the tiles already say.
+    */}
     <div class="flex items-center gap-3 sm:gap-6">
       {
         ringDrawn && (
@@ -1161,10 +1015,8 @@ const backOut = 'btn btn-secondary'
         aria-label="Filter the list"
         class:list={[
           'grid min-w-0 flex-1 gap-2',
-          // Beside the ring: one column on a phone, two on a tablet, all four
-          // in a row on a wide screen, where two would leave each tile a third
-          // of a metre of empty space to the right of its own label.
-          // With no ring — a filtered view — it takes the whole width back.
+          // Beside the ring: two on a tablet, all four in a row on a wide
+          // screen. With no ring — a filtered view — it takes the width back.
           ringDrawn ? 'sm:grid-cols-2 sm:gap-3 lg:grid-cols-4' : 'grid-cols-2 sm:grid-cols-4 sm:gap-3',
         ]}
       >
@@ -1263,6 +1115,36 @@ const backOut = 'btn btn-secondary'
     </div>
 
     {/*
+      ================================================ who cannot work today ===
+
+      ABOVE THE GREY BOX, because it outranks it. A date nobody has typed is a
+      question; a driver who cannot be dispatched is a truck not moving this
+      morning. Red, and the first thing under the numbers.
+
+      One sentence and a way to act on it. No count of dollars, no "estimated
+      exposure" — the sentence is the cost, and an owner reading "cannot be
+      dispatched" does his own arithmetic about what that truck earns faster
+      and more accurately than we could do it for him.
+    */}
+    {
+      blockedDrivers > 0 && (
+        <p class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <span class="min-w-0 flex-1">
+            <strong class="font-semibold tabular-nums">
+              {blockedDrivers} {blockedDrivers === 1 ? 'driver cannot' : 'drivers cannot'} be
+              dispatched.
+            </strong>{' '}
+            {blockedDrivers === 1 ? 'His' : 'Their'} medical card or licence has run out. Put{' '}
+            {blockedDrivers === 1 ? 'him' : 'them'} on a load and you are running unqualified.
+          </span>
+          <a href="/app/dispatch" class="link inline-flex min-h-11 shrink-0 items-center font-medium text-red-700">
+            See dispatch →
+          </a>
+        </p>
+      )
+    }
+
+    {/*
       ================================================== the dates we are owed ===
 
       THE GREY COUNT, IN ITS OWN BOX, IN WORDS.
@@ -1290,18 +1172,114 @@ const backOut = 'btn btn-secondary'
     }
 
     {/*
-      The arithmetic behind the number in the middle of the ring, and then the
-      running total that puts it back together with the grey and the green to
-      reach everything we track. It is not a summary of the chart — it IS the
-      chart, for a reader who cannot see colour, is holding the phone in the
-      sun, or is being read the page aloud. And it is what stops the centre
-      number being a score: he can see what it is made of, and he can see that
-      nothing was left out, without tapping anything.
+      ========================================================= what it costs ===
 
-      One string, built in src/lib/charts/health.ts, printed identically on the
-      page a broker opens.
+      LAST IN THE CARD, AND THAT IS THE ARGUMENT, NOT AN AFTERTHOUGHT. Above it
+      are the two facts he can act on: who cannot work, and what we still need
+      from him. This is why they matter. Putting money first would make the
+      screen a bill rather than a list of work.
+
+      THE COVERAGE SENTENCE IS NOT OPTIONAL and is never softer than the figure.
+      `unpriced` counts the at-risk rows with no amount behind them, and on a
+      real fleet it is usually the larger number — the medical card that parks a
+      driver carries no fine at all. Printed without it, this line would read as
+      the whole of his exposure and quietly price a parked driver at nothing.
+
+      When nothing can be priced the figure is not drawn at all. "$0" is the one
+      thing that may never appear here.
     */}
-    {showRing && <p class="mt-3 text-sm tabular-nums text-ink-700">{healthArithmetic}</p>}
+    {
+      fleetExposure.counted > 0 && (
+        <div class="mt-4 rounded-xl bg-brand-800 px-4 py-4 text-white sm:px-5">
+          {/*
+            BRAND GREEN, AND NOT A STATUS COLOUR, ON PURPOSE.
+
+            Red, amber and grey are spoken for on this page — overdue, due soon,
+            no date — and every one of them is a claim about where an item
+            STANDS. This figure is not a standing. It is what the items above it
+            could cost, and painting it red would make a ceiling read as a bill
+            that has arrived. Brand-800 is the same reasoning the nav pill is
+            given in global.css: chrome wears the brand's colour precisely
+            because it is neither good news nor bad.
+
+            Measured on brand-800: white 12.02:1 — the figure global.css already
+            records for `.btn-primary`'s pressed state — champagne-50 10.92:1,
+            champagne 9.88:1. The two tints are DARKER than white and so carry
+            less contrast, not more; they are used for the supporting lines
+            because 9.88:1 is far above what 12px needs and the step down is
+            what makes the figure itself the loudest thing in the band.
+          */}
+          {/*
+            A REAL HEADING, AND THE THIRD STEP OF THE HOUSE SCALE.
+
+            `text-xs tracking-wide uppercase` is what this app already uses for
+            the label on a small card — see the heading-scale note beside
+            `cardHeading` on the driver and truck pages. An <h3> rather than a
+            <p> because the card's own title is the h2 above it and this is a
+            section inside it: somebody moving through the page by headings can
+            find the money, which is the thing they came to find.
+
+            ONE WORD, AND IT IS NOT "PENALTY EXPOSURE". These owners are not
+            fluent English readers. The qualifier moved to the line under the
+            figure, where it sits against the number it qualifies rather than
+            above it in a phrase nobody scans.
+          */}
+          <h3 class="text-xs font-semibold tracking-wide text-champagne uppercase">Penalties</h3>
+          <p class="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span class="text-3xl font-semibold tabular-nums sm:text-4xl">
+              {money(fleetExposure.ceilingCents)}
+            </span>
+            <span class="text-sm text-champagne-50 tabular-nums">
+              the most they can fine you, across {fleetExposure.counted} of {exposureAtRisk} overdue
+              or undated items
+            </span>
+          </p>
+
+          {/*
+            THE TWO SENTENCES THAT KEEP THE NUMBER HONEST, INSIDE THE BAND.
+
+            Under it, not beside it, and never in a lighter box of their own:
+            the loud figure and its qualifications have to travel together or
+            the figure travels alone — into a screenshot, into a sales call,
+            into somebody's head as "FleetView says I owe two hundred grand".
+          */}
+          <div class="mt-3 space-y-1 border-t border-white/25 pt-3 text-xs text-champagne-50">
+            {fleetExposure.unpriced > 0 && (
+              <p>
+                <span class="font-semibold tabular-nums">{fleetExposure.unpriced} more</span> carry
+                no set fine — and that does not make them free. An expired medical card has no
+                fine and still stops a man driving.
+              </p>
+            )}
+            <p>
+              Federal maximums, {RECORDKEEPING.citation.replace(/\(a\)\(1\)$/, '')}, in force since{' '}
+              {effectiveLabel(RECORDKEEPING.effectiveOn)}. What is actually charged is usually
+              less.
+            </p>
+          </div>
+        </div>
+      )
+    }
+
+    {/*
+      NOTHING WE CAN PRICE, AND SO NO BAND AND NO FIGURE.
+
+      A fleet can be in real trouble with nothing to sum — four overdue rows
+      and not one dollar amount between them is the resting state of the first
+      carrier this ran against. The loud green band is for a number; there is
+      no number here, and a band reading "$0" would be the worst sentence on
+      the screen. It says the true thing quietly instead.
+    */}
+    {
+      fleetExposure.counted === 0 && fleetExposure.unpriced > 0 && (
+        <p class="mt-3 rounded-lg border border-ink-200 px-4 py-3 text-sm text-ink-700">
+          <span class="tabular-nums">{fleetExposure.unpriced}</span> of these carry no set fine.
+          That does not mean they are free — an expired medical card has no fine and still stops a
+          man driving.
+        </p>
+      )
+    }
+
   </Figure>
 
   {
@@ -1317,117 +1295,6 @@ const backOut = 'btn btn-secondary'
         <span>Showing only <span class="font-medium text-ink-900">{viewNoun(view)}</span>. {shownCount} of {health.total} items.</span>
         <a href="/app" class="link inline-flex min-h-11 items-center font-medium">Show everything</a>
       </p>
-    )
-  }
-
-  {/*
-    Unfiltered only.
-    
-    The filter exists because a 46-row list was unreachable on a phone; putting
-    a 200px chart above a filtered result would push the rows he just asked for
-    back down and undo the fix. On the resting view it is the first thing he
-    sees, which is where it belongs — it is the only element on this page that
-    answers a question about NEXT month.
-  */}
-  {
-    items.length > 0 && view === 'all' && (
-      <Figure
-        class="mt-6"
-        title={runwayTitle}
-        subtitle={`One bar for each of the next ${runway.horizonWeeks} weeks. A taller bar is a heavier week. Amber is due inside ${runway.soonDays} days, green is later.`}
-        coverage={runwayCoverage}
-      >
-        <Runway runway={runway} overdueHref="/app?show=overdue" undatedHref="/app?show=unknown" />
-      </Figure>
-    )
-  }
-
-  {/*
-    ====================================================== who to start with ===
-
-    One question, one ranked list: who do I call first. The rows are RECORDS,
-    not rules — the tables further down are already the rule-by-rule view, and
-    nothing else on this page groups a driver's problems together.
-
-    The big number is the count of the WORST thing that record has — 4, in red,
-    for four overdue — and never a total of the three buckets added together. A
-    total would be a score: one number standing for unlike things, arrived at by
-    arithmetic the reader cannot see. It would also destroy the order of the
-    list, since the rows are ranked on overdue first and a mixed total does not
-    descend down the column. The line under the name carries every bucket this
-    record has, in words, so nothing the number leaves out is hidden.
-
-    Every count carries a dot AND a word AND a number, so colour is never the
-    only signal — and grey is a count like the others. A date nobody has typed
-    in is never folded into the green, on this list or anywhere else.
-  */}
-  {
-    showNeeds && (
-      <Figure class="mt-6" title={needsTitle} subtitle={needsSubtitle}>
-        <ul class="space-y-2">
-          {needsTop.map((r) => {
-            // Rank order, so the first part is the worst thing this record has:
-            // overdue, then a missing date, then due soon. The big number IS
-            // that part — its count and its colour — which is what keeps the
-            // column of numbers reading in the order the rows are sorted in.
-            const worst = r.parts[0]
-            // The row spelled out for a reader who is being read the page. On
-            // screen it is a number, a name and three dots; announced off the
-            // DOM that is a string of digits, so the label says the sentence.
-            const spoken = r.parts.map((p) => `${p.count} ${p.label.toLowerCase()}`).join(', ')
-            return (
-              <li>
-                <a
-                  href={r.href}
-                  aria-label={`${r.label}, ${r.noun.toLowerCase()}. ${spoken}.`}
-                  class="flex items-center gap-3 rounded-lg border border-ink-100 bg-white px-3 py-2.5 transition hover:bg-ink-50"
-                >
-                  <span
-                    class:list={[
-                      // min-w, not w, for the same reason as the tiles: a
-                      // three-figure count is the normal case on the day
-                      // somebody signs up, not an edge case.
-                      'min-w-8 shrink-0 text-right text-xl leading-none font-semibold tabular-nums',
-                      TILE_STYLE[worst.key].countClass,
-                    ]}
-                  >
-                    {worst.count}
-                  </span>
-                  <span class="min-w-0 flex-1">
-                    <span class="block truncate font-medium">{r.label}</span>
-                    <span class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-700 tabular-nums">
-                      <span>{r.noun}</span>
-                      {r.parts.map((p) => (
-                        <span class="flex items-center gap-1">
-                          <span
-                            class:list={['h-1.5 w-1.5 shrink-0 rounded-full', TONES[p.tone].swatch]}
-                            aria-hidden="true"
-                          />
-                          {p.count} {p.label.toLowerCase()}
-                        </span>
-                      ))}
-                    </span>
-                  </span>
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    class="size-5 shrink-0 text-ink-300"
-                    aria-hidden="true"
-                  >
-                    <path d="M9 18l6-6-6-6" stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
-                </a>
-              </li>
-            )
-          })}
-        </ul>
-
-        {/* What the five rows leave out, said out loud rather than trimmed
-            away quietly. Same rule as the row cap on the sections below. */}
-        {needsMore && <p class="mt-3 text-xs text-ink-700 tabular-nums">{needsMore}</p>}
-      </Figure>
     )
   }
 
@@ -1561,8 +1428,8 @@ const backOut = 'btn btn-secondary'
   {/* ---------------------------------------------------------- list state */}
   {
     view === 'unknown' && !focus && editor.subjectCount > 0 && (
-      <section class="mt-8">
-        <h2 class="text-lg font-semibold tracking-tight">
+      <section class="mt-6">
+        <h2 class="text-base font-semibold tracking-tight">
           We need a date from you{' '}
           <span class="ml-2 text-sm font-normal text-ink-700 tabular-nums">{unknown.length}</span>
         </h2>
@@ -1620,8 +1487,8 @@ const backOut = 'btn btn-secondary'
   {/* ------------------------------------------------------- focused state */}
   {
     view === 'unknown' && focus && (
-      <form method="POST" class="mt-8">
-        <h2 class="text-lg font-semibold tracking-tight">
+      <form method="POST" class="mt-6">
+        <h2 class="text-base font-semibold tracking-tight">
           {focus.label}{' '}
           <span class="ml-2 text-sm font-normal text-ink-700 tabular-nums">
             {focus.noun} · {focus.questionCount} missing
@@ -1646,7 +1513,7 @@ const backOut = 'btn btn-secondary'
             </a>
           </div>
 
-          <div class="space-y-5 p-5">
+          <div class="space-y-4 p-5">
             {focus.asked.map((q) => (
               <div>
               {q.writable ? (
@@ -1730,7 +1597,7 @@ const backOut = 'btn btn-secondary'
                 <summary class="flex min-h-11 cursor-pointer items-center text-sm font-medium text-ink-700 underline underline-offset-2 select-none">
                   {focus.onlyIfItApplies.length} more that only apply in some cases
                 </summary>
-                <div class="mt-4 space-y-5">
+                <div class="mt-4 space-y-4">
                   {focus.onlyIfItApplies.map((q) => (
                     <div>
               {q.writable ? (
@@ -1852,8 +1719,8 @@ const backOut = 'btn btn-secondary'
              `#section-<key>` and the browser puts him back where he was working.
              `scroll-padding-top` in global.css already keeps the sticky header
              off the heading. */
-          <section id={`section-${s.key}`} class="mt-8">
-            <h2 class="text-lg font-semibold tracking-tight">
+          <section id={`section-${s.key}`} class="mt-6">
+            <h2 class="text-base font-semibold tracking-tight">
               {s.title}{' '}
               {/* The WHOLE section, always — never the number of rows drawn
                   below. Ten rows under a heading that says 119 is a page
@@ -1865,12 +1732,21 @@ const backOut = 'btn btn-secondary'
             </h2>
 
             {s.key === 'unknown' && (
+              /*
+                FIVE SENTENCES CUT TO TWO, and the two that survived are the two
+                that change what he does. The others explained our bookkeeping —
+                why these are outside the "need attention" number, why they are
+                not in "Due in N days", why they sit where they sit. True, and
+                answers to questions he was not asking on the way to a date box.
+
+                WHAT COULD NOT BE CUT is the second sentence. A row with no date
+                is not a row that is fine, and every version of this page has had
+                to say so in words: it is the one place this product could be
+                read as telling an owner he is safe when nobody knows.
+              */
               <p class="mt-1 text-sm text-ink-700">
-                These are not in the "need attention" number, because we cannot put them on a
-                clock. They are not OK either. Without the date, your risk is the same as if it
-                had already expired. That is why they sit with the overdue ones, not at the
-                bottom. The date on these rows is the next one on the schedule, not a confirmed
-                deadline, so we do not count them in "Due in {SOON_DAYS} days".{' '}
+                No date means we cannot tell you if these are OK. Until you type one, treat them
+                as if they had already expired.{' '}
                 {/* The bridge. This table is for reading; the editor behind this
                     link is for answering, and without a way across, the reading
                     view is the only one he ever finds. */}
@@ -1909,9 +1785,10 @@ const backOut = 'btn btn-secondary'
                     <th class="px-4 py-3 font-medium">What</th>
                     <th class="px-4 py-3 font-medium">Who or what</th>
                     <th class="px-4 py-3 font-medium">Due</th>
-                    <th class="px-4 py-3 font-medium">Rule</th>
-                    {/* Last, after the citation, because it is the thing you do
-                        about the row rather than another fact about it. */}
+                    {/* Last, because it is the thing you DO about the row
+                        rather than another fact about it. The citation used to
+                        have a column here; it now sits under the rule's name,
+                        where the thing it cites is. */}
                     <th class="px-4 py-3 font-medium">Record it</th>
                   </tr>
                 </thead>
@@ -1938,6 +1815,47 @@ const backOut = 'btn btn-secondary'
                                 .join(', ')}
                             </div>
                           )}
+                          {/* The citation, under the name of the thing it is
+                              the rule for. It had a column of its own, which
+                              put the regulation between the due date and the
+                              box he came to type in. */}
+                          <a
+                            href={i.rule.sourceUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="link-cite"
+                          >
+                            {i.rule.citation}
+                          </a>
+                          {/*
+                            THE FIGURE ON THE ROW IT BELONGS TO.
+
+                            The total at the top is only trustworthy if it can
+                            be taken apart, and this is where it comes apart:
+                            one row, one amount, its own citation above it and
+                            its own effective date in the sentence. A number an
+                            owner cannot trace to a regulation is a number he
+                            has to take on faith, and the whole argument for
+                            showing money here is that he does not have to.
+
+                            Only on rows that are actually at risk. A price
+                            beside a date he still has time to meet turns a
+                            reminder into a threat — and `carrierPenalty` takes
+                            the carrier's side only, so a driver's own penalty
+                            never appears on the owner's screen as his.
+                          */}
+                          {(() => {
+                            const atRisk =
+                              i.status.standing === 'overdue' || i.status.standing === 'unknown'
+                            const mine = (i.rule.penalty ?? []).filter((p) => p.payer === 'carrier')
+                            if (!atRisk || mine.length === 0) return null
+                            const worst = mine.reduce((a, b) => (b.maxCents > a.maxCents ? b : a))
+                            return (
+                              <div class="mt-0.5 text-xs text-ink-700">
+                                Most they can fine you: {penaltyAmount(worst)}
+                              </div>
+                            )
+                          })()}
                         </td>
                         <td class={`${cell} mt-1 sm:mt-0`}>
                           {i.subjectId ? (
@@ -1965,16 +1883,6 @@ const backOut = 'btn btn-secondary'
                           {/* A countdown here is a promise of slack, so only a
                               `current` row gets one. See `dueLine`. */}
                           <span class="ml-2 tabular-nums sm:mt-1 sm:ml-0 sm:block">{dueLine(i)}</span>
-                        </td>
-                        <td class={`${cell} mt-1.5 text-xs text-ink-700 sm:mt-0`}>
-                          <a
-                            href={i.rule.sourceUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="link inline-flex min-h-11 items-center"
-                          >
-                            {i.rule.citation}
-                          </a>
                         </td>
                         {/*
                           THE DATE, ON THE ROW. He is looking at the row that
@@ -2224,8 +2132,8 @@ const backOut = 'btn btn-secondary'
   */}
   {
     view === 'all' && manual.length > 0 && (
-      <section class="mt-8">
-        <h2 class="text-lg font-semibold tracking-tight">You have to check these yourself</h2>
+      <section class="mt-6">
+        <h2 class="text-base font-semibold tracking-tight">You have to check these yourself</h2>
         <p class="mt-1 max-w-2xl text-sm text-ink-700">
           These are real duties, but we cannot put a date on them. Some are ongoing duties with no
           deadline. For the rest, the schedule depends on something no public record holds. We
@@ -2254,7 +2162,7 @@ const backOut = 'btn btn-secondary'
 
   {
     view === 'all' && later.length > 0 && (
-      <p class="mt-8 text-sm text-ink-700 tabular-nums">
+      <p class="mt-6 text-sm text-ink-700 tabular-nums">
         {later.length} more are up to date and not due for a while.
       </p>
     )

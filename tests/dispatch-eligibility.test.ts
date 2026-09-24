@@ -17,6 +17,7 @@
  * `eligibility()` in isolation would ever have shown it.
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import {
   conflicts,
@@ -360,4 +361,72 @@ test('a tractor with a lapsed periodic inspection is raised on the assignment sc
   // the truck can be inspected this afternoon. Blocking here would stop a
   // dispatcher planning next week's work over a garage appointment.
   assert.equal(isBlocked(issues), false)
+})
+
+// ------------------------------------------------- the dashboard uses the gate
+
+/**
+ * FAILURE PINNED: two screens disagreeing about who can work today.
+ *
+ * The dashboard now prints "N drivers cannot be dispatched" at the top of the
+ * page. That number and the refusal on the assignment screen have to be the
+ * same answer, or the owner reads "2 cannot be dispatched", opens Dispatch, and
+ * is allowed to put one of them on a load. The only way to guarantee it is that
+ * both screens ask THIS function — so the dashboard must import it, and must
+ * never carry a list of blocking rule codes of its own.
+ *
+ * Checked against the page source because there is no rendering of it in this
+ * suite, and because what is being pinned is which code the page calls rather
+ * than what it computes.
+ */
+const DASHBOARD = readFileSync(new URL('../src/pages/app/index.astro', import.meta.url), 'utf8')
+
+/** The page with its comments stripped, so the reasoning is not read as code. */
+const dashboardCode = DASHBOARD.replace(/\/\*[\s\S]*?\*\//g, '')
+  .split('\n')
+  .filter((line) => !line.trim().startsWith('//'))
+  .join('\n')
+
+test('the dashboard asks eligibility() rather than deciding for itself', () => {
+  assert.match(
+    dashboardCode,
+    /import \{ eligibility, isBlocked \} from '\.\.\/\.\.\/lib\/dispatch\/eligibility\.ts'/,
+    'the dashboard no longer imports the shared gate',
+  )
+  assert.match(
+    dashboardCode,
+    /isBlocked\(eligibility\(/,
+    'the dashboard imports the gate and does not run it',
+  )
+})
+
+/**
+ * The deny-list, read out of its own source rather than imported.
+ *
+ * `BLOCKING_RULE_CODES` is not exported, and widening the module's API so a
+ * test can read it would be the test changing the code to suit itself. Same
+ * approach as the anchor registry's reading of the migrations: parse the one
+ * true copy where it lives.
+ */
+function blockingCodes(): string[] {
+  const src = readFileSync(new URL('../src/lib/dispatch/eligibility.ts', import.meta.url), 'utf8')
+  const set = src.slice(src.indexOf('const BLOCKING_RULE_CODES'))
+  const body = set.slice(0, set.indexOf('])'))
+  return [...body.matchAll(/'([a-z0-9_]+)'/g)].map((m) => m[1])
+}
+
+test('the dashboard names no blocking rule code of its own', () => {
+  // The deny-list lives in one file on purpose. A code named here is a second
+  // copy that will still look right on the day the two stop agreeing — which is
+  // the day California's intrastate medical rule was added to the set and any
+  // hand-copied list would have kept quietly letting that driver out of the yard.
+  const codes = blockingCodes()
+  assert.ok(codes.length >= 6, `only ${codes.length} blocking codes parsed — the regex has drifted`)
+
+  for (const code of codes) {
+    assert.ok(
+      !dashboardCode.includes(code),
+      `the dashboard names '${code}' itself instead of asking eligibility()`,
+    )
+  }
 })
