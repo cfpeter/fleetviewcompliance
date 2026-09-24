@@ -353,6 +353,11 @@ Same product on every plan. No feature unlocks by size.
 
 **Start 10DLC registration now** — it gates phase 4 and takes up to 4 weeks.
 
+Feature requests the owner has made that are not yet scheduled live in
+`docs/product/BACKLOG.md`. That file is the only place they are written down; when one is
+scheduled it moves into this document and into `docs/modules-orders-trips-alerts.md` rather
+than being copied.
+
 ---
 
 ## 11. Open decisions
