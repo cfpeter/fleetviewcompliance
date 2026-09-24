@@ -30,6 +30,8 @@ import { mcs150Schedule, mcs150Status } from '../mcs150.ts'
 import type { ComputedFn } from './compute.ts'
 import { registerComputed } from './compute.ts'
 import { addMonthsClamped, lastDayOfMonth, toUtcMidnight, utcDate } from './dates.ts'
+import * as P from './penalties.ts'
+import { penaltyPhrase } from './penalties.ts'
 import type { Applicability, Outcome, RuleContext, RuleDefinition } from './types.ts'
 
 // ---------------------------------------------------------------------------
@@ -428,8 +430,8 @@ export const federalCarrierRules: RuleDefinition[] = [
     evidence: 'The original or a copy of the report, where the vehicle is housed or maintained.',
     consequence:
       'Destroying it before this date is the violation: recordkeeping penalties of ' +
-      '$1,584 a day up to $15,846 (49 CFR 386 App. B(a)(1), 2025 amounts). After ' +
-      'this date it may be discarded.',
+      `${penaltyPhrase(P.RECORDKEEPING)}. After this date it may be discarded.`,
+    penalty: [P.RECORDKEEPING],
     impact: 'record',
     applies: isCmv,
   },
@@ -447,7 +449,8 @@ export const federalCarrierRules: RuleDefinition[] = [
     evidence: 'The original or a copy of the report, where the trailer is housed or maintained.',
     consequence:
       'Destroying it before this date is the violation: recordkeeping penalties of ' +
-      '$1,584 a day up to $15,846. After this date it may be discarded.',
+      `${penaltyPhrase(P.RECORDKEEPING)}. After this date it may be discarded.`,
+    penalty: [P.RECORDKEEPING],
     impact: 'record',
     applies: isCmv,
   },
@@ -479,7 +482,8 @@ export const federalCarrierRules: RuleDefinition[] = [
       'since 2026-03-23.',
     consequence:
       'Vehicle out of service until repaired, plus recordkeeping penalties of ' +
-      '$1,584 a day up to $15,846.',
+      `${penaltyPhrase(P.RECORDKEEPING)}.`,
+    penalty: [P.RECORDKEEPING],
     impact: 'audit',
     applies: isCmv,
   },
@@ -549,6 +553,12 @@ export const federalCarrierRules: RuleDefinition[] = [
       'Deactivation of the USDOT number — which puts every vehicle in violation of ' +
       '392.9b — plus penalties under 49 U.S.C. 521(b)(2)(B) or 14901(a) ' +
       '($1,365–$10,269 under App. B(g)(16)).',
+    // NOT in `penalty`, and the reason is the discipline this catalogue runs on:
+    // docs/research/compliance-penalties.md verified a named set of Appendix B
+    // lines against eCFR, and (g)(16) was not among them. The figures above are
+    // the ones this row has always carried and they may well be right — but
+    // structuring them would put them into a total that claims to be checkable,
+    // and nobody has checked these. Verifying (g)(16) is a research task.
     impact: 'company',
     applies: filesMcs150,
   },
@@ -765,7 +775,8 @@ export const federalCarrierRules: RuleDefinition[] = [
       'accident report required by a state, another governmental entity, or an insurer.',
     consequence:
       'Destroying the entry before this date is the violation: recordkeeping ' +
-      'penalties of $1,584 a day up to $15,846.',
+      `penalties of ${penaltyPhrase(P.RECORDKEEPING)}.`,
+    penalty: [P.RECORDKEEPING],
     impact: 'record',
   },
 
@@ -789,7 +800,8 @@ export const federalCarrierRules: RuleDefinition[] = [
     recurrence: { type: 'computed', fn: 'continuous.rodsRetention' },
     warningDays: [],
     evidence: 'The records of duty status themselves, for at least the last six months.',
-    consequence: 'Recordkeeping penalties of $1,584 a day up to $15,846.',
+    consequence: `Recordkeeping penalties of ${penaltyPhrase(P.RECORDKEEPING)}.`,
+    penalty: [P.RECORDKEEPING],
     impact: 'record',
   },
 
@@ -812,7 +824,8 @@ export const federalCarrierRules: RuleDefinition[] = [
     evidence:
       'The documents themselves, matchable to the driver and the day. Each ' +
       'fleet-management communication record counts as one document.',
-    consequence: 'Recordkeeping penalties of $1,584 a day up to $15,846.',
+    consequence: `Recordkeeping penalties of ${penaltyPhrase(P.RECORDKEEPING)}.`,
+    penalty: [P.RECORDKEEPING],
     impact: 'record',
   },
 
@@ -835,7 +848,8 @@ export const federalCarrierRules: RuleDefinition[] = [
     recurrence: { type: 'computed', fn: 'continuous.eldBackup' },
     warningDays: [],
     evidence: 'A back-up copy of the ELD records on a device separate from the original.',
-    consequence: 'Recordkeeping penalties of $1,584 a day up to $15,846.',
+    consequence: `Recordkeeping penalties of ${penaltyPhrase(P.RECORDKEEPING)}.`,
+    penalty: [P.RECORDKEEPING],
     impact: 'record',
   },
 

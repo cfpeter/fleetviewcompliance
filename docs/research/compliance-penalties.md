@@ -32,7 +32,7 @@ the audience includes people who have actually been fined.
 | Driver convicted of violating an OOS order | ≥$3,961 first, ≥$7,924 second+ | (b)(1) |
 | Driving after a 24-hour alcohol OOS (392.5) | ≤$3,961 first, ≥$7,924 second+ | (a)(5) |
 
-## Two caveats to carry
+## Three caveats to carry
 
 1. **These are current but stale-risk.** DOT appears to have **skipped the January 2026
    adjustment cycle** — no 2026 rule exists as of 2026-09-14, confirmed three ways
@@ -45,6 +45,31 @@ the audience includes people who have actually been fined.
    under the (a)(1) recordkeeping line — (a)(1) covers Part 382 subparts A–F and
    **excludes subpart G**. FMCSA's May 2025 preamble says something in tension with this;
    how they reconcile it in practice is **UNVERIFIED**.
+
+3. **★ OPEN QUESTION — does (a)(3) reach beyond Part 382?** The table above records
+   **$19,246 at (a)(3)** as the *Part 382 non-recordkeeping* line. Two rules in the
+   catalogue quote that same figure for subject matter that is **not** Part 382:
+
+   | Rule | Part | What its prose says |
+   |---|---|---|
+   | `cdl_expiry` | 391 | "Employer penalty up to $19,246 per violation" |
+   | `fed.396.25.brake-inspector-qualification` | 396 | "Non-recordkeeping penalties up to $19,246 per violation (App. B(a)(3))" |
+
+   They may be right by a different route: **49 U.S.C. 521(b)(2)(A)** is the general
+   FMCSR civil penalty and its adjusted maximum is the same $19,246. But nothing in this
+   document verifies that, and "the number happens to match" is how a wrong citation
+   survives review.
+
+   **Until somebody checks, neither rule carries structured `penalty` data** — see
+   `src/lib/rules/penalties.ts`. Anything totalling exposure counts them as *no figure*,
+   not as $19,246, which is the safe direction: it understates a ceiling rather than
+   billing a carrier for a penalty nobody has confirmed applies to him.
+
+   **What answering it is worth.** `cdl_expiry` is a dispatch-blocking rule — it is on
+   the list that stops a driver working — so it appears on the overdue list of real
+   fleets. It is one of the largest single figures the product could honestly show, and
+   right now it shows nothing. Read (a)(3)'s own words in Appendix B and 521(b)(2)(A),
+   and either attach the amount or correct the two prose lines.
 
 ## Product use
 

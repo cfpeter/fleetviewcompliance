@@ -6,6 +6,8 @@
  * function is a design failure to be fixed here, not worked around per-state.
  */
 
+import type { Penalty } from './penalties.ts'
+
 export type Jurisdiction = 'federal' | 'CA'
 
 /** What connection to a jurisdiction a rule needs. See `RuleDefinition.nexus`. */
@@ -222,6 +224,27 @@ export interface RuleDefinition {
   evidence: string
   /** What happens if it is missed — shown on overdue items. */
   consequence: string
+  /**
+   * THE MONEY, SEPARATELY FROM THE SENTENCE ABOUT IT.
+   *
+   * `consequence` says what happens and is often the more important half — an
+   * expired medical card parks a driver, and the catalogue records that as an
+   * ACUTE finding with no dollar amount at all, because there is not one. This
+   * field is only for amounts verified against 49 CFR 386 Appendix B, and it
+   * exists so that something can ADD THEM UP and so that each one carries the
+   * date it took effect.
+   *
+   * OPTIONAL, AND ABSENT IS THE NORMAL CASE. Most rules in this catalogue have
+   * no line-item penalty; see src/lib/rules/penalties.ts for the four figures
+   * that appear in prose and are deliberately not encoded here. Anything
+   * summing exposure must report an absent penalty as "no figure we can stand
+   * behind" and never as zero — a fleet whose overdue rows all lack an amount
+   * would otherwise be told it has nothing at stake.
+   *
+   * An array because one obligation can carry different amounts for different
+   * people: $19,246 for the employer at (a)(3), $4,812 for the driver at (a)(4).
+   */
+  penalty?: readonly Penalty[]
   /**
    * WHAT A LAPSE STOPS. Required on every rule, with no default.
    *

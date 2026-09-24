@@ -26,6 +26,8 @@
  */
 import { registerComputed } from './compute.ts'
 import { toUtcMidnight } from './dates.ts'
+import * as P from './penalties.ts'
+import { penaltyPhrase } from './penalties.ts'
 import type { Applicability, Outcome, RuleContext, RuleDefinition } from './types.ts'
 
 // ---------------------------------------------------------------------------
@@ -33,23 +35,21 @@ import type { Applicability, Outcome, RuleContext, RuleDefinition } from './type
 // ---------------------------------------------------------------------------
 
 /**
- * 49 CFR 386 Appendix B, as adjusted by 89 FR 106282 (the *2025* adjustment).
+ * THE SENTENCES ARE NOW A VIEW OF THE AMOUNTS, not a second copy of them.
  *
- * DOT appears to have skipped the January 2026 cycle, so these are simultaneously
- * the current amounts and the stalest they have ever been — a catch-up rule can
- * land at any time. The year is written into the string because `consequence` is
- * a bare string with nowhere to put an effective date.
+ * These three were hand-typed strings with the figures and the year inside the
+ * prose, which meant nothing could add them up and nothing could tell you when
+ * they went stale. The numbers moved to src/lib/rules/penalties.ts — where each
+ * one carries its citation, its unit, and the date it took effect — and what is
+ * left here is the wording. One figure, two renderings, and they cannot drift
+ * because only one of them is written down.
  *
- * The figure that is NOT here is "$10,000 per day for failing to implement a
- * drug and alcohol testing program". There is no such line item in Appendix B.
- * $10,000 is the unadjusted statutory maximum in 49 U.S.C. 521(b)(2)(A); adjusted
- * it is $19,246, and it is stated per violation, not per day. Only the
- * recordkeeping entry carries an express daily multiplier.
+ * Every rule that uses one of these sentences also carries the amount itself in
+ * its `penalty` field. A test holds the two together.
  */
-const RECORDKEEPING =
-  'Recordkeeping penalty $1,584/day up to $15,846 (49 CFR 386 App. B(a)(1), 2025 amounts)'
-const PART382_EMPLOYER = '$19,246 per violation (49 CFR 386 App. B(a)(3), 2025 amounts)'
-const CLEARINGHOUSE_PENALTY = '$7,155 per violation (49 CFR 386 App. B(b), 2025 amounts)'
+const RECORDKEEPING = `Recordkeeping penalty ${penaltyPhrase(P.RECORDKEEPING)}`
+const PART382_EMPLOYER = penaltyPhrase(P.PART382_EMPLOYER)
+const CLEARINGHOUSE_PENALTY = penaltyPhrase(P.CLEARINGHOUSE)
 
 // ---------------------------------------------------------------------------
 // Three-valued applicability helpers
@@ -374,6 +374,7 @@ export const federalDriverRules: RuleDefinition[] = [
       `${RECORDKEEPING}; an incomplete file is also the evidentiary basis for an ` +
       'unqualified-driver finding and for negligent-hiring exposure. Keep the file for ' +
       'employment + 3 years (391.51(c)).',
+    penalty: [P.RECORDKEEPING],
     impact: 'audit',
   },
 
@@ -396,6 +397,7 @@ export const federalDriverRules: RuleDefinition[] = [
       'permit in the preceding 3 years — not just the current licensing state. Where a state ' +
       'does not respond, documentation of the good-faith effort.',
     consequence: `${RECORDKEEPING}; operating an unqualified driver.`,
+    penalty: [P.RECORDKEEPING],
     impact: 'audit',
   },
 
@@ -426,6 +428,7 @@ export const federalDriverRules: RuleDefinition[] = [
       `${RECORDKEEPING}; negligent-hiring exposure. A previous employer has 30 days to ` +
       'reply (391.23(g)(1)); retain the file for employment + 3 years in a secure location ' +
       'with controlled access (391.53(c)).',
+    penalty: [P.RECORDKEEPING],
     impact: 'audit',
   },
 
@@ -450,6 +453,7 @@ export const federalDriverRules: RuleDefinition[] = [
     consequence:
       `${RECORDKEEPING}; operating an unqualified driver. Purgeable from the DQF 3 years ` +
       'after execution (391.51(d)).',
+    penalty: [P.RECORDKEEPING],
     impact: 'audit',
   },
 
@@ -475,6 +479,7 @@ export const federalDriverRules: RuleDefinition[] = [
     consequence:
       `${RECORDKEEPING}; operating an unqualified driver. Purgeable from the DQF 3 years ` +
       'after execution (391.51(d)).',
+    penalty: [P.RECORDKEEPING],
     impact: 'audit',
   },
 
@@ -496,6 +501,7 @@ export const federalDriverRules: RuleDefinition[] = [
       "the valid CDL, or of another carrier's road test certificate issued within the " +
       'preceding 3 years, accepted in lieu of the test.',
     consequence: `${RECORDKEEPING}; operating an unqualified driver.`,
+    penalty: [P.RECORDKEEPING],
     impact: 'audit',
   },
 
@@ -675,6 +681,7 @@ export const federalDriverRules: RuleDefinition[] = [
       'driver from safety-sensitive functions after 30 days unless the previous-employer ' +
       'information (the 2-YEAR lookback of 40.25(b), not the 3-year one of 391.23(e)) was ' +
       'obtained or a good-faith effort documented.',
+    penalty: [P.CLEARINGHOUSE],
     impact: 'driver',
     applies: part382Driver,
   },
@@ -705,6 +712,7 @@ export const federalDriverRules: RuleDefinition[] = [
       `Using a prohibited driver; ${CLEARINGHOUSE_PENALTY}. Clearinghouse recordkeeping sits ` +
       'under App. B(b), not under the (a)(1) recordkeeping line, because (a)(1) covers Part ' +
       '382 subparts A-F and excludes subpart G.',
+    penalty: [P.CLEARINGHOUSE],
     impact: 'money',
     applies: part382Driver,
   },
@@ -742,6 +750,7 @@ export const federalDriverRules: RuleDefinition[] = [
     // January 1 AFTER publication, so the rate simply persists. Do not go looking
     // for a 2026 notice, and do not let anyone "update" this to 25%.
     consequence: `${PART382_EMPLOYER}; drivers placed out of service.`,
+    penalty: [P.PART382_EMPLOYER],
     /**
      * `audit`, NOT `driver`, and docs/product/DATE-PRIORITY.md § 5.3 disagrees
      * with the sentence above. "Drivers placed out of service" would make this
@@ -773,6 +782,7 @@ export const federalDriverRules: RuleDefinition[] = [
       '0.02 (382.401(b)(1)) and 1 year for results below 0.02 (382.401(b)(3)) — the "2 years" ' +
       'bucket is the collection-process records at 382.401(b)(2), not negatives.',
     consequence: `${PART382_EMPLOYER}; drivers placed out of service.`,
+    penalty: [P.PART382_EMPLOYER],
     // Same disagreement as the drug rate above, on the same sentence and for
     // the same reason. See docs/product/DATE-PRIORITY.md § 5.3.
     impact: 'audit',
@@ -808,6 +818,7 @@ export const federalDriverRules: RuleDefinition[] = [
       `${PART382_EMPLOYER}. Without a trained supervisor the carrier cannot lawfully make a ` +
       'reasonable-suspicion determination at all, which turns an observed impairment into an ' +
       'unusable observation.',
+    penalty: [P.PART382_EMPLOYER],
     impact: 'audit',
     applies: part382Driver,
   },
