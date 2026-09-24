@@ -41,7 +41,7 @@ if (dot) {
   }
 }
 
-const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const card = 'card'
 const fmt = (d: Date) =>
   d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
 // Socrata OMITS null keys rather than sending null, so a missing count arrives

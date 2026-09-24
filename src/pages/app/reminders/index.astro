@@ -531,7 +531,7 @@ const selectedSubject = editing
       `#reminder-form`, so the browser scrolls here and `scroll-padding-top`
       keeps the sticky header off the heading. */}
   <form method="POST" id="reminder-form" class="rounded-xl border border-ink-100 bg-white p-5">
-    <h2 class="text-lg font-semibold tracking-tight">
+    <h2 class="text-base font-semibold tracking-tight">
       {editing ? 'Change this reminder' : 'Add a reminder'}
     </h2>
     {editing && <input type="hidden" name="id" value={editing.id} />}
@@ -790,8 +790,8 @@ const selectedSubject = editing
 
   {/* ---------------------------------------------------------- the open list */}
 
-  <section id="open" class="mt-8">
-    <h2 class="text-lg font-semibold tracking-tight">
+  <section id="open" class="mt-6">
+    <h2 class="text-base font-semibold tracking-tight">
       Your reminders
       <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">{open.length}</span>
     </h2>
@@ -931,7 +931,7 @@ const selectedSubject = editing
 
   {/* ------------------------------------------------------------- done list */}
 
-  <section id="finished" class="mt-8">
+  <section id="finished" class="mt-6">
     {
       !showDone ? (
         /* The fragment is the whole point: opening the finished list used to
@@ -942,7 +942,7 @@ const selectedSubject = editing
         </a>
       ) : (
         <>
-          <h2 class="text-lg font-semibold tracking-tight">
+          <h2 class="text-base font-semibold tracking-tight">
             Finished
             <span class="ml-2 text-sm font-normal text-ink-500 tabular-nums">{done.length}</span>
           </h2>
@@ -1004,7 +1004,7 @@ const selectedSubject = editing
 
   {/* Where these show up next, said plainly. The badge is the same one the
       dashboard prints where a regulation prints its CFR citation. */}
-  <p class="mt-8 flex flex-wrap items-center gap-2 text-sm text-ink-500">
+  <p class="mt-6 flex flex-wrap items-center gap-2 text-sm text-ink-500">
     On the Deadlines page your reminders carry this mark:
     {/* The shared badge, not the bare colour pair `REMINDER_ORIGIN.className`
         still carries — see the note in the report: that constant lives in

@@ -237,7 +237,7 @@ const confirmRemove = params.get('confirm') ?? ''
 
 const daysLeft = daysUntil(returnDueOn(period), today)
 
-const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const card = 'card'
 /*
   Every box on this page wears `.field-input` from global.css — 46px tall, a
   border a reader can see, 16px type so iOS does not zoom the page on a tap, and
@@ -554,7 +554,7 @@ const caJurisdictions = IFTA_JURISDICTIONS.filter((j) => j.country === 'CA')
     {/* ------------------------------------------------------- the add form */}
     <form method="POST" class={`space-y-4 ${card} h-fit`}>
       <div>
-        <h2 class="text-lg font-semibold tracking-tight">Add a receipt</h2>
+        <h2 class="text-base font-semibold tracking-tight">Add a receipt</h2>
         <p class="mt-1 text-sm text-ink-500">
           {label} ·{' '}
           {daysLeft < 0 ? (

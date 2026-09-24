@@ -522,6 +522,93 @@
   .badge-danger {
     @apply bg-red-100 text-red-800;
   }
+
+  /* --------------------------------------------------------------------- card
+
+     ONE CARD, AFTER TWENTY-THREE COPIES OF IT. Every page that draws a panel
+     carried its own `const card = 'rounded-xl border border-ink-100 bg-white
+     p-5'`, byte-identical in 23 files, with `cardHeading` duplicated three
+     times beside it. They stayed in step by luck: nothing compared them, and
+     changing the padding meant changing it 23 times and noticing all 23. A
+     second copy of a decision is the failure this repo names everywhere else,
+     and this was the largest one in it.
+
+     The page constants now hold the string 'card', so every `class={card}` and
+     every `${card} mt-3` interpolation still reads the same. The shape moved;
+     the call sites did not.
+
+     p-4 AND NOT p-5. Sixteen pixels instead of twenty, on every panel on every
+     screen, at the owner's request: "keep the 11 items, just make everything
+     smaller and denser." Padding is not a touch target — nobody aims at the
+     inside edge of a card — so unlike the rules below this one needs no
+     pointer split and is the same on a thumb. */
+  .card {
+    @apply rounded-xl border border-ink-100 bg-white p-4;
+  }
+
+  .card-heading {
+    @apply text-sm font-semibold tracking-tight;
+  }
+
+  /* -------------------------------------------------------------- citation
+
+     The regulation a row is citing, folded INTO the row that names the rule
+     rather than standing in a column of its own. The dashboard's table carried
+     a fifth column for this; on the screen an owner works down, a column of
+     "49 CFR 391.45(b), 391.43" is a column of text nobody reads on the way to
+     the date box, and it cost every row its width.
+
+     It keeps a real target — it is a link to a federal register page, tapped
+     with a thumb by somebody who wants to check us, and checking us is the
+     thing this product asks to be trusted on. 44px on a thumb, and on a mouse
+     it collapses to the line it sits on (see the density block below), because
+     a 44px box around 12px text is most of a row's height on its own. */
+  .link-cite {
+    @apply inline-flex min-h-11 items-center text-xs text-brand-600 underline underline-offset-2 hover:text-brand-700;
+  }
+
+  /* ------------------------------------------------------ density on a mouse
+
+     THE OWNER'S WORDS: "I want our dashboard to be minimum and simple… make the
+     application feel small, like a system application… keep the 11 items, just
+     make everything smaller and denser."
+
+     THIS REVERSES A DECISION RECORDED ABOVE, deliberately and in one direction
+     only. `.nav-item` already spent the 44px floor on a coarse pointer and took
+     36px on a mouse, and the comment there says "nothing else in the app does
+     this: every other control stays 44px for everybody, because nowhere else is
+     the cost paid on every screen." That was right when the ask was reach. The
+     ask is now density, and a form of twelve fields pays the height twelve
+     times — which is the same compounding argument, met on a screen the reader
+     scrolls rather than a header he does not.
+
+     EVERY RULE IN HERE IS INSIDE `(pointer: fine)`. A phone, a tablet and a
+     touchscreen laptop keep the 44px floor exactly as it was — none of the
+     mobile work is undone, and 36px on a mouse is still half again the 24px
+     WCAG 2.2 asks for.
+
+     WHAT DOES NOT SHRINK IS THE TYPE. `.field-input` keeps `text-base`: 16px is
+     the size below which iOS zooms the page on focus, and these owners are not
+     fluent English readers — smaller words are a tax they pay on every screen,
+     and the density asked for is in the whitespace, not in the sentence. Only
+     the padding gives way. */
+  @media (pointer: fine) {
+    .field-input {
+      @apply min-h-9 py-1.5;
+    }
+
+    .btn {
+      @apply min-h-9 px-4 py-1.5;
+    }
+
+    .filter-tab {
+      @apply min-h-9 px-3;
+    }
+
+    .link-cite {
+      @apply min-h-0;
+    }
+  }
 }
 
 /* --------------------------------------------------------------- text floor

@@ -227,7 +227,7 @@ const name = `${driver.first_name} ${driver.last_name}`.trim()
 
     <!-- The gap report, first, because page one is what gets read. -->
     <section class="mt-6" data-block>
-      <h3 class="text-lg font-semibold tracking-tight">What needs attention</h3>
+      <h3 class="text-base font-semibold tracking-tight">What needs attention</h3>
       {
         outstanding.length === 0 ? (
           <p class="mt-2 rounded-lg bg-ink-50 px-4 py-3 text-sm">
@@ -260,8 +260,8 @@ const name = `${driver.first_name} ${driver.last_name}`.trim()
     </section>
 
     <!-- The eight items, in statutory order. -->
-    <section class="mt-8">
-      <h3 class="text-lg font-semibold tracking-tight">The file, item by item</h3>
+    <section class="mt-6">
+      <h3 class="text-base font-semibold tracking-tight">The file, item by item</h3>
       <div class="mt-3 divide-y divide-ink-100 border-t border-ink-100">
         {
           items.map((i) => {
@@ -305,7 +305,7 @@ const name = `${driver.first_name} ${driver.last_name}`.trim()
       The footer is load-bearing. A document that states dated observations and
       omits this will be read as the thing it declines to be.
     -->
-    <footer class="mt-8 border-t border-ink-100 pt-5 text-xs text-ink-700">
+    <footer class="mt-6 border-t border-ink-100 pt-5 text-xs text-ink-700">
       <p>
         This is a record of what this carrier holds and what was observed on the date above. It is
         not a certification of compliance. It does not say that any document in it is genuine,

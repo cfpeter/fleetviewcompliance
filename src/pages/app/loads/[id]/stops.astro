@@ -438,7 +438,7 @@ const loadName = load.load_number
     ? `Broker ref ${load.broker_reference}`
     : 'Load'
 
-const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const card = 'card'
 /**
  * The shared field construction from src/styles/global.css, not a local copy.
  *
@@ -524,7 +524,7 @@ const arrow = 'btn btn-secondary btn-icon'
 
   <div class={`mb-6 ${card}`}>
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <h2 class="text-lg font-semibold tracking-tight">Detention terms on this load</h2>
+      <h2 class="text-base font-semibold tracking-tight">Detention terms on this load</h2>
       {/* `.link-back` is the one back-link construction in the app: 44px tall,
           underlined on hover, and the arrow is decoration inside the label so
           "Back" is the word that gets read out. `ml-0` cancels the pull it uses
@@ -617,7 +617,7 @@ const arrow = 'btn btn-secondary btn-icon'
         return (
           <div id={isNew ? 'add' : `stop-${s.id}`} class={`${card}`}>
             {isNew ? (
-              <h2 class="text-lg font-semibold tracking-tight">Add a stop</h2>
+              <h2 class="text-base font-semibold tracking-tight">Add a stop</h2>
             ) : (
               <div class="flex flex-wrap items-start gap-4">
                 {/* The printed number. Everyone on the phone says "stop 3". */}

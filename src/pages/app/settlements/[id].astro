@@ -848,7 +848,7 @@ const notice = params.has('created')
                   : null
 
 const today = todayInCalifornia()
-const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const card = 'card'
 /**
  * THE FIELD AND THE TWO BUTTONS NOW LIVE IN global.css.
  *
@@ -1208,7 +1208,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
 
     {settlement.note && <p class="mt-6 text-sm text-ink-700">{settlement.note}</p>}
 
-    <footer class="mt-8 border-t border-ink-100 pt-4 text-xs text-ink-700">
+    <footer class="mt-6 border-t border-ink-100 pt-4 text-xs text-ink-700">
       <p>
         This is a driver pay statement. It is not a payroll record. No federal or state tax was
         taken out. No FICA was worked out. Nothing was filed with any agency. Gross pay, tax and
@@ -1247,7 +1247,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
       ) : (
         <>
           <section class="mt-6">
-            <h2 class="text-lg font-semibold tracking-tight">Pay from an agreement</h2>
+            <h2 class="text-base font-semibold tracking-tight">Pay from an agreement</h2>
             <p class="mt-1 max-w-3xl text-sm text-ink-500">
               These are the agreements in force on{' '}
               <span class="tabular-nums">{formatDate(settlement.period_end)}</span>, the last day of
@@ -1349,7 +1349,7 @@ const periodLabel = `${formatDate(settlement.period_start)} – ${formatDate(set
           </section>
 
           <section class="mt-6">
-            <h2 class="text-lg font-semibold tracking-tight">Add a line by hand</h2>
+            <h2 class="text-base font-semibold tracking-tight">Add a line by hand</h2>
             <p class="mt-1 max-w-3xl text-sm text-ink-500">
               Detention, a toll receipt, an advance the driver took on Wednesday, the weekly escrow.
               Always type the amount as a positive number. Never type a minus sign here. What you

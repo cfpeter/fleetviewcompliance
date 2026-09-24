@@ -365,7 +365,7 @@ const oldOpen =
  */
 const notes = [...new Set(filed.map((f) => f.facts.note).filter((n) => n !== ''))]
 
-const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const card = 'card'
 /** A fold's summary row. `list-none` because the default triangle is not ours. */
 const summaryRow =
   'flex min-h-11 cursor-pointer list-none items-center gap-2 select-none [&::-webkit-details-marker]:hidden'
@@ -380,7 +380,7 @@ const chevron = 'size-4 shrink-0 text-ink-500 transition-transform group-open:ro
 const actionRow = '-ml-4 mt-0.5 flex flex-wrap items-center gap-x-3 sm:mt-0 sm:ml-0 sm:justify-end'
 ---
 
-<section id="documents" class="mt-8">
+<section id="documents" class="mt-6">
   <div class={card}>
     {/*
       THE COUNT IS THE HEADING. It is the one number an owner wants from this
@@ -389,7 +389,7 @@ const actionRow = '-ml-4 mt-0.5 flex flex-wrap items-center gap-x-3 sm:mt-0 sm:m
       table of dates. No count on an empty section: the empty state below says
       it in words instead.
     */}
-    <h2 class="text-lg font-semibold tracking-tight">
+    <h2 class="text-base font-semibold tracking-tight">
       Documents{
         filed.length > 0 && (
           <span class="font-normal text-ink-500">

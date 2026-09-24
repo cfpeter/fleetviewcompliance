@@ -458,7 +458,7 @@ const milesTrendCoverage = [
 
 const quarterHref = (p: Date) => `/app/ifta?q=${isoDay(p)}`
 
-const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const card = 'card'
 
 /**
  * ON A PHONE THE RETURN IS NOT A TABLE.
@@ -950,7 +950,7 @@ const deadlineTone =
 
         {/* ---------------------------------------------------------- the return */}
         <div id="jurisdictions" class="mt-6 flex flex-wrap items-baseline justify-between gap-3">
-          <h2 class="text-lg font-semibold tracking-tight">Jurisdiction by jurisdiction</h2>
+          <h2 class="text-base font-semibold tracking-tight">Jurisdiction by jurisdiction</h2>
           <div class="flex flex-wrap gap-2">
             <a href={`/app/ifta/miles?q=${periodIso}`} class="btn btn-tertiary btn-sm">
               Enter miles →

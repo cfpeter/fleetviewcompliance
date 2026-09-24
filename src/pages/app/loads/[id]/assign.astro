@@ -647,7 +647,7 @@ const customerName = load.customer_id
       .data?.name ?? null)
   : null
 
-const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const card = 'card'
 // `.field-input` is the shared field from global.css. It carries the 44px floor,
 // the ink-500 border and the focus ring; the local copy this replaced was 40px
 // tall with a border-ink-100 nobody could see and an `outline-none` on it.
@@ -806,7 +806,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
       }
       <form method="GET" class="space-y-4 rounded-xl border border-ink-100 bg-white p-5">
         <div>
-          <h2 class="text-lg font-semibold tracking-tight">Who is taking it</h2>
+          <h2 class="text-base font-semibold tracking-tight">Who is taking it</h2>
           <p class="mt-1 text-sm text-ink-500">
             First pick. Then check. Nothing is saved until you press Assign at the bottom.
           </p>
@@ -1052,7 +1052,7 @@ const SUMMARY_PANEL: Record<SlotState, string> = {
         <input type="hidden" name="tractor" value={selection.tractor ?? ''} />
         <input type="hidden" name="trailer" value={selection.trailer ?? ''} />
 
-        <h2 class="text-lg font-semibold tracking-tight">Assign</h2>
+        <h2 class="text-base font-semibold tracking-tight">Assign</h2>
 
         {
           assessment.warns.length > 0 && !assessment.blocked && (

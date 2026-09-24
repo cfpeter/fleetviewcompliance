@@ -313,7 +313,7 @@ const defaultStart = shiftDays(today, -6)
 // Only honoured when the request came from our own 303. See src/lib/flash.ts.
 const error = flashText(Astro.url, Astro.request) ?? listError?.message ?? null
 const tabs = [{ value: 'all', label: 'All' }, ...SETTLEMENT_STATUSES]
-const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const card = 'card'
 
 /**
  * ON A PHONE THE ROWS ARE NOT ROWS.
@@ -719,7 +719,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
 
 
   <form method="POST" class={`mt-6 ${card}`}>
-    <h2 class="text-lg font-semibold tracking-tight">Start a pay statement</h2>
+    <h2 class="text-base font-semibold tracking-tight">Start a pay statement</h2>
     <div class="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-end">
       <label class="block">
         <span class="field-label">Driver <span class="text-red-600">*</span></span>
@@ -932,7 +932,7 @@ const showPayCharts = (pay?.rows.length ?? 0) > 0
   */}
   {
     showPayCharts && monthly && (
-      <div class="mt-8 grid gap-4 lg:grid-cols-2">
+      <div class="mt-6 grid gap-4 lg:grid-cols-2">
         <Figure
           title="Paid out, by month"
           subtitle="Pay statements marked paid, in the month the money moved"

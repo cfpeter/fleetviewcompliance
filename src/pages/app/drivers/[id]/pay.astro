@@ -293,7 +293,7 @@ const added = params.has('added')
 const endedNotice = params.has('ended')
 const removed = params.has('removed')
 
-const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const card = 'card'
 /*
   The `field`, `tab` and `primary` strings are gone. Every box wears
   `.field-input` (or `.field-affix` where it holds a $ or a %), every method tab
@@ -336,7 +336,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
   <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
     <div class="space-y-6">
       <section>
-        <h2 class="text-lg font-semibold tracking-tight">Active now</h2>
+        <h2 class="text-base font-semibold tracking-tight">Active now</h2>
         {/* ink-700: on the page tint, where ink-500 is 4.41:1. */}
         <p class="mt-1 text-sm text-ink-700">
           More than one is normal: per mile on the linehaul, flat on the stops, hourly on
@@ -414,7 +414,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
       </section>
 
       <section>
-        <h2 class="text-lg font-semibold tracking-tight">Add an agreement</h2>
+        <h2 class="text-base font-semibold tracking-tight">Add an agreement</h2>
         <p class="mt-1 text-sm text-ink-700">
           Pick how it pays first. Each one asks only for the terms that method needs.
         </p>
@@ -662,7 +662,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
       {
         ended.length > 0 && (
           <section>
-            <h2 class="text-lg font-semibold tracking-tight">Ended</h2>
+            <h2 class="text-base font-semibold tracking-tight">Ended</h2>
             <p class="mt-1 text-sm text-ink-500">
               We keep these. They answer the question “why does last March’s statement say that
               rate?” They do not apply to anything new.

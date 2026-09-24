@@ -244,7 +244,7 @@ const checkoutMessage: Record<string, string> = {
   stopped: 'You stopped before paying. Nothing was charged.',
 }
 
-const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const card = 'card'
 ---
 
 <App title="Billing" subtitle="What you pay, and when.">
@@ -294,7 +294,7 @@ const card = 'rounded-xl border border-ink-100 bg-white p-5'
     {/* ================================================= what you pay now */}
 
     <section class={card}>
-      <h2 class="text-lg font-semibold tracking-tight">Your plan</h2>
+      <h2 class="text-base font-semibold tracking-tight">Your plan</h2>
 
       {/* The price, large, before any explanation of it. It is the thing the
       page is opened for, and it is true in every plan state.

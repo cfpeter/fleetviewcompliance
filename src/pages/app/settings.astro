@@ -1203,7 +1203,7 @@ const operation = operationAnswers({
 })
 const operationSource: string | null = carrier?.operation_source ?? null
 
-const card = 'rounded-xl border border-ink-100 bg-white p-5'
+const card = 'card'
 // The shared field construction. The local one it replaces was 40px tall and
 // bordered ink-100, which is 1.35:1 against the card it sits on.
 const field = 'field-input mt-1'
@@ -1296,7 +1296,7 @@ const help = 'field-hint block'
       {/* ======================================================== your account */}
 
       <section>
-        <h2 class="text-lg font-semibold tracking-tight">Your account</h2>
+        <h2 class="text-base font-semibold tracking-tight">Your account</h2>
         <p class="mt-1 max-w-3xl text-sm text-ink-500">
           This is you, not the company. Everyone who signs in has their own name, phone, email and
           password.
@@ -1623,7 +1623,7 @@ const help = 'field-hint block'
       {/* ============================================================ carrier */}
 
       <section>
-        <h2 class="text-lg font-semibold tracking-tight">Your carrier</h2>
+        <h2 class="text-base font-semibold tracking-tight">Your carrier</h2>
         <p class="mt-1 max-w-3xl text-sm text-ink-500">
           These come from your federal record at FMCSA. You cannot change them here. If something is
           wrong, file an MCS-150 update with FMCSA. It changes here after that.
@@ -1731,7 +1731,7 @@ const help = 'field-hint block'
         fallback — it stores NULL and the rules keep tracking.
       */}
       <section class="mt-10">
-        <h2 class="text-lg font-semibold tracking-tight">How your company operates</h2>
+        <h2 class="text-base font-semibold tracking-tight">How your company operates</h2>
         <p class="mt-1 max-w-3xl text-sm text-ink-500">
           Your answers decide which rules we show you. If you answer No, we stop showing the rules
           that only apply when the answer is Yes. If you are not sure, we keep showing them.
@@ -1886,7 +1886,7 @@ const help = 'field-hint block'
       {/* ==================================================== who can sign in */}
 
       <section class="mt-10">
-        <h2 class="text-lg font-semibold tracking-tight">Who can sign in</h2>
+        <h2 class="text-base font-semibold tracking-tight">Who can sign in</h2>
         <p class="mt-1 max-w-3xl text-sm text-ink-500">
           Everyone who can open this account. Each person signs in with their own email and their own
           password.
@@ -1958,7 +1958,7 @@ const help = 'field-hint block'
       {/* ======================================================== the matrix */}
 
       <section>
-        <h2 class="text-lg font-semibold tracking-tight">Who gets told what</h2>
+        <h2 class="text-base font-semibold tracking-tight">Who gets told what</h2>
         <p class="mt-1 max-w-3xl text-sm text-ink-500">
           These are your settings, not the company's. Everyone on the account sets their own, so the
           office manager can take every deadline and the owner can take only the ones that are already
@@ -2225,7 +2225,7 @@ const help = 'field-hint block'
       {/* ======================================================= quiet hours */}
 
       <section class="mt-10">
-        <h2 class="text-lg font-semibold tracking-tight">Quiet hours</h2>
+        <h2 class="text-base font-semibold tracking-tight">Quiet hours</h2>
         <p class="mt-1 max-w-3xl text-sm text-ink-500">
           Hours when we hold a message rather than send it. Times are on your own clock — the one set
           above — so they mean what they say wherever you are.
@@ -2322,7 +2322,7 @@ const help = 'field-hint block'
       {/* ============================================================ snoozes */}
 
       <section class="mt-10">
-        <h2 class="text-lg font-semibold tracking-tight">
+        <h2 class="text-base font-semibold tracking-tight">
           Snoozed items
           {
             snoozes.length > 0 && (
@@ -2397,7 +2397,7 @@ const help = 'field-hint block'
       {/* ==================================================== recent messages */}
 
       <section>
-        <h2 class="text-lg font-semibold tracking-tight">Recent messages</h2>
+        <h2 class="text-base font-semibold tracking-tight">Recent messages</h2>
         <p class="mt-1 max-w-3xl text-sm text-ink-500">
           The last <span class="tabular-nums">20</span> messages we sent about this carrier, to anyone
           on the account. This is a record, not a setting: it cannot be edited or cleared from here, by
