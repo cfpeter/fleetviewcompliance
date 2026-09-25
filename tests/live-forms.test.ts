@@ -216,6 +216,21 @@ test('one page at a time, and today that is one page', () => {
   }
   walk(pages)
   assert.deepEqual(live.sort(), [
+    // The driver's own page, added third. It is the one an owner opens most,
+    // and it was still throwing the document away on every date he typed.
+    //
+    // WHAT HAD TO CHANGE WITH IT, because this list is a decision and not a
+    // flag: its refusal is now `role="alert"` + `tabindex="-1"` so `settle()`
+    // can find it on a page that stays where it was; its six confirmations are
+    // `<Flash>` so the corner can carry them; and the "cannot be dispatched"
+    // banner gave UP its `role="alert"` — always-present and above everything,
+    // it would have caught every save and thrown the reader to the top to
+    // re-read a sentence instead of to the refusal further down.
+    //
+    // The two traps below did not apply: the page binds no inline listener
+    // (no <script>, no addEventListener, no window.print) and no input is tied
+    // to its form by the `form=` attribute — every box sits inside its form.
+    './../src/pages/app/drivers/[id].astro',
     './../src/pages/app/index.astro',
     './../src/pages/app/reminders/index.astro',
   ])

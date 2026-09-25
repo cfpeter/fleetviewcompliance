@@ -1,0 +1,80 @@
+---
+/**
+ * One link, and what the person on the other end of it sees.
+ *
+ * WHAT THE WORDS CANNOT DO QUICKLY. "You print one dated packet" is accurate
+ * and flat. The thing worth seeing is that something LEAVES the company: a
+ * broker, an underwriter or a scale has no account here and is never going to
+ * get one, so the file has to cross a line and still be readable. That crossing
+ * is the whole mechanism, and a picture shows it in a second.
+ *
+ * NO CARRIER NAME IS INVENTED. The name on the shared page is drawn as a bar
+ * rather than written, because a made-up trucking company on a marketing page
+ * is a real company somewhere, and a real one implies a customer we do not
+ * have.
+ *
+ * Static, for the same reason as DispatchBlock.astro.
+ */
+interface Props {
+  class?: string
+}
+const { class: extra = '' } = Astro.props
+---
+
+<svg
+  viewBox="0 0 380 230"
+  role="img"
+  aria-labelledby="fv-proof-title fv-proof-desc"
+  class:list={['h-auto w-full', extra]}
+>
+  <title id="fv-proof-title">A shared link, and the page a broker opens</title>
+  <desc id="fv-proof-desc">
+    Your file on the left, with a share button. One link crosses a dashed line marked outside
+    your company, to a page a broker opens with no account: driver files, truck inspections and
+    insurance all marked on file. You can turn the link off.
+  </desc>
+
+  <rect width="380" height="230" rx="12" fill="#EAF4FB"></rect>
+
+  {/* Your side */}
+  <rect x="14" y="34" width="144" height="150" rx="12" fill="#FFFFFF" stroke="#DCE3EA"></rect>
+  <text x="30" y="58" font-size="12" font-weight="500" fill="#1C1C1E">Your file</text>
+  <rect x="30" y="70" width="112" height="7" rx="3.5" fill="#E9EDF2"></rect>
+  <rect x="30" y="84" width="92" height="7" rx="3.5" fill="#E9EDF2"></rect>
+  <rect x="30" y="98" width="104" height="7" rx="3.5" fill="#E9EDF2"></rect>
+  <rect x="30" y="112" width="74" height="7" rx="3.5" fill="#E9EDF2"></rect>
+  <rect x="30" y="140" width="64" height="22" rx="11" fill="#E7F0FE"></rect>
+  <text x="62" y="155" font-size="11" font-weight="500" fill="#1F6FEB" text-anchor="middle">
+    Share
+  </text>
+
+  {/* The line the file crosses. Dashed, because it is not a wall — it is the
+      edge of the company, and the point is that something goes over it. */}
+  <line x1="190" y1="20" x2="190" y2="210" stroke="#C4D0DC" stroke-width="1.5" stroke-dasharray="4 5"
+  ></line>
+  <text x="190" y="206" font-size="10" fill="#8A93A0" text-anchor="middle">outside your company</text>
+
+  <path d="M166 100 H196" stroke="#1F6FEB" stroke-width="1.5"></path>
+  <path d="M192 96 L199 100 L192 104 Z" fill="#1F6FEB"></path>
+  <text x="181" y="88" font-size="10" fill="#6E6E73" text-anchor="middle">one link</text>
+
+  {/* Their side */}
+  <rect x="204" y="26" width="162" height="166" rx="12" fill="#FFFFFF" stroke="#DCE3EA"></rect>
+  <rect x="220" y="44" width="54" height="9" rx="4.5" fill="#D8DEE6"></rect>
+  <rect x="284" y="40" width="66" height="18" rx="9" fill="#E3F7E8"></rect>
+  <text x="317" y="53" font-size="11" font-weight="500" fill="#1E7A34" text-anchor="middle">
+    On file
+  </text>
+  <line x1="220" y1="68" x2="350" y2="68" stroke="#E5E5EA"></line>
+
+  <circle cx="226" cy="86" r="4.5" fill="#34A853"></circle>
+  <text x="238" y="90" font-size="11" fill="#1C1C1E">Driver files</text>
+  <circle cx="226" cy="108" r="4.5" fill="#34A853"></circle>
+  <text x="238" y="112" font-size="11" fill="#1C1C1E">Truck inspections</text>
+  <circle cx="226" cy="130" r="4.5" fill="#34A853"></circle>
+  <text x="238" y="134" font-size="11" fill="#1C1C1E">Insurance</text>
+
+  <line x1="220" y1="150" x2="350" y2="150" stroke="#E5E5EA"></line>
+  <text x="220" y="167" font-size="11" fill="#6E6E73">No account. No password.</text>
+  <text x="220" y="181" font-size="11" fill="#6E6E73">You can turn the link off.</text>
+</svg>

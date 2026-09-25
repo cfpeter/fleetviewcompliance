@@ -372,6 +372,32 @@ const summaryRow =
 /** The chevron on a fold's summary: it turns when the fold is open. */
 const chevron = 'size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180'
 /**
+ * THE FOLD THAT OPENS THE UPLOAD FORM, DRAWN AS A BUTTON.
+ *
+ * It is the one control on this card that starts a job, and as a bare line of
+ * text with a chevron beside it, it read as a heading — on a phone, in a yard,
+ * it is not obvious that a heading is something you press. So it borrows
+ * `.btn .btn-secondary`, the app's own "action beside the action": same 44px
+ * target, same border, same hover as every other secondary button on the page.
+ *
+ * THE CHEVRON STAYS, AND STILL TURNS. A button that looks like a button but
+ * navigates nowhere is its own small lie; the chevron is what says this opens
+ * in place, and turning it over says it is now open. Dropping it would buy
+ * nothing and cost the one piece of honesty the control had.
+ *
+ * `list-none` and the webkit marker rule are load-bearing: without them the
+ * browser draws its own triangle INSIDE the button, next to ours.
+ *
+ * Full width on a phone and only as wide as its words above `sm`. A 44px target
+ * spanning the card is the easiest thing on the page to hit with a work glove
+ * on, and at desk width a full-width button would read as a banner.
+ */
+const summaryButton =
+  'btn btn-secondary w-full cursor-pointer list-none select-none sm:w-auto ' +
+  '[&::-webkit-details-marker]:hidden'
+/** The same chevron on a button, taking the button's own colour. */
+const chevronOnButton = 'size-4 shrink-0 transition-transform group-open:rotate-180'
+/**
  * A row action. The shared tertiary button, which is 44px tall at every width,
  * so the bordered blocks this used to draw on a phone are gone — the target is
  * the same size, there is just less ink around it. The negative margin puts the
@@ -735,7 +761,7 @@ const actionRow = '-ml-4 mt-0.5 flex flex-wrap items-center gap-x-3 sm:mt-0 sm:m
       himself to finish what he started.
     */}
     <details open={formOpen} class="group mt-6 border-t border-ink-100 pt-5">
-      <summary class={`${summaryRow} font-medium tracking-tight`}>
+      <summary class={summaryButton}>
         {replacing ? 'Replace this file' : 'Add a file'}
         <svg
           aria-hidden="true"
@@ -745,7 +771,7 @@ const actionRow = '-ml-4 mt-0.5 flex flex-wrap items-center gap-x-3 sm:mt-0 sm:m
           stroke-width="2"
           stroke-linecap="round"
           stroke-linejoin="round"
-          class={chevron}
+          class={chevronOnButton}
         >
           <path d="M5 8l5 5 5-5"></path>
         </svg>

@@ -148,7 +148,6 @@ test('the page loads only what the tab it is drawing needs', () => {
   for (const [call, tab] of [
     ['loadCurrentAnchors()', 'dates'],
     ["from('compliance_records')", 'dates'],
-    ['loadDeadlines(', 'dates'],
     ['loadReminders(', 'dates'],
     ["from('settlements')", 'pay'],
     ["from('documents')", 'papers'],
@@ -167,6 +166,28 @@ test('the page loads only what the tab it is drawing needs', () => {
       `${call} is read only on '${tab}'`,
     )
   }
+
+  // `loadDeadlines` IS NOT GATED, and that is a decision rather than a leak.
+  //
+  // It used to be `tab === 'dates'` with everything else here. The banner under
+  // his name — "James Simon cannot be dispatched" — is drawn from it, and that
+  // fact does not belong to one tab: Pay is where a settlement gets run for
+  // him, Record is where his status changes, Papers is where the new card gets
+  // uploaded. Gated, the warning is silently absent on three of four screens,
+  // which is worse than never having shown it, because a screen that has
+  // checked and says nothing reads as "he is fine".
+  //
+  // It costs four subrequests (carriers, drivers, vehicles, anchors). The tab
+  // that loads the most is Papers at four of its own, so the worst case here is
+  // about a dozen against a 50-per-invocation ceiling. The thirteen round trips
+  // this test was written about were thirteen for ONE screen that drew none of
+  // them; four for a sentence that stops a truck is a different trade.
+  assert.match(
+    loader,
+    /\n\s*loadDeadlines\(supabase, carrierId\),/,
+    'loadDeadlines is gated on a tab again, which takes the cannot-be-dispatched ' +
+      'banner off three of the four tabs',
+  )
 
   // The driver row itself is NEVER gated: it is the name at the top of the
   // page, it decides whether this driver is ours at all, and every tab is

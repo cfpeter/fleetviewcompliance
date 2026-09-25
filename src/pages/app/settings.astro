@@ -38,7 +38,12 @@ import App from '../../layouts/App.astro'
 import { formText, formatDate, todayInCalifornia } from '../../lib/drivers.ts'
 // The three "how you operate" facts: the same shape the census fills at signup,
 // so the settings form and the federal record write the same columns.
-import { operationAnswer, operationAnswers, operationFromAnswers } from '../../lib/fmcsa.ts'
+import {
+  effectiveOperation,
+  operationAnswer,
+  operationAnswers,
+  operationFromAnswers,
+} from '../../lib/fmcsa.ts'
 import {
   DEFAULT_LEAD_DAYS,
   NOTIFY_CATEGORIES,
@@ -797,11 +802,33 @@ const [
         .select(
           // One literal, not a concatenation: supabase-js types the row from the
           // select string, and anything but a literal comes back as an error type.
-          'legal_name, dba_name, dot_number, phy_street, phy_city, phy_state, phy_zip, timezone, carrier_operation, for_hire, hazmat, operation_source',
+          'legal_name, dba_name, dot_number, phy_street, phy_city, phy_state, phy_zip, timezone, carrier_operation, for_hire, hazmat, operation_source, fmcsa_carrier_operation, fmcsa_for_hire, fmcsa_hazmat',
         )
         .eq('id', carrierId)
         .maybeSingle()
       if (!full.error) return full
+
+      // UNTIL 0040 IS APPLIED the three census-only columns do not exist while
+      // the owner's three do. Without this middle step the next fallback would
+      // read 0040's absence as 0031's and blank a block that works.
+      const withOperation = await supabase
+        .from('carriers')
+        .select(
+          'legal_name, dba_name, dot_number, phy_street, phy_city, phy_state, phy_zip, timezone, carrier_operation, for_hire, hazmat, operation_source',
+        )
+        .eq('id', carrierId)
+        .maybeSingle()
+      if (!withOperation.error) {
+        const data = withOperation.data
+          ? {
+              ...withOperation.data,
+              fmcsa_carrier_operation: null,
+              fmcsa_for_hire: null,
+              fmcsa_hazmat: null,
+            }
+          : null
+        return { ...withOperation, data: data as typeof full.data }
+      }
 
       // UNTIL 0031 IS APPLIED the four operation columns do not exist, and
       // naming them makes PostgREST refuse the whole select — which rendered
@@ -816,7 +843,16 @@ const [
         .maybeSingle()
       operationReady = false
       const data = base.data
-        ? { ...base.data, carrier_operation: null, for_hire: null, hazmat: null, operation_source: null }
+        ? {
+            ...base.data,
+            carrier_operation: null,
+            for_hire: null,
+            hazmat: null,
+            operation_source: null,
+            fmcsa_carrier_operation: null,
+            fmcsa_for_hire: null,
+            fmcsa_hazmat: null,
+          }
         : null
       return { ...base, data: data as typeof full.data }
     })(),
@@ -1202,6 +1238,30 @@ const operation = operationAnswers({
   hazmat: carrier?.hazmat ?? null,
 })
 const operationSource: string | null = carrier?.operation_source ?? null
+
+/**
+ * The answers the FEDERAL RECORD is providing because the owner said he is not
+ * sure (0040). `effectiveOperation` decides which of the three those are; this
+ * only turns them back into the words the three questions are asked in.
+ *
+ * Shown, never silent. A fact that decides which rules a man is charged to
+ * watch is a fact he has to be able to see and overrule, and one radio button
+ * above each note does overrule it.
+ */
+const effective = effectiveOperation(carrier)
+const borrowed = new Set(effective.federal)
+const yesNo = (b: boolean | null): string | null =>
+  b === true ? 'Yes' : b === false ? 'No' : null
+
+const federalAnswer = {
+  crossesStateLines: borrowed.has('carrier_operation')
+    ? effective.carrier_operation === 'A'
+      ? 'Yes'
+      : 'No'
+    : null,
+  forHire: borrowed.has('for_hire') ? yesNo(effective.for_hire) : null,
+  hazmat: borrowed.has('hazmat') ? yesNo(effective.hazmat) : null,
+}
 
 const card = 'card'
 // The shared field construction. The local one it replaces was 40px tall and
@@ -1734,7 +1794,8 @@ const help = 'field-hint block'
         <h2 class="text-base font-semibold tracking-tight">How your company operates</h2>
         <p class="mt-1 max-w-3xl text-sm text-ink-500">
           Your answers decide which rules we show you. If you answer No, we stop showing the rules
-          that only apply when the answer is Yes. If you are not sure, we keep showing them.
+          that only apply when the answer is Yes. If you are not sure, we use what your USDOT record
+          says. If your USDOT record does not say either, we keep showing them.
         </p>
 
         {
@@ -1788,6 +1849,14 @@ const help = 'field-hint block'
                   </label>
                 </div>
                 {
+                  federalAnswer.crossesStateLines && (
+                    <p class="mt-2 text-sm text-ink-700">
+                      Your USDOT record says <strong>{federalAnswer.crossesStateLines}</strong>. We use that
+                      answer while you are not sure.
+                    </p>
+                  )
+                }
+                {
                   errorField === 'crosses_state_lines_yes' && (
                     <p class="field-error" id="crosses_state_lines_yes-error">
                       <span aria-hidden="true">⚠</span>
@@ -1827,6 +1896,14 @@ const help = 'field-hint block'
                     <span class="text-sm">I'm not sure</span>
                   </label>
                 </div>
+                {
+                  federalAnswer.forHire && (
+                    <p class="mt-2 text-sm text-ink-700">
+                      Your USDOT record says <strong>{federalAnswer.forHire}</strong>. We use that
+                      answer while you are not sure.
+                    </p>
+                  )
+                }
               </fieldset>
 
               <fieldset class="mt-5 border-t border-ink-100 pt-5">
@@ -1856,6 +1933,14 @@ const help = 'field-hint block'
                     <span class="text-sm">I'm not sure</span>
                   </label>
                 </div>
+                {
+                  federalAnswer.hazmat && (
+                    <p class="mt-2 text-sm text-ink-700">
+                      Your USDOT record says <strong>{federalAnswer.hazmat}</strong>. We use that
+                      answer while you are not sure.
+                    </p>
+                  )
+                }
               </fieldset>
 
               <div class="mt-5 border-t border-ink-100 pt-5">

@@ -80,8 +80,32 @@ const AT_RISK: ReadonlySet<Standing> = new Set<Standing>(['overdue', 'unknown'])
  * dashboard quoting a different, larger figure every morning for a row nobody
  * has touched. That is a scoreboard, not a fact.
  */
-function ceilingFor(p: Penalty): number {
+export function ceilingCentsFor(p: Penalty): number {
   return p.unit === 'per_day' ? (p.capCents ?? p.maxCents) : p.maxCents
+}
+
+/**
+ * The one amount to show for a row, or null if there is none to show.
+ *
+ * THE CARRIER'S SIDE, AND THE LARGEST OF IT. Two decisions, and both were
+ * about to be made in three places — here, on the dashboard's rows, and in the
+ * driver page's checklist. Appendix B sets $19,246 for the employer at (a)(3)
+ * and $4,812 for the driver at (a)(4) for the same subject matter; a screen
+ * that picked the wrong one would quietly show an owner somebody else's
+ * penalty, and it would look completely normal. Taking the largest keeps
+ * whatever is shown a ceiling rather than an average of unlike things.
+ *
+ * Returns the Penalty, not a number, because the caller decides how to say it:
+ * the total wants cents, a row wants `penaltyAmount`, a page on its own wants
+ * the full phrase with the citation and the date.
+ */
+export function carrierCeiling(penalty?: readonly Penalty[]): Penalty | null {
+  let best: Penalty | null = null
+  for (const p of penalty ?? []) {
+    if (p.payer !== 'carrier') continue
+    if (!best || ceilingCentsFor(p) > ceilingCentsFor(best)) best = p
+  }
+  return best
 }
 
 /**
@@ -99,13 +123,13 @@ export function exposure(rows: readonly ExposureInput[]): Exposure {
   for (const row of rows) {
     if (!AT_RISK.has(row.standing)) continue
 
-    const carrierAmounts = (row.penalty ?? []).filter((p) => p.payer === 'carrier')
-    if (carrierAmounts.length === 0) {
+    const mine = carrierCeiling(row.penalty)
+    if (!mine) {
       unpriced++
       continue
     }
 
-    ceilingCents += Math.max(...carrierAmounts.map(ceilingFor))
+    ceilingCents += ceilingCentsFor(mine)
     counted++
   }
 

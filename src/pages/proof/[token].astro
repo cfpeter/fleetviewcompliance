@@ -27,7 +27,13 @@ import {
 } from '../../lib/charts/health.ts'
 import { TONES } from '../../lib/charts/tones.ts'
 import { lookupAuthority, lookupCarrier } from '../../lib/fmcsa.ts'
-import { assembleDqf, gaps, type ItemState } from '../../lib/proof/dqf.ts'
+import {
+  assembleDqf,
+  driverFileAnchors,
+  gaps,
+  holdsSpe,
+  stateWord,
+} from '../../lib/proof/dqf.ts'
 import { evaluate, type EvaluationSubject } from '../../lib/rules/index.ts'
 import { anonClient } from '../../lib/supabase/server.ts'
 
@@ -86,7 +92,36 @@ let carrier:
       hazmat?: boolean | null
     }
   | undefined
-let driver: { id: string; first_name: string; last_name: string; cdl_number?: string; cdl_state?: string; cdl_expires_on?: string } | undefined
+/**
+ * `hired_on` IS ON THIS TYPE BECAUSE IT IS LOAD-BEARING, NOT FOR DISPLAY.
+ *
+ * `share_driver` has returned it since 0026 and this page read it into nothing.
+ * Five federal rules hang off the hire date — see `driverFileAnchors` — so
+ * without it (b)(1), (b)(2) and (b)(3) printed "Not known" on a file whose
+ * owner's own binder printed "On file". It is projected into an anchor below
+ * and never shown: when a man started is his business, not the broker's.
+ */
+let driver:
+  | {
+      id: string
+      first_name: string
+      last_name: string
+      cdl_number?: string
+      cdl_state?: string
+      cdl_expires_on?: string
+      hired_on?: string
+    }
+  | undefined
+/**
+ * The document KINDS held against this driver — 0041's share_documents.
+ *
+ * UNDEFINED IS LOAD-BEARING AND IS NOT AN EMPTY SET. Undefined means this page
+ * has not looked at the paper, and `assembleDqf` prints the plain word for it;
+ * an empty set means it looked and found none, and every typed date then reads
+ * "Date recorded, no document". A failed RPC must land on the first of those,
+ * or a database hiccup turns this page into an accusation.
+ */
+let uploadedKinds: ReadonlySet<string> | undefined
 let counts: { active_drivers: number; power_units: number; trailers: number } | undefined
 let anchorRows: { subject_type: string; subject_id: string | null; anchor_key: string; occurred_on: string }[] = []
 let authority: Awaited<ReturnType<typeof lookupAuthority>> | undefined
@@ -104,8 +139,18 @@ if (link) {
   anchorRows = (a.data ?? []) as typeof anchorRows
 
   if (link.scope === 'driver_file') {
-    const d = await db.rpc('share_driver', { p_token: token })
+    const [d, docs] = await Promise.all([
+      db.rpc('share_driver', { p_token: token }),
+      // Kinds and nothing else, scoped in the function's own WHERE clause. This
+      // is what lets the item list say "Date recorded, no document" where a date
+      // was typed in and the card was never scanned — the first thing the person
+      // reading this page would test, and the thing it used to call "On file".
+      db.rpc('share_documents', { p_token: token }),
+    ])
     driver = (Array.isArray(d.data) ? d.data[0] : d.data) ?? undefined
+    uploadedKinds = docs.error
+      ? undefined
+      : new Set(((docs.data ?? []) as { kind: string }[]).map((r) => r.kind))
   } else {
     const f = await db.rpc('share_fleet_counts', { p_token: token })
     counts = (Array.isArray(f.data) ? f.data[0] : f.data) ?? undefined
@@ -155,9 +200,14 @@ const operation = {
 let dqfItems: ReturnType<typeof assembleDqf> = []
 
 if (link?.scope === 'driver_file' && driver) {
-  const a = anchorsFor('driver', driver.id)
-  const cdl = parseDate(driver.cdl_expires_on)
-  if (cdl && !a.cdl_expires) a.cdl_expires = cdl
+  // The anchors the owner's own screens are scored from, built by the same
+  // function for the same reason — src/lib/deadlines.ts calls it too. The hire
+  // date is not a compliance anchor; it is a column on the driver row, and a
+  // file scored without it reports three gaps that are not there.
+  const a = driverFileAnchors(anchorsFor('driver', driver.id), {
+    hired_on: parseDate(driver.hired_on),
+    cdl_expires_on: parseDate(driver.cdl_expires_on),
+  })
 
   const subject: EvaluationSubject = {
     type: 'driver',
@@ -171,7 +221,12 @@ if (link?.scope === 'driver_file' && driver) {
     anchors: a,
   }
   const items = evaluate([subject], observedAt).filter((i) => i.subjectId === driver!.id)
-  dqfItems = assembleDqf({ items })
+
+  dqfItems = assembleDqf({
+    items,
+    driver: { cdl: Boolean(driver.cdl_number), spe: holdsSpe(items) },
+    uploadedKinds,
+  })
 }
 
 /**
@@ -294,14 +349,6 @@ const healthCoverage = !health
         ? `${health.unschedulable} more duties have no fixed date anyone can work out. They are not in the count.`
         : '',
     ].filter(Boolean)
-
-const STATE_WORDS: Record<ItemState, string> = {
-  present: 'On file',
-  expiring: 'Expires soon',
-  expired: 'Expired',
-  missing: 'Not on file',
-  unknown: 'Not known',
-}
 
 const longDate = (d?: Date) =>
   d ? d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' }) : '—'
@@ -614,7 +661,7 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
                           <span class="font-medium">
                             {i.paragraph} {i.title}
                           </span>
-                          <span class="ml-2 text-ink-700">— {STATE_WORDS[i.state]}</span>
+                          <span class="ml-2 text-ink-700">— {stateWord(i)}</span>
                         </li>
                       ))}
                     </ol>
@@ -625,6 +672,13 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
                   <h2 class="text-lg font-semibold tracking-tight">
                     Driver qualification file, in 49 CFR 391.51(b) order
                   </h2>
+                  {/* All eight are listed, including the ones this driver is not
+                      expected to hold, and they say so in place of a state. A
+                      document that quietly drops two of the statutory eight is
+                      one an auditor cannot check against the statute — and a
+                      row reading "Not on file" beside a ring that does not
+                      count it is worse still. Same three-way as the owner's
+                      printed binder, word for word. */}
                   <div class="mt-3 divide-y divide-ink-100 border-t border-ink-100">
                     {dqfItems.map((i) => (
                       <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-3" data-block>
@@ -632,8 +686,13 @@ const title = link ? (driver ? `Driver record — ${driverName}` : carrier?.lega
                           {i.paragraph}
                         </span>
                         <span class="flex-1 font-medium">{i.title}</span>
-                        <span class="text-sm text-ink-500">{STATE_WORDS[i.state]}</span>
+                        <span class="text-sm text-ink-500">
+                          {i.notApplicable ? 'Does not apply' : stateWord(i)}
+                        </span>
                         <div class="w-full text-xs text-ink-700">{i.citation}</div>
+                        {i.notApplicable && (
+                          <div class="w-full text-xs text-ink-700">{i.notApplicable}</div>
+                        )}
                       </div>
                     ))}
                   </div>

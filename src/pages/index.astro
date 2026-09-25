@@ -8,6 +8,8 @@
  * because the underlying FMCSA data is free and unauthenticated.
  */
 import Public from '../layouts/Public.astro'
+import HeroTrucks from '../components/marketing/HeroTrucks.astro'
+import Roadside from '../components/marketing/Roadside.astro'
 import { coverage } from '../lib/site.ts'
 
 const card = 'card'
@@ -92,61 +94,73 @@ const faqs = [
   <!-- Hero -->
   <section class="border-b border-ink-100 bg-champagne-50">
     <div class="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
-      <p class="text-sm font-medium tracking-widest text-brand-600 uppercase">
-        For small US fleets
-      </p>
-      <h1 class="mt-4 max-w-3xl text-4xl font-semibold tracking-tight text-balance sm:text-6xl">
-        See what expires next, before it costs you money.
-      </h1>
-      {/* ink-700: the hero sits on `bg-champagne-50`, where ink-500 is 4.30:1. */}
-      <p class="mt-5 max-w-2xl text-lg text-ink-700">
-        A fleet with 12 trucks has more than 100 deadlines every year. Miss one and you can get
-        a fine over $10,000, a hold on your registration, or a truck stopped at the scale. Type
-        your DOT number and see your dates in about 10 seconds.
-      </p>
-
       {/*
-        `.field-affix` and `.field-affix-input` from global.css — the shared box
-        that holds a control beside an input. The local version of it drew its
-        own `focus-within:ring-2` and put `outline-none` on the input, which gave
-        this box TWO focus indicators at once: the unlayered `:focus-visible`
-        rule in global.css outranks `outline-none` on purpose, so the shared 2px
-        ring was drawn anyway and the local halo sat under it at a different
-        radius. One ring, the one every other control in the product uses.
-
-        Explicit `for` rather than a wrapping label, and the hint moved out from
-        under it: a <label> that wraps its control folds all of its text into that
-        control's accessible name, so this box announced as "Your USDOT number No
-        account, no email, no card. We read the public federal record." The hint
-        is a description, and `aria-describedby` is how a description is said.
-
-        `rounded-xl` and the padding are kept as utilities, which outrank the
-        component class — the marketing shape does not change.
+        THE PICTURE COMES SECOND IN THE MARKUP, and that is the whole of the
+        mobile decision: on a phone the column collapses and he reads the
+        sentence and reaches the box he types his DOT number into before he
+        scrolls past a drawing. On a laptop the grid puts it beside them.
       */}
-      <form method="GET" action="/check" class="mt-8 max-w-md">
-        <label class="field-label" for="hero-dot">Your USDOT number</label>
-        <div class="field-affix mt-1 rounded-xl">
-          <input
-            type="text"
-            id="hero-dot"
-            name="dot"
-            inputmode="numeric"
-            pattern="[0-9]*"
-            required
-            placeholder="e.g. 1234567"
-            class="field-affix-input px-4 py-3.5 tabular-nums"
-            aria-describedby="hero-dot-hint"
-          />
-          {/* `ml-2`: 8px between the box he types in and the button, the floor
-              between two targets. It was 4px. */}
-          <button type="submit" class="btn btn-primary m-1 ml-2 shrink-0">
-            Check
-          </button>
+      <div class="grid items-center gap-10 lg:grid-cols-[1fr_minmax(0,26rem)]">
+        <div>
+          <p class="text-sm font-medium tracking-widest text-brand-600 uppercase">
+            For small US fleets
+          </p>
+          <h1 class="mt-4 max-w-3xl text-4xl font-semibold tracking-tight text-balance sm:text-6xl">
+            See what expires next, before it costs you money.
+          </h1>
+          {/* ink-700: the hero sits on `bg-champagne-50`, where ink-500 is 4.30:1. */}
+          <p class="mt-5 max-w-2xl text-lg text-ink-700">
+            A fleet with 12 trucks has more than 100 deadlines every year. Miss one and you can get
+            a fine over $10,000, a hold on your registration, or a truck stopped at the scale. Type
+            your DOT number and see your dates in about 10 seconds.
+          </p>
+
+          {/*
+            `.field-affix` and `.field-affix-input` from global.css — the shared box
+            that holds a control beside an input. The local version of it drew its
+            own `focus-within:ring-2` and put `outline-none` on the input, which gave
+            this box TWO focus indicators at once: the unlayered `:focus-visible`
+            rule in global.css outranks `outline-none` on purpose, so the shared 2px
+            ring was drawn anyway and the local halo sat under it at a different
+            radius. One ring, the one every other control in the product uses.
+
+            Explicit `for` rather than a wrapping label, and the hint moved out from
+            under it: a <label> that wraps its control folds all of its text into that
+            control's accessible name, so this box announced as "Your USDOT number No
+            account, no email, no card. We read the public federal record." The hint
+            is a description, and `aria-describedby` is how a description is said.
+
+            `rounded-xl` and the padding are kept as utilities, which outrank the
+            component class — the marketing shape does not change.
+          */}
+          <form method="GET" action="/check" class="mt-8 max-w-md">
+            <label class="field-label" for="hero-dot">Your USDOT number</label>
+            <div class="field-affix mt-1 rounded-xl">
+              <input
+                type="text"
+                id="hero-dot"
+                name="dot"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                required
+                placeholder="e.g. 1234567"
+                class="field-affix-input px-4 py-3.5 tabular-nums"
+                aria-describedby="hero-dot-hint"
+              />
+              {/* `ml-2`: 8px between the box he types in and the button, the floor
+                  between two targets. It was 4px. */}
+              <button type="submit" class="btn btn-primary m-1 ml-2 shrink-0">
+                Check
+              </button>
+            </div>
+            <p class="mt-2 text-xs text-ink-700" id="hero-dot-hint">
+              No account, no email, no card. We read the public federal record.
+            </p>
+          </form>
         </div>
-        <p class="mt-2 text-xs text-ink-700" id="hero-dot-hint">
-          No account, no email, no card. We read the public federal record.
-        </p>
-      </form>
+
+        <HeroTrucks />
+      </div>
     </div>
   </section>
 
@@ -168,6 +182,15 @@ const faqs = [
     <h2 class="max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">
       One date is easy to miss.
     </h2>
+
+    {/*
+      The scene this section is about, and the reason the copy beside it can
+      stay short. It deliberately does NOT show the app being handed to the
+      officer: he wants the card, the registration and the inspection report,
+      and a picture suggesting otherwise would put a truck out of service on
+      the strength of our marketing. The board in it is the office's screen.
+    */}
+    <Roadside class="mt-8 max-w-lg" />
     <div class="mt-8 grid gap-4 sm:grid-cols-3">
       <div class={card}>
         <p class="font-medium">The owner</p>

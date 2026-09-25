@@ -6,7 +6,8 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { ACTIVE_DRIVER_STATUS, ACTIVE_VEHICLE_STATUS } from './fleet/active.ts'
-import { DRIVER_ANCHORS_FROM_DRIVER_COLUMNS } from './rules/driver-anchors.ts'
+import { effectiveOperation } from './fmcsa.ts'
+import { driverFileAnchors } from './proof/dqf.ts'
 import { type DeadlineItem, type EvaluationSubject, evaluate } from './rules/index.ts'
 
 /** 'YYYY-MM-DD' from Postgres -> a UTC midnight Date. */
@@ -85,14 +86,18 @@ export async function loadDeadlines(
    * subject would leave those gates failing open exactly as they did before
    * the column existed.
    *
-   * NULL stays undefined. The engine reads undefined as UNKNOWN and keeps
-   * the rule on the board; it must never become false here, because false is
-   * the one value that can take an obligation away.
+   * WHERE A NULL COLUMN NOW GOES BEFORE IT BECOMES UNKNOWN. `effectiveOperation`
+   * (0040) reads the owner's answer first and the carrier's own federal record
+   * second, per fact. Only where neither settles it does the value reach the
+   * engine as undefined, which is UNKNOWN, which keeps the rule on the board.
+   * It must still never become `false` here — false is the one value that can
+   * take an obligation away, and this file is not where that is decided.
    */
+  const facts = effectiveOperation(c)
   const operation = {
-    carrierOperation: c?.carrier_operation ?? undefined,
-    forHire: c?.for_hire ?? undefined,
-    hazmat: c?.hazmat ?? undefined,
+    carrierOperation: facts.carrier_operation ?? undefined,
+    forHire: facts.for_hire ?? undefined,
+    hazmat: facts.hazmat ?? undefined,
   }
 
   subjects.push({
@@ -112,29 +117,18 @@ export async function loadDeadlines(
   })
 
   for (const d of drivers.data ?? []) {
-    const a = anchorsFor('driver', d.id)
-
     // Some dates live on the driver ROW rather than in compliance_records,
     // because they are identity rather than compliance events — you do not
-    // "perform" a hire date. Project them in so a rule never has to know which
-    // table a fact happens to sit in.
-    //
-    // This is load-bearing, not tidiness: five federal rules hang off
-    // `hire_date` (the DQF itself, the hire-time MVR, the safety-history
-    // investigation, the road test, and the pre-employment Clearinghouse
-    // query). Without this projection all five report "we need a date from you"
-    // for every driver — while the hire date sits on the driver's own page
-    // looking perfectly well answered. The anchor-to-column map is exported
-    // alongside the anchor constants so the two cannot drift apart.
-    for (const [anchorKey, column] of Object.entries(DRIVER_ANCHORS_FROM_DRIVER_COLUMNS)) {
-      if (a[anchorKey]) continue // an explicitly recorded date always wins
-      const fromColumn = parseDate(d[column as keyof typeof d] as string | null)
-      if (fromColumn) a[anchorKey] = fromColumn
-    }
-
-    // The CDL expiry is the same shape of fact.
-    const cdl = parseDate(d.cdl_expires_on)
-    if (cdl && !a.cdl_expires) a.cdl_expires = cdl
+    // "perform" a hire date. `driverFileAnchors` projects them in so a rule
+    // never has to know which table a fact happens to sit in, and it is SHARED
+    // with the driver file in src/lib/proof/dqf.ts: the dashboard this feeds
+    // and the link a carrier shares are scored from one set of anchors, which
+    // is the only reason they agree. The reason it is load-bearing, and what
+    // broke while it was not shared, is written down there.
+    const a = driverFileAnchors(anchorsFor('driver', d.id), {
+      hired_on: parseDate(d.hired_on),
+      cdl_expires_on: parseDate(d.cdl_expires_on),
+    })
 
     subjects.push({
       type: 'driver',

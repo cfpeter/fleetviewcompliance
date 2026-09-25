@@ -36,7 +36,31 @@
 import { DRIVER_ANCHORS } from '../rules/driver-anchors.ts'
 
 /** The closed set. Same six strings as the CHECK constraint in 0034. */
-export const ASK_KEYS = ['medical', 'cdl', 'spe', 'intracity', 'diabetes', 'vision'] as const
+/**
+ * THE SEVENTH, AND IT IS NOT A DATE.
+ *
+ * "Send the office whatever they asked you for." It names no anchor, carries no
+ * date box, and writes nothing on acceptance — all it does is let a link exist
+ * for a driver who owes none of the six dated papers, so that the owner can
+ * always text him and the ungated "Anything else to send?" box on the driver's
+ * page is the whole question.
+ *
+ * Deliberately absent from `DRIVER_ASKS` below. Everything downstream — the
+ * driver's page, `accept.ts` — builds its work by filtering that catalogue, so
+ * a key that is not in it contributes no question and no write, which is
+ * exactly the behaviour wanted. See 0042.
+ */
+export const ANYTHING_ASK = 'anything' as const
+
+export const ASK_KEYS = [
+  'medical',
+  'cdl',
+  'spe',
+  'intracity',
+  'diabetes',
+  'vision',
+  ANYTHING_ASK,
+] as const
 export type AskKey = (typeof ASK_KEYS)[number]
 
 /**
@@ -188,12 +212,45 @@ export function askByKey(raw: unknown): DriverAsk | null {
  */
 export function readAsks(values: readonly string[]): AskKey[] {
   const picked = new Set(values.map((v) => String(v ?? '').trim()))
-  return DRIVER_ASKS.filter((a) => picked.has(a.key)).map((a) => a.key)
+  // Over ASK_KEYS rather than DRIVER_ASKS, so the dateless seventh is readable
+  // off a form too. The order is the constant's own, which is what makes two
+  // links asking the same things store the same array for `sameAsk`.
+  return ASK_KEYS.filter((k) => picked.has(k))
 }
 
 /** Two links ask the same thing. Used to retire a live link when a new one is minted. */
 export function sameAsk(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((k, i) => k === b[i])
+}
+
+/**
+ * THE DASHBOARD'S NAME for the same fact.
+ *
+ * `DateQuestion.answerKey` on the "dates we are missing" screen is the anchor
+ * key — except for the licence, which is a column on the driver and reaches the
+ * engine as the projected anchor `cdl_expires` (src/lib/deadlines.ts). Without
+ * that one line, a driver whose only missing date is his licence would offer no
+ * ask at all, which is the most common missing date there is.
+ */
+export function answerKeyForAsk(ask: DriverAsk): string {
+  return ask.target.via === 'anchor' ? ask.target.anchorKey : 'cdl_expires'
+}
+
+/**
+ * Missing dates → the things we can ask the driver himself for.
+ *
+ * The dashboard knows exactly which dates a driver is short of. Making the
+ * owner re-tick them on another screen is asking him to copy a list he is
+ * already looking at, so the action menu on that card asks for precisely
+ * these — and for nothing else, because the whitelist in this file is what
+ * keeps 49 CFR 40.307(g) off a driver's phone.
+ *
+ * Order follows the catalogue, not the dashboard, so the message a driver gets
+ * reads the same way whichever screen sent it.
+ */
+export function asksForAnswerKeys(keys: Iterable<string>): AskKey[] {
+  const want = new Set(keys)
+  return DRIVER_ASKS.filter((a) => want.has(answerKeyForAsk(a))).map((a) => a.key)
 }
 
 /**

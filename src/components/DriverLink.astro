@@ -27,6 +27,8 @@ import {
   reminderAskKey,
   reminderIdFromKey,
 } from '../lib/driver-link/reminder-asks.ts'
+import { reachFor } from '../lib/driver-link/deliver.ts'
+import { formatPhone } from '../lib/phone.ts'
 import { formatDate } from '../lib/drivers.ts'
 
 export interface LinkRow {
@@ -66,6 +68,14 @@ interface Props {
   origin: string
   links: LinkRow[]
   submissions: SubmissionRow[]
+  /** Where an email would go, when there is no number to text. */
+  email: string | null
+  /**
+   * What became of the send that has just happened, or null on a plain view.
+   * A CODE, not a sentence — the words are built here from props this panel
+   * already holds, so a driver's phone number never rides in the address bar.
+   */
+  delivery: 'sms' | 'email' | 'none' | 'failed' | null
   /** Open reminders he may ask this driver about. Empty is a normal state. */
   askable: ReminderPick[]
   /**
@@ -78,6 +88,7 @@ interface Props {
 const {
   firstName,
   phone,
+  email,
   carrierName,
   minted,
   origin,
@@ -85,7 +96,50 @@ const {
   submissions,
   askable,
   reminderTitles,
+  delivery,
 } = Astro.props
+
+/**
+ * Where this link is going, said BEFORE he presses anything.
+ *
+ * The same function the handler uses, so the button cannot promise a text the
+ * server then sends by email — or promise anything at all for a driver we have
+ * no way to reach.
+ */
+const reach = reachFor({ phone, email })
+
+/** What the button promises, and where it says the message is going. */
+const sendLabel =
+  reach.channel === 'sms'
+    ? 'Send the text'
+    : reach.channel === 'email'
+      ? 'Send the email'
+      : 'Make the link'
+
+const goesTo =
+  reach.channel === 'sms'
+    ? `It goes by text to ${formatPhone(phone) || 'their mobile'}.`
+    : reach.channel === 'email'
+      ? `It goes by email to ${email}.`
+      : `No mobile number or email for ${firstName}, so you get a link to send yourself.`
+
+/**
+ * What became of the one that has just gone out.
+ *
+ * A failure is not an error state here: the link is minted and valid either
+ * way, and the owner has a phone in his hand. It says what happened and hands
+ * him the link, rather than throwing the link away to show him a red box.
+ */
+const sentLine =
+  delivery === 'sms'
+    ? `Sent by text to ${formatPhone(phone) || 'their mobile'}.`
+    : delivery === 'email'
+      ? `Sent by email to ${email}.`
+      : delivery === 'failed'
+        ? 'We could not send it just now. Send it yourself with the link below.'
+        : delivery === 'none'
+          ? `No mobile number and no email for ${firstName}. Send this however you already reach them.`
+          : null
 
 /**
  * Waiting, and already answered.
@@ -187,9 +241,11 @@ const askLabel = (key: string) => {
   {
     mintedUrl && (
       <div class="mt-4 rounded-xl border border-ink-100 bg-white p-4">
-        <p class="font-medium">Here is the link. Send it now.</p>
+        <p class="font-medium">{sentLine ?? 'Here is the link. Send it now.'}</p>
         <p class="mt-1 text-sm text-ink-700">
-          We show it one time and keep no copy. If you lose it, turn it off below and make another.
+          {delivery === 'sms' || delivery === 'email'
+            ? 'Here is the same link if you want to send it again yourself. We show it one time and keep no copy.'
+            : 'We show it one time and keep no copy. If you lose it, turn it off below and make another.'}
         </p>
         {/* readonly, not disabled: a disabled input cannot be selected, and
             selecting it is the whole job. */}
@@ -383,7 +439,11 @@ const askLabel = (key: string) => {
     </div>
 
     <button type="submit" name="intent" value="ask_driver" class="btn btn-primary mt-5">
-      Make the link
+      {sendLabel}
     </button>
+    {/* Said under the button, not in it: the button is the action, and where
+        the message is going is a fact he should be able to check before he
+        takes it. */}
+    <p class="mt-2 text-sm text-ink-700">{goesTo}</p>
   </form>
 </section>

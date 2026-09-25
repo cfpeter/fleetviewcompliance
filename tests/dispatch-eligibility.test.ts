@@ -430,3 +430,66 @@ test('the dashboard names no blocking rule code of its own', () => {
     )
   }
 })
+
+// ----------------------------------------------- the driver page uses it too
+
+/**
+ * FAILURE PINNED: the man's own page being the one screen that does not say it.
+ *
+ * Before this, the dashboard counted him among "2 drivers cannot be dispatched"
+ * and the assignment screen refused to put him on a load, while his own page —
+ * the page an owner opens to find out about him — listed the expired medical
+ * card and never drew the conclusion. Three screens, one driver, and the one
+ * with his name at the top was the one that stayed quiet.
+ *
+ * Same rule as the dashboard: ask the gate, never carry a copy of its list.
+ */
+const DRIVER_PAGE = readFileSync(
+  new URL('../src/pages/app/drivers/[id].astro', import.meta.url),
+  'utf8',
+)
+
+const driverPageCode = DRIVER_PAGE.replace(/\/\*[\s\S]*?\*\//g, '')
+  .split('\n')
+  .filter((line) => !line.trim().startsWith('//'))
+  .join('\n')
+
+test('the driver page asks eligibility() rather than deciding for itself', () => {
+  assert.match(
+    driverPageCode,
+    /import \{ eligibility \} from '\.\.\/\.\.\/\.\.\/lib\/dispatch\/eligibility\.ts'/,
+    'the driver page no longer imports the shared gate',
+  )
+  assert.match(driverPageCode, /eligibility\(\{/, 'it imports the gate and does not run it')
+  for (const code of blockingCodes()) {
+    assert.ok(
+      !driverPageCode.includes(code),
+      `the driver page names '${code}' itself instead of asking eligibility()`,
+    )
+  }
+})
+
+test('the driver page loads the deadlines it needs on every tab', () => {
+  // The banner is on all four tabs on purpose — Pay is where a settlement gets
+  // run for him, Record is where his status changes — and every other loader on
+  // that page is gated on `tab === '...'`. A gate reintroduced here would make
+  // the warning silently absent on three of the four screens, which is worse
+  // than never having shown it: it reads as "we checked, he is fine".
+  assert.ok(
+    /\n\s*loadDeadlines\(supabase, carrierId\),/.test(driverPageCode),
+    'loadDeadlines is gated on a tab again, so the cannot-be-dispatched banner ' +
+      'is missing on the tabs that did not need the deadline list',
+  )
+})
+
+test('the banner is not hidden on the Record tab with the identity strip', () => {
+  // The strip above it is `tab !== 'record'`, because the Record FORM reprints
+  // the same four facts in the boxes that change them. Nothing on that form
+  // says a man cannot legally drive, so the banner does not take that exception
+  // — and the easiest way to break this is to move it inside that block.
+  const strip = driverPageCode.indexOf("tab !== 'record' &&")
+  const banner = driverPageCode.indexOf('cannot be dispatched.')
+  assert.ok(strip > -1 && banner > -1, 'the strip or the banner has been renamed')
+  const stripEnd = driverPageCode.indexOf('phoneUndialable', strip)
+  assert.ok(banner > stripEnd, 'the banner has been moved inside the `tab !== record` block')
+})

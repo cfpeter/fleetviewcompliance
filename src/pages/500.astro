@@ -1,0 +1,55 @@
+---
+/**
+ * The page somebody gets when the server breaks.
+ *
+ * WHAT WAS THERE BEFORE: an HTTP 500, a document titled "Error", and no words
+ * at all. The owner who found it had just pressed Save on a page of IFTA miles
+ * — which had in fact saved — and had no way to know that, so his choice was to
+ * type it all again or to guess.
+ *
+ * DELIBERATELY SELF-CONTAINED. No layout, no `Astro.locals`, no database, no
+ * carrier name, not one thing that can fail. An error page that renders the
+ * app shell is an error page that throws when the shell is what threw, and
+ * then the reader is back to a blank screen with a worse stack trace behind it.
+ * The stylesheet is a build-time import and cannot fail at runtime.
+ *
+ * THE MIDDLE SENTENCE IS THE IMPORTANT ONE. "Try again" on its own invites him
+ * to send the same form twice; every write in this app ends in a 303 precisely
+ * so that cannot duplicate anything, but he does not know that. Telling him to
+ * LOOK FIRST is the instruction that costs nothing if the save worked and
+ * saves him a double entry if it did not.
+ *
+ * Nothing about the fault itself is printed. A stack trace on a customer's
+ * screen is an invitation, and the sentence it would add is one he cannot act
+ * on anyway.
+ */
+import '../styles/global.css'
+
+Astro.response.status = 500
+Astro.response.headers.set('Cache-Control', 'no-store')
+---
+
+<html lang="en" data-shell="app">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Something broke · FleetView Compliance</title>
+    <meta name="robots" content="noindex" />
+  </head>
+  <body class="bg-ink-50">
+    <main class="mx-auto flex min-h-screen max-w-lg flex-col justify-center px-4 py-16 sm:px-6">
+      <div class="rounded-xl border border-ink-100 bg-white p-6">
+        <h1 class="text-2xl font-semibold tracking-tight">Something broke on our side.</h1>
+        <p class="mt-3 text-ink-700">
+          This was not something you did. If you had just pressed Save, open the page again and
+          check before you type it in a second time — it may have gone through.
+        </p>
+        <p class="mt-3 text-ink-700">If it keeps happening, tell us and we will look at it.</p>
+        <div class="mt-6 flex flex-wrap items-center gap-3">
+          <a href="/app" class="btn btn-primary">Back to your deadlines</a>
+          <a href="/" class="btn btn-secondary">Home</a>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

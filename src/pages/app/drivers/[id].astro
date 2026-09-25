@@ -14,6 +14,7 @@ import Ring from '../../../components/charts/Ring.astro'
 import Documents from '../../../components/Documents.astro'
 import RemindersSection from '../../../components/Reminders.astro'
 import App from '../../../layouts/App.astro'
+import Flash from '../../../components/ui/Flash.astro'
 import { flashText } from '../../../lib/flash.ts'
 import {
   type DocumentRow,
@@ -38,7 +39,8 @@ import {
 } from '../../../lib/charts/driver-status.ts'
 import { ceilingFor, compactMoney } from '../../../lib/charts/scale.ts'
 import { loadDeadlines } from '../../../lib/deadlines.ts'
-import { assembleDqf } from '../../../lib/proof/dqf.ts'
+import { eligibility } from '../../../lib/dispatch/eligibility.ts'
+import { assembleDqf, holdsSpe } from '../../../lib/proof/dqf.ts'
 import {
   DRIVER_STATUSES,
   US_STATE_CODES,
@@ -79,7 +81,8 @@ import DriverLinkPanel, {
 import { acceptSubmission } from '../../../lib/driver-link/accept.ts'
 import { readAsks } from '../../../lib/driver-link/asks.ts'
 import { readReminderIds } from '../../../lib/driver-link/reminder-asks.ts'
-import { clampExpiryHours, mintDriverLink } from '../../../lib/driver-link/link.ts'
+import { askDriver } from '../../../lib/driver-link/ask-action.ts'
+import { clampExpiryHours } from '../../../lib/driver-link/link.ts'
 import { isProofToken } from '../../../lib/proof/token.ts'
 import { answerLink, resolveAnchor } from '../../../lib/rules/anchors.ts'
 import { answerKeyFor } from '../../../lib/rules/answer.ts'
@@ -289,7 +292,9 @@ if (Astro.request.method === 'POST') {
       return fail('Pick at least one thing to ask for.', '#ask')
     }
 
-    const minted = await mintDriverLink({
+    // Everything from here is the same errand the dashboard's action menu
+    // runs, so it lives in one place: src/lib/driver-link/ask-action.ts.
+    const asked = await askDriver({
       supabase,
       carrierId,
       driverId: id,
@@ -297,16 +302,18 @@ if (Astro.request.method === 'POST') {
       reminderIds,
       hours: clampExpiryHours(form.get('hours')),
       userId,
-      sentTo: null,
-      channel: 'copied',
+      origin: Astro.url.origin,
     })
-    if (!minted.ok) return fail(minted.message, '#ask')
+    if (!asked.ok) return fail(asked.message, '#ask')
 
     // The token rides in the query string exactly once, to this page, over
     // HTTPS, and the page sets no-store while it is on screen. That is the same
     // trade /app/proof makes; the alternative is keeping a copy of a live
     // credential in the database, which is what 0026 exists to stop.
-    return back(`minted=${encodeURIComponent(minted.token)}#ask`)
+    // A CODE, never the sentence. `sent=` says what happened and the panel
+    // builds the words from props it already has — the alternative puts a
+    // driver's phone number in the address bar and in the browser history.
+    return back(`minted=${encodeURIComponent(asked.token)}&sent=${asked.outcome}#ask`)
   }
 
   /**
@@ -726,7 +733,19 @@ const [
   // them in the same order for the same reason: the ring in the sidebar must
   // count what the binder counts, or it is a false assurance on the one
   // document somebody asks for when they are checking up on you.
-  tab === 'dates' ? loadDeadlines(supabase, carrierId) : Promise.resolve([]),
+  // ON EVERY TAB, AND THAT IS A DELIBERATE COST. It used to be `tab === 'dates'`
+  // like everything else around it, because only the Dates tab drew anything
+  // from it. The banner under his name needs it too, and "this man cannot
+  // legally drive" is not a fact that belongs to one tab: Pay is where an owner
+  // would run a settlement for him, Record is where he would change his status,
+  // Papers is where the new card gets uploaded. Being silent about it on three
+  // of four screens is how the warning gets missed on the screen it mattered on.
+  //
+  // The cost is one query and a rule evaluation over the carrier's own fleet —
+  // the same work the dashboard does on every load, for fleets whose minimum
+  // billable size is five trucks. If that ever stops being cheap, the fix is a
+  // per-subject loader, not going quiet on three tabs.
+  loadDeadlines(supabase, carrierId),
   // The owner's own reminders for this driver, scoped in the query rather than
   // filtered after — see `loadReminders`. Whole-company reminders are
   // deliberately not here: one is not a fact about this driver, and it would
@@ -813,7 +832,64 @@ const driverAnchorLabel = (key: string) =>
 const observedAt = new Date()
 const driverItems = allDeadlines.filter((i) => i.subjectId === id)
 
-const dqf = isActiveDriver(driver) ? dqRing(assembleDqf({ items: driverItems }), observedAt) : null
+/**
+ * CAN THIS MAN LEGALLY DRIVE TODAY?
+ *
+ * The dashboard says "2 drivers cannot be dispatched" and the assignment screen
+ * refuses to put him on a load, and until now his own page — the one an owner
+ * opens to find out about him — listed the expired medical card and never drew
+ * the conclusion. Three screens, one driver, and the one with his name at the
+ * top was the one that did not say it.
+ *
+ * THE ANSWER COMES FROM THE SHARED GATE, never from a rule code matched here.
+ * `eligibility()` is what the assignment screen refuses with, so a page that
+ * decided for itself could tell him one thing here and another on Dispatch.
+ * `BLOCKING_RULE_CODES` lives in that file precisely so the decision is made
+ * once — and California's intrastate medical rule joining that set is exactly
+ * the kind of change a hand-copied list here would have missed.
+ *
+ * FILTERED ON BOTH subjectType AND subjectId, unlike `driverItems` above. A
+ * driver id and a vehicle id are both uuids out of the same generator, so an id
+ * comparison alone would let a truck's inspection into a man's qualification
+ * check the first time the two ever collided — the same reasoning, in the same
+ * words, as the loop on /app/dispatch. The ring above keeps its own filter
+ * rather than being changed underneath it here.
+ */
+const qualificationItems = allDeadlines.filter(
+  (i) => i.subjectType === 'driver' && i.subjectId === id,
+)
+const blockingIssues = eligibility({
+  items: qualificationItems,
+  label: fullName(driver),
+}).filter((issue) => issue.severity === 'block')
+
+/**
+ * What to print beside each one: the rule's own title and how long it has been
+ * expired. Looked up by `ruleCode` — the issue decides THAT he is blocked, this
+ * only decides how to say it, so the gate keeps the judgement and the page
+ * keeps the words.
+ */
+const blockingRows = blockingIssues.map((issue) => {
+  const item = qualificationItems.find((i) => i.rule.code === issue.ruleCode)
+  return {
+    title: item?.rule.title ?? issue.ruleCode,
+    /** Negative when overdue, which is the only case that reaches here. */
+    daysLate: item?.daysUntil !== undefined ? Math.abs(item.daysUntil) : null,
+  }
+})
+
+// Same two facts the printed binder and the roster pass, for the same reason:
+// (b)(7) and (b)(8) are not this driver's to hold, and a ring that counts them
+// disagrees with the file on the next page over.
+const dqf = isActiveDriver(driver)
+  ? dqRing(
+      assembleDqf({
+        items: driverItems,
+        driver: { cdl: Boolean(driver.cdl_number), spe: holdsSpe(driverItems) },
+      }),
+      observedAt,
+    )
+  : null
 
 /**
  * THE CHECKLIST: everything with a deadline on this driver, worst first.
@@ -968,6 +1044,10 @@ const { data: carrierRow } =
     : { data: null }
 const carrierName = carrierRow?.legal_name ?? 'Your carrier'
 const mintedToken = isProofToken(params.get('minted')) ? params.get('minted') : null
+/** What became of the send, matched against the list rather than echoed. */
+const SENT_OUTCOMES = ['sms', 'email', 'none', 'failed'] as const
+const sentOutcome =
+  SENT_OUTCOMES.find((o) => o === params.get('sent')) ?? null
 const driverLinks = (linkRows ?? []) as unknown as LinkRow[]
 const driverSubmissions = (submissionRows ?? []) as unknown as SubmissionRow[]
 
@@ -1127,6 +1207,8 @@ const historyOpen = withdrew || error !== null
 
 /** The summary line on each fold: a chevron that turns, drawn once. */
 const chevron = 'size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180'
+/** The same chevron inside a button, taking the button's own colour. */
+const chevronOnButton = 'size-4 shrink-0 transition-transform group-open:rotate-180'
 /**
  * A fold's summary row. `list-none` because the default triangle is not ours.
  *
@@ -1206,7 +1288,7 @@ const ICONS = {
 } as const
 ---
 
-<App title={fullName(driver)} subtitle={currentTab.subtitle}>
+<App live title={fullName(driver)} subtitle={currentTab.subtitle}>
   {/*
     THE STRIP, AND THE TWO WAYS OFF THE PAGE, IN ONE ROW.
 
@@ -1247,51 +1329,76 @@ const ICONS = {
     </div>
   </div>
 
-  {error && <p class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+  {/*
+    A REFUSAL HAS TO BE FINDABLE ON A PAGE THAT NO LONGER RELOADS.
+
+    This was a plain <p>. It was written at the top of <main> back when a save
+    reloaded the document and put the reader there; he now stays exactly where
+    he was, so without this the sentence explaining why nothing saved can be a
+    screen and a half above him and he watches a button do nothing.
+
+    `role="alert"` is what `settle()` looks for, and `tabindex="-1"` is what
+    lets it move a screen reader to the sentence rather than leaving it where
+    it was — the same two attributes, for the same reason, as the shared error
+    summary and as the two refusals on the deadlines page.
+  */}
   {
-    added && (
-      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-        Driver added. Fill in the dates you have. The rest can wait for the paperwork.
+    error && (
+      <p
+        role="alert"
+        tabindex="-1"
+        class="mb-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700"
+      >
+        {error}
       </p>
     )
   }
-  {saved && <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">Saved.</p>}
+
+  {/*
+    EVERY CONFIRMATION IS A <Flash>, so the corner can carry it.
+
+    Same reasoning as the refusal above, in the opposite direction. "Saved."
+    printed at the top of <main> is a sentence about something the reader
+    cannot see any more. `hoistFlash()` MOVES these into the toast region —
+    moved, never copied, so there is still exactly one of each — and with the
+    script blocked they render here exactly as they always did.
+  */}
+  {added && <Flash>Driver added. Fill in the dates you have. The rest can wait for the paperwork.</Flash>}
+  {saved && <Flash>Saved.</Flash>}
   {
     accepted !== null && Number.isFinite(accepted) && (
-      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+      <Flash>
         Saved to this driver’s record.
         {accepted === 1 && ' Your own reminder is marked done.'}
         {accepted > 1 && ` ${accepted} of your own reminders are marked done.`}
-      </p>
+      </Flash>
     )
   }
   {
     rejected && (
-      <p class="mb-5 rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
+      <Flash tone="note">
         Turned down. Nothing changed on the record, and the photos are deleted. What he sent is
         still listed, so you can show you asked.
-      </p>
+      </Flash>
     )
   }
   {
     withdrew && (
-      <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+      <Flash>
         Date withdrawn. We keep it in the history, so you can still see what was on file and
         when. The next most recent date is now the one we use.
-      </p>
+      </Flash>
     )
   }
   {
     datesSaved !== null &&
       (datesSaved > 0 ? (
-        <p class="mb-5 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        <Flash>
           <span class="tabular-nums">{datesSaved}</span>
           {datesSaved === 1 ? ' date recorded.' : ' dates recorded.'}
-        </p>
+        </Flash>
       ) : (
-        <p class="mb-5 rounded-lg bg-champagne-50 px-4 py-3 text-sm text-brand-700">
-          Nothing changed, so nothing was recorded.
-        </p>
+        <Flash tone="note">Nothing changed, so nothing was recorded.</Flash>
       ))
   }
 
@@ -1341,6 +1448,67 @@ const ICONS = {
           )}
         </span>
         {phoneUndialable && <span class="badge badge-warning">We cannot text this number.</span>}
+      </div>
+    )
+  }
+
+  {/*
+    ================================================== he cannot drive today ===
+
+    ON EVERY TAB, RECORD INCLUDED — the one exception the strip above makes does
+    not apply here. That exception exists because the Record form reprints the
+    same four facts in the boxes that change them; nothing on that form says
+    this. An owner editing a man's phone number is an owner who has not been
+    told the man cannot legally drive.
+
+    ABOVE EVERYTHING, because it outranks everything. The checklist below says
+    what is overdue; this says what being overdue has already cost him.
+
+    THE SENTENCE IS THE COST. No dollar figure: the medical certificate carries
+    no line-item penalty in the catalogue because there is not one — its own
+    consequence says an expired card is "the loss of the licence privilege, not
+    a paperwork fine" — and a truck that is not moving is a number the owner
+    works out faster than we could.
+  */}
+  {
+    blockingRows.length > 0 && (
+      /*
+        NO `role="alert"` ON THIS, AND THE REASON IS NOT COSMETIC.
+
+        It had one until this page went live. `settle()` in live-forms.ts finds
+        the FIRST `[role="alert"]` inside <main> after a save and puts the
+        screen and the keyboard on it — that is how a refusal gets found on a
+        page that no longer reloads. This banner is always there for a blocked
+        driver, and it sits above everything, so it would have caught every
+        single save: type a date at the bottom of the checklist, press Save,
+        and get thrown to the top to re-read a sentence you had already read.
+        The real refusal, further down, would never be reached.
+
+        It is also the wrong role on its own terms. `alert` is for something
+        that has just happened; this is a standing fact about the man, rendered
+        by the server on every load, and it reads as red and says so in words.
+      */
+      <div class="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <p class="font-semibold">{fullName(driver)} cannot be dispatched.</p>
+        <ul class="mt-1 space-y-0.5">
+          {blockingRows.map((row) => (
+            <li>
+              {row.title}
+              {row.daysLate !== null && (
+                <span class="tabular-nums">
+                  {' '}
+                  — expired {row.daysLate} {row.daysLate === 1 ? 'day' : 'days'} ago
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+        {/* What it MEANS, in his words. "Not qualified" is the regulation's
+            phrase and an owner can read it as paperwork; "running an
+            unqualified driver" is the thing he is actually doing. */}
+        <p class="mt-1">
+          Put him on a load before this is fixed and you are running an unqualified driver.
+        </p>
       </div>
     )
   }
@@ -1450,6 +1618,28 @@ const ICONS = {
                               {row.hasDate && (
                                 <span class="mt-0.5 block text-xs text-ink-700 tabular-nums">
                                   {row.due}
+                                </span>
+                              )}
+                              {/*
+                                WHAT THIS ONE COULD COST, on the row it belongs
+                                to. `fine` is set only on rows that are overdue
+                                or undated and only where the catalogue carries
+                                a carrier-side amount, so a blank here is "no
+                                figure we can stand behind" and never "free" —
+                                the two rows that park this man, his medical
+                                card and his licence, are both blank, and the
+                                banner at the top of the page is what says what
+                                they cost instead.
+
+                                The citation and the effective date are not
+                                repeated per row: they are on the Deadlines
+                                page under the total, and repeating them here
+                                would put sixty characters on every line of a
+                                list whose whole job is to be scanned.
+                              */}
+                              {row.fine && (
+                                <span class="mt-0.5 block text-xs text-ink-700">
+                                  Most they can fine you: {row.fine}
                                 </span>
                               )}
                             </span>
@@ -1598,19 +1788,36 @@ const ICONS = {
         <details open={datesOpen} class="group">
           <summary class={summaryRow}>
             <h2 class="text-base font-semibold tracking-tight">Compliance dates</h2>
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 20 20"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              class={chevron}
-            >
-              <path d="M5 8l5 5 5-5"></path>
-            </svg>
-            <span class="ml-auto text-sm font-medium text-brand-700 group-open:hidden">Change</span>
+            {/*
+              THE AFFORDANCE IS A BUTTON, and the caret lives inside it — the
+              same treatment "Add a file" and the truck page's date fold have.
+
+              The word was already here, as a bare brand-coloured "Change" at the
+              end of the row, with the caret stranded back beside the heading:
+              two halves of one control at opposite ends of the line, neither of
+              them looking pressable. They are one button now.
+
+              `group-open:hidden` is gone with it. It used to vanish the moment
+              the fold opened, which took the turned caret away with it — and the
+              turned caret is the whole of how a fold says it is open. The
+              heading stays a heading, and the count below stays on the card:
+              neither belongs inside a button.
+            */}
+            <span class="btn btn-secondary btn-sm ml-auto">
+              Change
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 20 20"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                class={chevronOnButton}
+              >
+                <path d="M5 8l5 5 5-5"></path>
+              </svg>
+            </span>
 
             {/*
               THE COUNT THE OLD SIDEBAR CARD CARRIED, SAID WHERE THE BOXES ARE.
@@ -1995,6 +2202,8 @@ const ICONS = {
         origin={Astro.url.origin}
         links={driverLinks}
         submissions={driverSubmissions}
+        email={driver.email}
+        delivery={sentOutcome}
         askable={askableReminders}
         reminderTitles={reminderTitles}
       />

@@ -396,6 +396,20 @@
     @apply px-4 text-sm;
   }
 
+  /* One line in an ActionMenu. Full width, 44px tall, left-aligned — a menu
+     item is read as a list and a centred one reads as a row of buttons. Used
+     by <a>, <button> and a disabled <span> alike, so it sets no colour of its
+     own beyond the hover wash. */
+  .menu-item {
+    @apply flex min-h-11 w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-ink-900 transition-colors hover:bg-champagne-50 active:bg-champagne;
+  }
+
+  /* The explanation under a menu item, when one is needed. Never a tooltip:
+     a tooltip does not exist on a touch screen. */
+  .menu-note {
+    @apply block px-3 pt-0.5 pb-2 text-xs text-ink-700;
+  }
+
   /* Icon-only. The glyph stays small; the hit area does not. */
   .btn-icon {
     @apply size-11 px-0 py-0;
@@ -687,7 +701,7 @@
    `html[data-working]` and not a class, because the attribute is set and
    removed by one line each and there is no class list to get out of step. */
 html[data-working]::after {
-  content: '';
+  content: "";
   position: fixed;
   inset: 0 auto auto 0;
   z-index: 60;
@@ -782,5 +796,255 @@ html[data-working]::after {
   }
   #toasts [data-flash][data-leaving] {
     transform: none;
+  }
+}
+
+/* --------------------------------------------------------- the two scenes
+
+   Motion for src/components/marketing/HeroTrucks.astro and Roadside.astro.
+
+   HERE RATHER THAN IN THE COMPONENTS, because this app has one stylesheet and
+   because `@keyframes` inside a scoped Astro `<style>` is a global name wearing
+   a local disguise — two components would silently fight over it.
+
+   NO JAVASCRIPT, on a public page that has never shipped any. The whole of this
+   is declarative: the browser runs it, and a browser that will not run it shows
+   the still frame set at the foot of this block.
+
+   ONE CLOCK FOR THE ROADSIDE SCENE. Every moving part of it runs the same 13s
+   cycle and describes itself in percentages of that cycle, so they stay in step
+   with nothing keeping time for them. */
+
+@keyframes fv-drive-a {
+  from {
+    transform: translateX(-150px);
+  }
+  to {
+    transform: translateX(400px);
+  }
+}
+@keyframes fv-drive-b {
+  from {
+    transform: translateX(-180px);
+  }
+  to {
+    transform: translateX(500px);
+  }
+}
+@keyframes fv-float {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-7px);
+  }
+}
+@keyframes fv-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.fv-drive-a {
+  animation: fv-drive-a 15s linear infinite;
+}
+/* Slower, and started mid-run by a negative delay, so the road is never empty
+   and the two never travel as a pair. */
+.fv-drive-b {
+  animation: fv-drive-b 22s linear infinite;
+  animation-delay: -11s;
+}
+.fv-float {
+  animation: fv-float 5s ease-in-out infinite alternate;
+}
+.fv-pulse {
+  animation: fv-pulse 2.4s ease-in-out infinite;
+}
+
+/* The truck holds, pulls away, and comes back in from the left. The jump at
+   88.01% is the reset and is invisible: it happens 170px outside the frame. */
+@keyframes fv-stop-truck {
+  0%,
+  60% {
+    transform: translateX(190px);
+  }
+  60.01% {
+    transform: translateX(190px);
+    animation-timing-function: ease-in;
+  }
+  78% {
+    transform: translateX(450px);
+  }
+  88% {
+    transform: translateX(450px);
+  }
+  88.01% {
+    transform: translateX(-170px);
+  }
+  100% {
+    transform: translateX(190px);
+  }
+}
+@keyframes fv-officer {
+  0%,
+  10% {
+    transform: translateX(104px);
+  }
+  28%,
+  52% {
+    transform: translateX(270px);
+  }
+  68%,
+  100% {
+    transform: translateX(104px);
+  }
+}
+@keyframes fv-board {
+  0%,
+  26% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  34%,
+  56% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  64%,
+  100% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes fv-line-1 {
+  0%,
+  4% {
+    opacity: 0;
+  }
+  8%,
+  26% {
+    opacity: 1;
+  }
+  30%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes fv-line-2 {
+  0%,
+  30% {
+    opacity: 0;
+  }
+  34%,
+  56% {
+    opacity: 1;
+  }
+  60%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes fv-line-3 {
+  0%,
+  62% {
+    opacity: 0;
+  }
+  66%,
+  92% {
+    opacity: 1;
+  }
+  96%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes fv-bar {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  95% {
+    opacity: 0.18;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.fv-stop-truck {
+  animation: fv-stop-truck 13s ease-out infinite;
+}
+.fv-officer {
+  animation: fv-officer 13s ease-in-out infinite;
+}
+.fv-board {
+  animation: fv-board 13s ease-in-out infinite;
+}
+.fv-line-1 {
+  animation: fv-line-1 13s ease-in-out infinite;
+}
+/* Hidden until their turn. Without this the three captions are printed on top
+   of one another for the instant before the animation takes hold — and for
+   good, on a browser that never runs it. */
+.fv-line-2 {
+  opacity: 0;
+  animation: fv-line-2 13s ease-in-out infinite;
+}
+.fv-line-3 {
+  opacity: 0;
+  animation: fv-line-3 13s ease-in-out infinite;
+}
+.fv-bar-red {
+  animation: fv-bar 1s linear infinite;
+}
+.fv-bar-blue {
+  animation: fv-bar 1s linear infinite;
+  animation-delay: 0.5s;
+}
+
+/* Somebody who asked their operating system for less motion gets a composed
+   still, not a blank one. The frame chosen is the middle beat — truck stopped,
+   officer at the cab, the board up, and the line that carries the whole point
+   of the picture. */
+@media (prefers-reduced-motion: reduce) {
+  .fv-drive-a,
+  .fv-drive-b,
+  .fv-float,
+  .fv-pulse,
+  .fv-stop-truck,
+  .fv-officer,
+  .fv-board,
+  .fv-line-1,
+  .fv-line-2,
+  .fv-line-3,
+  .fv-bar-red,
+  .fv-bar-blue {
+    animation: none;
+  }
+  .fv-drive-a {
+    transform: translateX(150px);
+  }
+  .fv-drive-b {
+    transform: translateX(20px);
+  }
+  .fv-stop-truck {
+    transform: translateX(190px);
+  }
+  .fv-officer {
+    transform: translateX(270px);
+  }
+  .fv-board {
+    opacity: 1;
+  }
+  .fv-line-1 {
+    opacity: 0;
+  }
+  .fv-line-2 {
+    opacity: 1;
   }
 }

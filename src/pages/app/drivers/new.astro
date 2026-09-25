@@ -133,7 +133,21 @@ if (Astro.request.method === 'POST') {
 
   // An unrecognised intent is a bug or a crafted post; either way it must not
   // fall through and render the form as though it were a GET.
-  return Astro.redirect(fromSetup ? '/app/drivers/new?from=setup' : '/app/drivers/new', 303)
+  /*
+   * AN UNRECOGNISED INTENT SAYS SO, like every other form in the app.
+   *
+   * This used to answer a POST with no `intent=create` by redirecting to an
+   * empty form with no message at all — a page that looks like it simply threw
+   * the typing away for no reason. `/app/loads/new` and `/app/vehicles/new`
+   * both already said something; this one did not.
+   *
+   * THE TYPED VALUES ARE STILL NOT CARRIED BACK, and that is not an oversight.
+   * The loads form puts its fields in the query string because a load has no
+   * personal data in it. This form holds a date of birth and a licence number,
+   * and those must not go into a URL, a browser history or a server log to
+   * save somebody one re-type.
+   */
+  return back('That button did not say what to do. Try again.', fromSetup)
 }
 
 const params = Astro.url.searchParams

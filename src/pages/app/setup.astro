@@ -49,6 +49,7 @@ import {
 import {
   type CensusRow,
   censusOperation,
+  federalOperationColumns,
   lookupCarrier,
   normalizeDot,
   parseCensusDate,
@@ -444,6 +445,18 @@ if (Astro.request.method === 'POST') {
         await supabase
           .from('carriers')
           .update({ ...operation, operation_source: 'fmcsa' })
+          .eq('id', newCarrierId)
+
+        // The same three facts again, in the four columns only the census ever
+        // writes (0040). The owner can change any of the three above on
+        // /app/settings — including back to "I'm not sure", which stores NULL —
+        // and these are what the rules fall back to when he does, so that
+        // answering honestly does not cost him the federal record he arrived
+        // with. Its own statement on purpose: on a database where 0040 has not
+        // been applied this fails, and it must not take the write above with it.
+        await supabase
+          .from('carriers')
+          .update(federalOperationColumns(operation))
           .eq('id', newCarrierId)
       }
 

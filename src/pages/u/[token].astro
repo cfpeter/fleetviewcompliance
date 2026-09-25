@@ -249,6 +249,18 @@ if (shaped && !done) view = await readLink()
 
 const asked = view ? DRIVER_ASKS.filter((a) => view.asks.includes(a.key)) : []
 const askedReminders = view ? reminderAsks(view.reminders ?? []) : []
+
+/**
+ * A LINK THAT ASKS FOR NOTHING IN PARTICULAR.
+ *
+ * `anything` (0042) carries no date box and names no paper, so a link holding
+ * only that one reaches this page with no fieldsets above the free upload box.
+ * The box itself is unchanged — it has always been here and has always been
+ * ungated — but its words are wrong when it is the whole page: "Anything ELSE
+ * to send?" asks a man about a list he was never shown. So the legend and the
+ * hint change, and nothing else does.
+ */
+const onlyFreeform = asked.length === 0 && askedReminders.length === 0
 const title = done ? 'Sent' : view ? 'Send your details' : 'Link not active'
 const field = 'field-input mt-1 w-full'
 ---
@@ -274,13 +286,16 @@ const field = 'field-input mt-1 w-full'
       <>
         <h1 class="text-2xl font-semibold tracking-tight">Hi {view.first_name}</h1>
         {/* "The date printed on each card" is the right sentence for a medical
-            card and the wrong one for "check the tires" — there is no card. A
-            link can now carry only the owner's own errands, so the opening line
-            follows what is actually on the page. */}
+            card and the wrong one for "check the tires" — there is no card. And
+            "put the date in" is wrong again for a link carrying only `anything`
+            (0042), where there is no date box on the page at all. Three
+            branches because there are three pages. */}
         <p class="mt-2 text-ink-700">
           {asked.length > 0
             ? 'Your office needs a couple of details. Type the date printed on each card, and add a photo if you can. That is the whole job.'
-            : 'Your office needs a couple of things. Put the date in, and add a photo if you can. That is the whole job.'}
+            : onlyFreeform
+              ? 'Your office needs something from you. Send a photo of it, or a file off your phone. That is the whole job.'
+              : 'Your office needs a couple of things. Put the date in, and add a photo if you can. That is the whole job.'}
         </p>
 
         {error && <p class="mt-5 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
@@ -377,7 +392,14 @@ const field = 'field-input mt-1 w-full'
             The office asks for two dates; his filing cabinet is a camera roll.
           */}
           <fieldset class="rounded-xl border border-ink-100 bg-white p-4">
-            <legend class="px-1 text-sm font-semibold tracking-tight">Anything else to send?</legend>
+            <legend class="px-1 text-sm font-semibold tracking-tight">
+              {onlyFreeform ? 'Send what the office asked you for' : 'Anything else to send?'}
+            </legend>
+            {onlyFreeform && (
+              <p class="mt-2 text-sm text-ink-700">
+                Take a photo of it, or pick a file off your phone. You can send more than one.
+              </p>
+            )}
             <label class="field-label mt-2 block" for="file_other">
               Photos or papers
             </label>

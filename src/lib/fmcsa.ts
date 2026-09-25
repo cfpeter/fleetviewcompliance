@@ -221,6 +221,93 @@ export function operationAnswers(row: {
   }
 }
 
+/** The fact keys, in the order the settings form asks the three questions. */
+export const OPERATION_FACTS = ['carrier_operation', 'for_hire', 'hazmat'] as const
+export type OperationFact = (typeof OPERATION_FACTS)[number]
+
+/** A carrier row, as much of it as the fallback reads. */
+export interface OperationRow {
+  carrier_operation?: string | null
+  for_hire?: boolean | null
+  hazmat?: boolean | null
+  fmcsa_carrier_operation?: string | null
+  fmcsa_for_hire?: boolean | null
+  fmcsa_hazmat?: boolean | null
+}
+
+export interface EffectiveOperation extends CarrierOperationFacts {
+  /**
+   * The facts the owner had no answer for, so the census answered. Empty when
+   * he answered all three, or when the census settled nothing either.
+   */
+  federal: OperationFact[]
+}
+
+/**
+ * The three facts the rules actually run on: the owner's answer where he has
+ * one, the federal record where he does not.
+ *
+ * WHY THIS EXISTS. "I'm not sure" has to store NULL — an owner who does not
+ * know whether he crosses a state line must be able to say so rather than pick
+ * a side to get past the form. But NULL is also what a rule gate reads as
+ * unknown, and unknown keeps every gated rule on the board. So the honest
+ * answer to a question produced the worst screen in the product: twenty rows,
+ * most of them not his, with no way to tell which.
+ *
+ * The census row is the way out. It is not our guess about him — it is his own
+ * MCS-150, filed over his signature, and the same record a broker and an
+ * investigator read about him. Falling back to it is how /check has always
+ * answered the same question for a stranger.
+ *
+ * PER COLUMN, NOT PER ROW. An owner who is sure he is for hire and not sure
+ * about hazmat keeps his answer on the first and borrows the federal one on
+ * the second. A row-level fallback would throw away the half he knows.
+ *
+ * The owner's answer ALWAYS wins, including where it contradicts Washington —
+ * a stale census row is the ordinary reason he came to correct it. `federal`
+ * names what was borrowed so /app/settings can show him, because a fact that
+ * silently decides which rules he is shown is a fact he has to be able to see.
+ */
+/**
+ * The census answer as the four census-only columns (0040), ready to spread
+ * into an update. One place holds the column names so signup and the backfill
+ * script cannot drift apart on them.
+ */
+export function federalOperationColumns(
+  facts: CarrierOperationFacts,
+  readAt: Date = new Date(),
+): Record<string, string | boolean | null> {
+  return {
+    fmcsa_carrier_operation: facts.carrier_operation,
+    fmcsa_for_hire: facts.for_hire,
+    fmcsa_hazmat: facts.hazmat,
+    fmcsa_operation_read_at: readAt.toISOString(),
+  }
+}
+
+export function effectiveOperation(row: OperationRow | null | undefined): EffectiveOperation {
+  const federal: OperationFact[] = []
+
+  const pick = <T>(fact: OperationFact, owner: T | null, census: T | null): T | null => {
+    if (owner !== null) return owner
+    if (census !== null) federal.push(fact)
+    return census
+  }
+
+  const bool = (v: boolean | null | undefined): boolean | null => v ?? null
+
+  return {
+    carrier_operation: pick(
+      'carrier_operation',
+      operationCode(row?.carrier_operation),
+      operationCode(row?.fmcsa_carrier_operation),
+    ),
+    for_hire: pick('for_hire', bool(row?.for_hire), bool(row?.fmcsa_for_hire)),
+    hazmat: pick('hazmat', bool(row?.hazmat), bool(row?.fmcsa_hazmat)),
+    federal,
+  }
+}
+
 export interface AuthorityRow {
   usdot_number?: string
   docket_number?: string

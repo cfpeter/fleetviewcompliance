@@ -1,0 +1,139 @@
+---
+/**
+ * The roadside check that costs nothing, because it was answered weeks earlier.
+ *
+ * WHAT CHANGED FROM THE DRAWING. The original had the driver handing his phone
+ * to the officer, captioned "All clear, back on the road" over a badge reading
+ * "USDOT verified". That is a promise this product cannot keep: an officer
+ * wants the medical card, the registration and the inspection report, not a
+ * dashboard — and an owner whose truck is placed out of service because he
+ * believed the picture is exactly the harm the rest of this app is built to
+ * avoid. The phone is gone. The board is the OFFICE's screen, floating above
+ * the scene, and the copy says where the work actually happened.
+ *
+ * Same rebuild as the hero: the file arrived with the motion flattened out and
+ * every group stripped of its transform. Motion is CSS in global.css, no
+ * JavaScript, and `prefers-reduced-motion` stops all of it on a composed still.
+ *
+ * ONE CLOCK. Every moving part runs the same 13s cycle and says what it does in
+ * percentages of it, so they stay in step without a line of script to keep them
+ * there.
+ */
+interface Props {
+  class?: string
+}
+const { class: extra = '' } = Astro.props
+---
+
+<svg
+  viewBox="0 0 380 300"
+  role="img"
+  aria-labelledby="fv-stop-title fv-stop-desc"
+  class:list={['h-auto w-full', extra]}
+>
+  <title id="fv-stop-title">A roadside check that goes nowhere</title>
+  <desc id="fv-stop-desc">
+    A truck is stopped at a roadside check with a patrol car behind it. An officer walks up to
+    the cab while the office's compliance board shows every date in order, and the truck drives
+    on.
+  </desc>
+
+  <rect width="380" height="300" rx="12" fill="#EAF4FB"></rect>
+  <path d="M0 180 Q70 140 140 165 Q210 132 280 160 Q335 142 380 155 L380 212 L0 212 Z" fill="#CFE6D2"
+  ></path>
+  <path d="M0 198 Q90 175 180 192 Q280 174 380 188 L380 212 L0 212 Z" fill="#B5D9BA"></path>
+  <rect y="210" width="380" height="90" fill="#5A5F66"></rect>
+  {[10, 80, 150, 220, 290].map((x) => (
+    <rect x={x} y="258" width="36" height="4" fill="#F4F4F4" />
+  ))}
+
+  {/* Parked, the whole time. A patrol car that arrives on every loop reads as a
+      chase; one already standing there reads as the checkpoint it is. */}
+  <g transform="translate(26 207)">
+    <path d="M16 14 L24 3 L52 3 L60 14 Z" fill="#FFFFFF" stroke="#1C1C1E" stroke-width=".8"></path>
+    <path d="M22 13 L27 6 L37 6 L37 13 Z" fill="#BFD9EC"></path>
+    <path d="M40 13 L40 6 L50 6 L55 13 Z" fill="#BFD9EC"></path>
+    <rect y="13" width="76" height="20" rx="5" fill="#1C1C1E"></rect>
+    <rect x="20" y="15" width="36" height="12" rx="2" fill="#FFFFFF"></rect>
+    <rect x="70" y="17" width="6" height="4" rx="1" fill="#FFE9A8"></rect>
+    <rect x="28" width="20" height="4" rx="1.5" fill="#3A3A3C"></rect>
+    <g class="fv-bar-red">
+      <circle cx="33" cy="1" r="9" fill="#FF3B30" opacity=".25"></circle>
+      <rect x="28" y="-1" width="10" height="5" rx="1.5" fill="#FF3B30"></rect>
+    </g>
+    <g class="fv-bar-blue">
+      <circle cx="43" cy="1" r="9" fill="#0A84FF" opacity=".25"></circle>
+      <rect x="38" y="-1" width="10" height="5" rx="1.5" fill="#0A84FF"></rect>
+    </g>
+    <circle cx="16" cy="34" r="7" fill="#1C1C1E"></circle>
+    <circle cx="16" cy="34" r="3" fill="#C9CCD1"></circle>
+    <circle cx="60" cy="34" r="7" fill="#1C1C1E"></circle>
+    <circle cx="60" cy="34" r="3" fill="#C9CCD1"></circle>
+  </g>
+
+  <g transform="translate(0 195)">
+    <g class="fv-stop-truck">
+      <rect width="96" height="42" rx="3" fill="#FFFFFF" stroke="#C9D2DB"></rect>
+      <rect x="8" y="16" width="44" height="10" rx="2" fill="#34C759"></rect>
+      <rect x="99" y="12" width="36" height="30" rx="5" fill="#007AFF"></rect>
+      <rect x="116" y="17" width="14" height="10" rx="2" fill="#DBEEFF"></rect>
+      <circle cx="123" cy="22" r="3.5" fill="#8A5A3C"></circle>
+      {[16, 32, 84, 122].map((cx) => <circle cx={cx} cy="46" r="7" fill="#1C1C1E" />)}
+    </g>
+  </g>
+
+  {/* Drawn last of the road-level things, so he walks in front of the trailer
+      rather than behind it. His own origin is the ground under his feet. */}
+  <g transform="translate(0 248)">
+    <g class="fv-officer">
+      <rect x="-5" y="-11" width="4" height="11" fill="#1B2A44"></rect>
+      <rect x="1" y="-11" width="4" height="11" fill="#1B2A44"></rect>
+      <rect x="-6" y="-28" width="12" height="18" rx="3" fill="#24406E"></rect>
+      <circle cx="3" cy="-24" r="1.2" fill="#FFD66B"></circle>
+      <circle cy="-33" r="5" fill="#E0B08A"></circle>
+      <rect x="-6" y="-40" width="12" height="4" rx="1.5" fill="#1B2A44"></rect>
+      <rect x="-3" y="-42" width="8" height="3" rx="1" fill="#1B2A44"></rect>
+    </g>
+  </g>
+
+  {/* THE OFFICE'S SCREEN, not the driver's, and never handed to anybody. */}
+  <g class="fv-board">
+    <rect x="40" y="14" width="300" height="150" rx="16" fill="#FFFFFF" stroke="#DCE3EA"></rect>
+    <text x="58" y="40" font-size="14" font-weight="500" fill="#1C1C1E">FleetView Compliance</text>
+    <rect x="256" y="26" width="68" height="20" rx="10" fill="#E3F7E8"></rect>
+    <text x="290" y="40" font-size="12" font-weight="500" fill="#1E7A34" text-anchor="middle">
+      All in date
+    </text>
+    <text x="58" y="58" font-size="12" fill="#6E6E73">Truck 211 · nothing due this month</text>
+    <line x1="58" y1="66" x2="322" y2="66" stroke="#E5E5EA"></line>
+    {[
+      ['Annual inspection', 'Valid', 82],
+      ['Clean Truck Check', 'Passed', 104],
+      ['Driver medical card', 'Valid', 126],
+      ['Registration', 'Current', 148],
+    ].map(([label, state, y]) => (
+      <>
+        <circle cx="64" cy={y} r="5" fill="#34C759" />
+        <text x="76" y={Number(y) + 4} font-size="12" fill="#1C1C1E">
+          {label}
+        </text>
+        <text x="322" y={Number(y) + 4} font-size="12" fill="#1E7A34" text-anchor="end">
+          {state}
+        </text>
+      </>
+    ))}
+  </g>
+
+  {/* Three lines, one at a time, in the order the thing happens. Short, because
+      they are read on a phone at arm's length by somebody who does not read
+      English first. */}
+  <text x="190" y="286" font-size="13" fill="#FFFFFF" text-anchor="middle" class="fv-line-1">
+    Pulled over for a roadside check
+  </text>
+  <text x="190" y="286" font-size="13" fill="#FFFFFF" text-anchor="middle" class="fv-line-2">
+    Nothing missing. The office knew weeks ago.
+  </text>
+  <text x="190" y="286" font-size="13" fill="#FFFFFF" text-anchor="middle" class="fv-line-3">
+    Back on the road
+  </text>
+</svg>

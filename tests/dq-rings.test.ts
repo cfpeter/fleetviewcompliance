@@ -40,9 +40,11 @@ const driverItems = (anchors: Record<string, Date>, context: Record<string, unkn
 /**
  * A driver whose office manager has done everything.
  *
- * (b)(7) and (b)(8) have no rule that can speak for them here — an SPE is a
- * document, and the National Registry note is a document — so they are handed
- * in as documents we hold, which is the same door the binder opens for them.
+ * HIS COMPLETE FILE IS SIX ITEMS, NOT EIGHT, and that is the point. He holds a
+ * CDL, so (b)(8) is a non-CDL requirement that is not his; he holds no SPE, so
+ * (b)(7) is not his either. `assembleDqf` is told both facts and drops the two
+ * paragraphs — the same call the printed binder makes, which is why the ring
+ * and the binder cannot disagree about what "complete" means.
  */
 const KEPT: Record<string, Date> = {
   hire_date: utcDate(2025, 1, 5),
@@ -55,13 +57,14 @@ const KEPT: Record<string, Date> = {
   medical_exam_date: utcDate(2026, 1, 5),
 }
 
-const HELD = new Set(['(b)(7)', '(b)(8)'])
 const NO_SPE = { holdsSpeCertificate: false }
+/** What his own row says: a CDL holder with no SPE certificate on record. */
+const DRIVER = { cdl: true, spe: false }
 
 const fileFor = (overrides: Record<string, Date> = {}, drop: string[] = []): DqfItem[] => {
   const anchors = { ...KEPT, ...overrides }
   for (const key of drop) delete anchors[key]
-  return assembleDqf({ items: driverItems(anchors, NO_SPE), heldDocumentKinds: HELD })
+  return assembleDqf({ items: driverItems(anchors, NO_SPE), driver: DRIVER })
 }
 
 const tones = (ring: DqRing) => ringArcs(ring).map((a) => a.tone)
@@ -158,7 +161,7 @@ test('a file with every item on file draws one full green ring', () => {
   assert.equal(ring.attention, 0)
   assert.deepEqual(tones(ring), ['ok'])
   assert.equal(ringArcs(ring)[0].dash, RING_CIRCUMFERENCE)
-  assert.equal(ringFraction(ring), '8/8')
+  assert.equal(ringFraction(ring), '6/6')
 })
 
 // --- the arithmetic the markup reads off -------------------------------------
@@ -221,29 +224,29 @@ test('the roster line names every bucket that is not on file', () => {
   )
   const line = rowLine(ring)
 
-  assert.match(line, /^\d+\/8 on file/, 'the arithmetic comes first and is never hidden')
+  assert.match(line, /^\d+\/6 on file/, 'the arithmetic comes first and is never hidden')
   assert.match(line, /to fix/)
   assert.match(line, /no date/, 'the grey bucket is spelled out, never left to the colour')
 })
 
 test('a clean file says so in one short line and adds nothing', () => {
-  assert.equal(rowLine(dqRing(fileFor(), OBSERVED)), '8/8 on file')
+  assert.equal(rowLine(dqRing(fileFor(), OBSERVED)), '6/6 on file')
 })
 
 test('the driver’s figure leads with the answer, not the name of the chart', () => {
   const gap = dqRing(fileFor({}, ['medical_certificate_expires']), OBSERVED)
-  assert.match(driverLine(gap), /^1 of 8 item needs work\.$/)
+  assert.match(driverLine(gap), /^1 of 6 item needs work\.$/)
 
   const two = dqRing(
     fileFor({}, ['medical_certificate_expires', 'annual_mvr_last_obtained']),
     OBSERVED,
   )
-  assert.match(driverLine(two), /^2 of 8 items need work\.$/)
+  assert.match(driverLine(two), /^2 of 6 items need work\.$/)
 
   const soon = dqRing(fileFor({ medical_certificate_expires: utcDate(2026, 10, 1) }), OBSERVED)
-  assert.match(driverLine(soon), /All 8 items are on file\. 1 expires soon\./)
+  assert.match(driverLine(soon), /All 6 items are on file\. 1 expires soon\./)
 
-  assert.equal(driverLine(dqRing(fileFor(), OBSERVED)), 'All 8 items are on file.')
+  assert.equal(driverLine(dqRing(fileFor(), OBSERVED)), 'All 6 items are on file.')
 })
 
 test('the roster sentence counts drivers, because that is the question', () => {

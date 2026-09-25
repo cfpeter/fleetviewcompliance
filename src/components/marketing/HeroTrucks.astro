@@ -1,0 +1,91 @@
+---
+/**
+ * Two trucks on the road, under the board that watches their dates.
+ *
+ * REBUILT, not imported. The downloaded file had the motion flattened out of
+ * it — no `animate`, no keyframes, and, because the animation was what placed
+ * every group, no `transform` on any of them either. Rendered, both trucks sat
+ * on top of each other in the top-left corner, half outside the frame. The
+ * artwork was good; the positions and the motion are written here.
+ *
+ * NO JAVASCRIPT, like everything else on this site. The motion is CSS
+ * keyframes in global.css, which is also where the `prefers-reduced-motion`
+ * answer lives: with motion reduced the trucks are parked in a composed still
+ * and nothing moves at all.
+ *
+ * TWO NESTED GROUPS PER MOVING THING, and it is not decoration. The outer one
+ * carries the SVG `transform` ATTRIBUTE, which places it; the inner one carries
+ * the CSS `transform`, which moves it. A CSS transform replaces the attribute
+ * outright rather than adding to it, so one element cannot do both — the truck
+ * would snap to the origin the moment the animation took hold.
+ */
+interface Props {
+  class?: string
+}
+const { class: extra = '' } = Astro.props
+---
+
+<svg
+  viewBox="0 0 380 300"
+  role="img"
+  aria-labelledby="fv-hero-title fv-hero-desc"
+  class:list={['h-auto w-full', extra]}
+>
+  <title id="fv-hero-title">A fleet on the road, and its compliance board</title>
+  <desc id="fv-hero-desc">
+    Two trucks drive along a road. Above them a card reads: 12 trucks; Truck 104 annual
+    inspection done; Truck 211 Clean Truck Check due in 14 days; driver medical card valid.
+  </desc>
+
+  <rect width="380" height="300" rx="12" fill="#EAF4FB"></rect>
+  <path d="M0 200 Q60 160 130 185 Q200 150 270 180 Q330 160 380 175 L380 230 L0 230 Z" fill="#CFE6D2"
+  ></path>
+  <path d="M0 215 Q90 190 180 208 Q280 190 380 205 L380 230 L0 230 Z" fill="#B5D9BA"></path>
+  <rect y="228" width="380" height="72" fill="#5A5F66"></rect>
+  {[0, 70, 140, 210, 280, 350].map((x) => (
+    <rect x={x} y="262" width="36" height="4" fill="#F4F4F4" />
+  ))}
+
+  {/* The far truck: smaller, higher up the road, and slower, which is the whole
+      of the depth in this picture. */}
+  <g transform="translate(0 176) scale(.85)">
+    <g class="fv-drive fv-drive-b">
+      <rect width="96" height="42" rx="3" fill="#F7F7F7" stroke="#C9D2DB"></rect>
+      <rect x="8" y="16" width="44" height="10" rx="2" fill="#34A853"></rect>
+      <rect x="99" y="12" width="36" height="30" rx="5" fill="#E4553F"></rect>
+      <rect x="116" y="17" width="14" height="10" rx="2" fill="#FFE1DB"></rect>
+      {[16, 32, 84, 122].map((cx) => <circle cx={cx} cy="46" r="7" fill="#222" />)}
+    </g>
+  </g>
+
+  <g transform="translate(0 195)">
+    <g class="fv-drive fv-drive-a">
+      <rect width="96" height="42" rx="3" fill="#FFFFFF" stroke="#C9D2DB"></rect>
+      <rect x="8" y="16" width="44" height="10" rx="2" fill="#1F6FEB"></rect>
+      <rect x="99" y="12" width="36" height="30" rx="5" fill="#1F6FEB"></rect>
+      <rect x="116" y="17" width="14" height="10" rx="2" fill="#D6EAFF"></rect>
+      {[16, 32, 84, 122].map((cx) => <circle cx={cx} cy="46" r="7" fill="#222" />)}
+    </g>
+  </g>
+
+  <g class="fv-float">
+    <rect x="40" y="22" width="300" height="118" rx="14" fill="#FFFFFF" stroke="#DCE3EA"></rect>
+    <text x="58" y="46" font-size="14" font-weight="500" fill="#1C1C1E">Fleet status</text>
+    <text x="322" y="46" font-size="12" fill="#6E6E73" text-anchor="end">12 trucks</text>
+
+    <circle cx="64" cy="68" r="6" fill="#34A853"></circle>
+    <text x="78" y="72" font-size="12" fill="#1C1C1E">Truck 104 · Annual inspection</text>
+    <text x="322" y="72" font-size="12" fill="#34A853" text-anchor="end">Done</text>
+
+    {/* The one row with a clock running on it, and the only thing on this card
+        that pulses. Amber means a date is coming; it is the same rule the
+        product's own pills follow. */}
+    <circle cx="64" cy="94" r="6" fill="#F5A623" class="fv-pulse"></circle>
+    <text x="78" y="98" font-size="12" fill="#1C1C1E">Truck 211 · Clean Truck Check</text>
+    <text x="322" y="98" font-size="12" fill="#C77A00" text-anchor="end">14 days</text>
+
+    <circle cx="64" cy="120" r="6" fill="#34A853"></circle>
+    <text x="78" y="124" font-size="12" fill="#1C1C1E">Driver · Medical card</text>
+    <text x="322" y="124" font-size="12" fill="#34A853" text-anchor="end">Valid</text>
+  </g>
+</svg>

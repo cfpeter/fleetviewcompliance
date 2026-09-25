@@ -1,0 +1,67 @@
+---
+/**
+ * The moment dispatch refuses a driver.
+ *
+ * THIS PICTURE EXISTS BECAUSE THE SENTENCE UNDER IT IS TOO SHORT. The section
+ * body is "Other software at this price does not do this," which is true and
+ * tells a buyer nothing about what "this" is. The thing worth seeing is WHEN it
+ * happens: at the moment of choosing, on the screen where the decision is made,
+ * not in a report read next month.
+ *
+ * THE WORDS IN IT ARE THE PRODUCT'S OWN. `src/lib/dispatch/eligibility.ts`
+ * builds "<driver>: <rule> has expired. Not qualified to operate…", and that is
+ * what is drawn here. A marketing picture that invents a nicer sentence than
+ * the software actually shows is an overclaim with extra steps.
+ *
+ * STATIC, deliberately. The two scenes on the home page are stories and earn
+ * their motion; five looping animations down a page of copy is a fairground,
+ * and it keeps a cheap phone's processor busy for as long as the page is open.
+ */
+interface Props {
+  class?: string
+}
+const { class: extra = '' } = Astro.props
+---
+
+<svg
+  viewBox="0 0 380 230"
+  role="img"
+  aria-labelledby="fv-disp-title fv-disp-desc"
+  class:list={['h-auto w-full', extra]}
+>
+  <title id="fv-disp-title">Dispatch refusing a driver whose medical card has expired</title>
+  <desc id="fv-disp-desc">
+    An assign-a-driver panel for load 4417. The first driver is marked available. The second is
+    marked blocked, with the reason underneath: medical certificate expired 4 September, not
+    qualified to operate. The Assign button is greyed out.
+  </desc>
+
+  <rect width="380" height="230" rx="12" fill="#EAF4FB"></rect>
+  <rect x="20" y="18" width="340" height="194" rx="14" fill="#FFFFFF" stroke="#DCE3EA"></rect>
+
+  <text x="40" y="44" font-size="14" font-weight="500" fill="#1C1C1E">Assign a driver</text>
+  <text x="340" y="44" font-size="12" fill="#6E6E73" text-anchor="end">Load 4417</text>
+  <line x1="40" y1="56" x2="340" y2="56" stroke="#E5E5EA"></line>
+
+  <text x="44" y="82" font-size="12" fill="#1C1C1E">Mikael A.</text>
+  <rect x="264" y="68" width="76" height="20" rx="10" fill="#E3F7E8"></rect>
+  <text x="302" y="82" font-size="11" font-weight="500" fill="#1E7A34" text-anchor="middle">
+    Available
+  </text>
+
+  {/* The refused row carries its reason, not a symbol. A red dot beside a name
+      is a puzzle; a sentence is an instruction. */}
+  <rect x="32" y="98" width="316" height="64" rx="8" fill="#FFF1F0" stroke="#FFD2CE"></rect>
+  <text x="44" y="120" font-size="12" fill="#1C1C1E">Aram P.</text>
+  <rect x="264" y="106" width="76" height="20" rx="10" fill="#FFE3E0"></rect>
+  <text x="302" y="120" font-size="11" font-weight="500" fill="#B3261E" text-anchor="middle">
+    Blocked
+  </text>
+  <text x="44" y="140" font-size="11" fill="#B3261E">Medical certificate has expired.</text>
+  <text x="44" y="154" font-size="11" fill="#B3261E">Not qualified to operate.</text>
+
+  <rect x="40" y="176" width="86" height="26" rx="8" fill="#E5E5EA"></rect>
+  <text x="83" y="193" font-size="12" font-weight="500" fill="#9A9AA0" text-anchor="middle">
+    Assign
+  </text>
+</svg>

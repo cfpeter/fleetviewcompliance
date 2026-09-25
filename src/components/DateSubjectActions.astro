@@ -1,0 +1,267 @@
+---
+/**
+ * One "dates we are missing" card, and what the owner can do about it.
+ *
+ * WHY THIS EXISTS. The card already says "Driver · 3 dates missing" and the
+ * only thing it offered was a link to type them in — which assumes he is
+ * holding paperwork that is in the driver's wallet. The call to go and get it
+ * is the errand this product exists to remove, so the card now also sends the
+ * driver a link asking for exactly those dates, in one press.
+ *
+ * THE WHOLE CARD IS THE DISCLOSURE, and that is not a style choice.
+ *
+ * The first build had an "Actions" button on the right with an absolutely
+ * positioned panel. On a list of cards, an open panel covers the NEXT card's
+ * button: tap Marco's Actions, change your mind, tap Ana's — and the tap lands
+ * on Marco's open panel and appears to do nothing. Tap again, still nothing.
+ * Closing on an outside click needs a document listener, and the only script
+ * this app ships is the form interception in live-forms.ts. A panel in the
+ * normal flow has no such trap: it pushes the list down, covers nothing, and
+ * needs no script at all.
+ *
+ * `<summary>` must be the FIRST child of `<details>` to be the control, so the
+ * name and the count live inside it rather than in an <a> of their own. That
+ * costs one tap to reach the editor, which is now the first item in the panel
+ * and a 44px target instead of a card-sized guess.
+ *
+ * WHAT IS OFFERED IS WHAT WILL HAPPEN. `reach` is computed by the same
+ * `reachFor` the send itself uses, so "Goes by text" cannot appear over a
+ * driver with no number on file. A menu that offers what it cannot do is a
+ * menu he stops reading.
+ *
+ * The asks are NOT passed from here. The server derives them from the subject
+ * again on the POST — see `ask_driver_dates` in src/pages/app/index.astro —
+ * because what an unauthenticated phone may write into is not something a page
+ * is allowed to nominate.
+ */
+import type { DateSubject } from '../lib/dashboard-dates.ts'
+import { subjectHrefFor } from '../lib/dashboard-dates.ts'
+import { asksForAnswerKeys, DRIVER_ASKS } from '../lib/driver-link/asks.ts'
+import type { Reach } from '../lib/driver-link/deliver.ts'
+import type { ChaseState } from '../lib/driver-link/outstanding.ts'
+import { REMIND_LATER_DAYS } from '../lib/dashboard-remind.ts'
+
+interface Props {
+  subject: DateSubject
+  /** How we would reach this driver. Absent for a truck or the carrier record. */
+  reach?: Reach
+  firstName?: string | null
+  /** The driver's or truck's own page. */
+  recordHref: string
+  /**
+   * The POST forms these buttons submit.
+   *
+   * A form may not be nested inside another and the date editor is one big
+   * form, so every button here points at a form that sits outside it. One form
+   * per INTENT rather than one shared: the button's own name and value are
+   * already spoken for by the subject id, so the intent has to be a hidden
+   * input, and a hidden input can only say one thing.
+   */
+  forms: { ask: string; remind: string; retire: string }
+  /** A link already out to this driver, unanswered. Absent when none is. */
+  chase?: ChaseState
+  /**
+   * 'card' is a row in the subject list. 'inline' is the header of the subject
+   * already open, where "Type the dates in" would link to the page he is
+   * standing on and is left out.
+   */
+  variant?: 'card' | 'inline'
+}
+
+const {
+  subject,
+  reach,
+  firstName,
+  recordHref,
+  forms,
+  chase,
+  variant = 'card',
+} = Astro.props
+
+const isDriver = subject.type === 'driver'
+const who = firstName?.trim() || 'the driver'
+
+/**
+ * WHICH OF HIS MISSING DATES HE COULD SEND HIMSELF.
+ *
+ * Several driver rows are things the CARRIER performs — the annual MVR, the
+ * annual review, the Clearinghouse query — and one, the return-to-duty test
+ * date, is kept off a driver's phone by 49 CFR 40.307(g).
+ *
+ * An empty list no longer hides the button. Every driver can be texted: when
+ * none of his missing dates is one of the six dated papers, the link carries
+ * the dateless seventh ask (0042) and what he opens is the free upload box.
+ * The note under the button says which of the two it is, so the owner knows
+ * what the man will be looking at before he sends it.
+ */
+const dated = isDriver ? asksForAnswerKeys(subject.questions.map((q) => q.answerKey)) : []
+const askWhat = dated
+  .map((k) => DRIVER_ASKS.find((a) => a.key === k)?.driverLabel)
+  .filter(Boolean)
+  .join(' and ')
+
+const sendNote =
+  reach?.channel === 'sms'
+    ? 'Goes by text now.'
+    : reach?.channel === 'email'
+      ? 'Goes by email — no mobile number on file.'
+      : 'No number and no email on file. You will get a link to send yourself.'
+
+/**
+ * What the ask button says, which is not the same question twice.
+ *
+ * With a link already out, "Ask Marco for them" is a button that hides the
+ * thing the owner most needs to know — that he asked on Tuesday and Marco has
+ * not opened it. `chase.action` carries the right verb for each of the four
+ * states; see src/lib/driver-link/outstanding.ts.
+ */
+const askLabel = chase ? chase.action : `Text ${who}`
+
+const card = variant === 'card'
+---
+
+<details class:list={[card ? 'rounded-xl border border-ink-100 bg-white' : 'mt-3 max-w-sm']}>
+  <summary
+    class:list={[
+      'cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden',
+      card && 'flex min-h-11 items-center gap-3 rounded-xl p-4 transition hover:bg-ink-50',
+    ]}
+  >
+    {
+      card ? (
+        <>
+          <span class="min-w-0 flex-1">
+            <span class="block truncate font-medium">{subject.label}</span>
+            <span class="mt-0.5 block text-xs text-ink-700 tabular-nums">
+              {subject.noun} · {subject.questionCount}{' '}
+              {subject.questionCount === 1 ? 'date' : 'dates'} missing
+            </span>
+            {/* On the CARD, not behind the menu. The whole point of the line is
+                that he should not have to open anything to learn he already
+                asked — an owner who cannot see it asks the same man twice. */}
+            {chase && <span class="mt-1 block text-xs text-brand-700">{chase.line}</span>}
+          </span>
+          <span class="btn btn-secondary btn-sm shrink-0" aria-hidden="true">
+            <span>Actions</span>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              class="size-4 shrink-0"
+            >
+              <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+        </>
+      ) : (
+        <span class="btn btn-secondary btn-sm inline-flex">
+          <span>Actions</span>
+          <span class="sr-only">for {subject.label}</span>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            class="size-4 shrink-0"
+            aria-hidden="true"
+          >
+            <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
+      )
+    }
+  </summary>
+
+  {/* In the normal flow, never floated over the rows underneath. See the note
+      at the top of this file for what that cost the first time. */}
+  <div
+    class:list={[
+      'p-1',
+      card ? 'border-t border-ink-100' : 'mt-2 rounded-xl border border-ink-100 bg-white',
+    ]}
+  >
+    {
+      card && (
+        <a href={subjectHrefFor(subject.id)} class="menu-item font-medium">
+          Type the dates in
+        </a>
+      )
+    }
+
+    {
+      isDriver && (
+        <>
+          <button
+            type="submit"
+            form={forms.ask}
+            name="driver_id"
+            value={subject.id}
+            class="menu-item"
+          >
+            {askLabel}
+          </button>
+          <span class="menu-note">
+            {askWhat
+              ? `Asks for their ${askWhat}, and anything else they want to send. `
+              : 'Asks them to send whatever you need — a photo, a card, a receipt. '}
+            {sendNote}
+          </span>
+        </>
+      )
+    }
+
+    {
+      /* A phone number is a link on a phone and inert on a desktop, which is
+         fine — the man holding this screen in a yard is on the phone. */
+      isDriver && reach?.channel === 'sms' && reach.to && (
+        <a href={`tel:${reach.to}`} class="menu-item">
+          Call {who}
+        </a>
+      )
+    }
+
+    {/* The honest third answer. Not every missing date is a thing he can fix
+        standing at the screen, and without this the card stays exactly as it
+        is every morning until he stops reading the list. */}
+    <button
+      type="submit"
+      form={forms.remind}
+      name="subject_id"
+      value={subject.id}
+      class="menu-item"
+    >
+      Remind me in {REMIND_LATER_DAYS} days
+    </button>
+
+    <a href={recordHref} class="menu-item">
+      Open {isDriver ? `${who}’s page` : 'the record'}
+    </a>
+
+    {
+      /* LAST, AND SET APART. A card for somebody who left counts against him
+         for ever, and the only cure was to know a driver has a status three
+         screens away. Inactive, never terminated and never a delete: 'terminated'
+         is a statement about how the employment ended and is not a dashboard's
+         to make, and a delete would take his medical card with him. The receipt
+         links straight back to his page, where Active is one select away. */
+      isDriver && (
+        <>
+          <button
+            type="submit"
+            form={forms.retire}
+            name="driver_id"
+            value={subject.id}
+            class="menu-item border-t border-ink-100 text-ink-700"
+          >
+            {who} does not work here any more
+          </button>
+          <span class="menu-note">
+            Takes them off this list and stops their reminders. Their records stay on file and you
+            can put them back.
+          </span>
+        </>
+      )
+    }
+  </div>
+</details>

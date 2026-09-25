@@ -23,9 +23,11 @@ import { loadDeadlines } from '../src/lib/deadlines.ts'
 import {
   type CensusRow,
   censusOperation,
+  effectiveOperation,
   forHireFromClassdef,
   hazmatFromHmInd,
   type OperationAnswer,
+  type OperationRow,
   operationAnswer,
   operationAnswers,
   operationCode,
@@ -177,6 +179,21 @@ function codesFor(facts: Facts, state = 'CA'): Set<string> {
   )
 }
 
+/**
+ * A carrier ROW → the three context facts, through the same fallback
+ * src/lib/deadlines.ts puts them through. Takes the owner's columns and the
+ * census-only ones together, which is the only way to ask what a carrier who
+ * answered "I'm not sure" actually sees.
+ */
+const fromRow = (row: OperationRow): Facts => {
+  const f = effectiveOperation(row)
+  return {
+    carrierOperation: f.carrier_operation ?? undefined,
+    forHire: f.for_hire ?? undefined,
+    hazmat: f.hazmat ?? undefined,
+  }
+}
+
 const INTERSTATE_ONLY = [
   'ca_ifta_quarterly_return',
   'ca_ifta_license_renewal',
@@ -185,6 +202,7 @@ const INTERSTATE_ONLY = [
   'fed.ucr.annual-registration',
 ]
 const INSURANCE = 'fed.387.9.liability-insurance-filing'
+const AUTHORITY = 'fed.usc.13906.operating-authority'
 const HAZMAT_RULES = ['fed.107.608.hazmat-registration', 'fed.172.704.hazmat-recurrent-training']
 const FEDERAL_MEDICAL = 'medical_certificate_general'
 const CA_MEDICAL = 'ca_intrastate_medical_certificate'
@@ -334,35 +352,74 @@ test("'C' drops IFTA, IRP and UCR and picks up the intrastate medical rule", () 
   for (const code of HAZMAT_RULES) assert.equal(intrastate.has(code), true, code)
 })
 
-test('for-hire false AND hazmat false drops the insurance filing, and nothing else does', () => {
+test('the two rules that read for-hire, and exactly what each one needs to drop', () => {
   const ops = [undefined, 'A', 'B', 'C'] as const
   const bools = [undefined, true, false] as const
   for (const carrierOperation of ops) {
     for (const forHire of bools) {
       for (const hazmat of bools) {
         const codes = codesFor({ carrierOperation, forHire, hazmat })
-        const expected = !(forHire === false && hazmat === false)
+
+        // The Part 387 filing needs BOTH facts known and negative, because
+        // Part 387's reach over a private hazmat carrier is unverified.
         assert.equal(
           codes.has(INSURANCE),
-          expected,
+          !(forHire === false && hazmat === false),
           `insurance filing with ${carrierOperation}/${forHire}/${hazmat}`,
+        )
+
+        // Operating authority reads hazmat not at all: § 13902 registers
+        // for-hire interstate carriers, and a hazmat SAFETY PERMIT is Part 385
+        // Subpart E and a different row. So either fact alone can answer no.
+        const intrastate = carrierOperation === 'B' || carrierOperation === 'C'
+        assert.equal(
+          codes.has(AUTHORITY),
+          !(forHire === false || intrastate),
+          `operating authority with ${carrierOperation}/${forHire}/${hazmat}`,
         )
       }
     }
   }
 
-  // `forHire` on its own removes NOTHING from the board — it is read by one
-  // rule, and that rule needs hazmat to be known too.
-  assert.deepEqual([...codesFor({ forHire: false })].sort(), [...codesFor({})].sort())
-  assert.deepEqual([...codesFor({ forHire: true })].sort(), [...codesFor({})].sort())
+  // `forHire: false` on its own now removes exactly one row — the authority —
+  // and `forHire: true` still removes nothing at all.
+  const privateOnly = codesFor({ forHire: false })
+  const nothingKnown = codesFor({})
+  assert.deepEqual(
+    [...nothingKnown].filter((c) => !privateOnly.has(c)),
+    [AUTHORITY],
+  )
+  assert.deepEqual([...codesFor({ forHire: true })].sort(), [...nothingKnown].sort())
 
-  // And with hazmat known false, adding forHire=false removes exactly one row.
+  // With hazmat known false, adding forHire=false removes those two and no more.
   const hazmatNo = codesFor({ hazmat: false })
   const both = codesFor({ hazmat: false, forHire: false })
-  assert.deepEqual(
-    [...hazmatNo].filter((c) => !both.has(c)),
-    [INSURANCE],
-  )
+  assert.deepEqual([...hazmatNo].filter((c) => !both.has(c)).sort(), [INSURANCE, AUTHORITY].sort())
+})
+
+test('the operating-authority row is gated, and gated the way § 13902 is written', () => {
+  const rule = allRules.find((r) => r.code === AUTHORITY)
+  assert.ok(rule, 'the rule is still in the catalogue')
+  assert.ok(rule.applies, 'and it has a gate at all — it had none, which is the defect this pins')
+
+  const at = (facts: Facts) => rule.applies?.({ today: TODAY, anchors: {}, ...facts })
+
+  // Known and in.
+  assert.equal(at({ carrierOperation: 'A', forHire: true }), true)
+  assert.equal(at({ carrierOperation: 'A', forHire: true, hazmat: true }), true)
+
+  // Known and out, by either fact on its own.
+  assert.equal(at({ forHire: false }), false, 'a private carrier is outside § 13902')
+  assert.equal(at({ carrierOperation: 'A', forHire: false }), false, 'even running interstate')
+  assert.equal(at({ carrierOperation: 'B' }), false, 'a positive intrastate code answers no')
+  assert.equal(at({ carrierOperation: 'C' }), false)
+
+  // Everything else fails OPEN, which is house rule 3.
+  assert.equal(at({}), 'unknown')
+  assert.equal(at({ carrierOperation: 'A' }), 'unknown', 'interstate alone does not settle it')
+  assert.equal(at({ forHire: true }), 'unknown', 'for hire alone does not settle it either')
+  assert.equal(at({ hazmat: true }), 'unknown', 'hazmat is not part of this test')
+  assert.equal(at({ hazmat: false }), 'unknown')
 })
 
 // ---------------------------------------------------------------------------
@@ -462,10 +519,20 @@ test('signup, the dashboard, the proof page and share_carrier all carry the thre
   const setup = read('../src/pages/app/setup.astro')
   assert.match(setup, /censusOperation\(census\)/, 'signup reads the facts off the census row')
   assert.match(setup, /operation_source: 'fmcsa'/, 'and marks them as the federal record')
+  assert.match(
+    setup,
+    /federalOperationColumns\(operation\)/,
+    'and keeps a copy where his "I\'m not sure" cannot erase it (0040)',
+  )
 
   const deadlines = read('../src/lib/deadlines.ts')
-  for (const col of ['c?.carrier_operation', 'c?.for_hire', 'c?.hazmat']) {
-    assert.ok(deadlines.includes(col), `deadlines.ts reads ${col}`)
+  assert.match(
+    deadlines,
+    /const facts = effectiveOperation\(c\)/,
+    'the board runs on the owner-then-federal fallback, not on the raw columns',
+  )
+  for (const field of ['facts.carrier_operation', 'facts.for_hire', 'facts.hazmat']) {
+    assert.ok(deadlines.includes(field), `deadlines.ts reads ${field}`)
   }
   // On every subject, not only the carrier: the driver gate reads the code.
   assert.equal((deadlines.match(/\.\.\.operation/g) ?? []).length, 3)
@@ -492,4 +559,147 @@ test('signup, the dashboard, the proof page and share_carrier all carry the thre
     'share_carrier hands the broker the same three facts',
   )
   assert.match(migration, /grant execute on function share_carrier\(text\) to anon, authenticated/)
+
+  // 0040 supersedes that function body. The broker's page and the owner's
+  // dashboard have to reach the same three facts the same way, or the two
+  // screens count different rows for one carrier on one day — which is the
+  // failure 0031 was written to end.
+  const fallback = read('../supabase/migrations/0040_federal_operation_fallback.sql')
+  assert.match(fallback, /check \(fmcsa_carrier_operation in \('A', 'B', 'C'\)\)/)
+  assert.match(fallback, /add column fmcsa_for_hire boolean,/)
+  assert.match(fallback, /add column fmcsa_hazmat boolean,/)
+  assert.doesNotMatch(
+    fallback.replace(/--.*$/gm, ''),
+    /default/i,
+    'no default here either: the census answers or it does not',
+  )
+  assert.match(fallback, /drop function share_carrier\(text\)/)
+  for (const col of ['carrier_operation', 'for_hire', 'hazmat']) {
+    assert.match(
+      fallback,
+      new RegExp(`coalesce\\(c\\.${col},\\s+c\\.fmcsa_${col}\\)`),
+      `share_carrier falls back to the federal ${col}`,
+    )
+  }
+  assert.match(fallback, /grant execute on function share_carrier\(text\) to anon, authenticated/)
+
+  // The seed moves the census answer across only where the two writers have
+  // not yet diverged. A row an owner has written is left for the backfill.
+  assert.match(fallback, /where operation_source = 'fmcsa'/)
+  assert.doesNotMatch(
+    fallback.replace(/--.*$/gm, ''),
+    /set carrier_operation|set for_hire|set hazmat/,
+    "0040 never writes the owner's three columns",
+  )
+})
+
+test("the owner's answer beats the federal record, per fact, and is shown to him", () => {
+  // Nothing anywhere.
+  assert.deepEqual(effectiveOperation(null), {
+    carrier_operation: null,
+    for_hire: null,
+    hazmat: null,
+    federal: [],
+  })
+
+  // He answered all three. The census is not consulted, even where it differs.
+  assert.deepEqual(
+    effectiveOperation({
+      carrier_operation: 'C',
+      for_hire: false,
+      hazmat: false,
+      fmcsa_carrier_operation: 'A',
+      fmcsa_for_hire: true,
+      fmcsa_hazmat: true,
+    }),
+    { carrier_operation: 'C', for_hire: false, hazmat: false, federal: [] },
+  )
+
+  // "I'm not sure" on all three — the case two of six dev carriers are in.
+  assert.deepEqual(
+    effectiveOperation({
+      carrier_operation: null,
+      for_hire: null,
+      hazmat: null,
+      fmcsa_carrier_operation: 'C',
+      fmcsa_for_hire: false,
+      fmcsa_hazmat: false,
+    }),
+    {
+      carrier_operation: 'C',
+      for_hire: false,
+      hazmat: false,
+      federal: ['carrier_operation', 'for_hire', 'hazmat'],
+    },
+  )
+
+  // PER FACT. He is sure he is for hire and not sure about the other two, so
+  // he keeps the one he knows and borrows the two he does not.
+  assert.deepEqual(
+    effectiveOperation({
+      carrier_operation: null,
+      for_hire: true,
+      hazmat: null,
+      fmcsa_carrier_operation: 'C',
+      fmcsa_for_hire: false,
+      fmcsa_hazmat: false,
+    }),
+    {
+      carrier_operation: 'C',
+      for_hire: true,
+      hazmat: false,
+      federal: ['carrier_operation', 'hazmat'],
+    },
+  )
+
+  // `false` is a real answer and must not read as "not answered".
+  assert.deepEqual(effectiveOperation({ for_hire: false, fmcsa_for_hire: true }), {
+    carrier_operation: null,
+    for_hire: false,
+    hazmat: null,
+    federal: [],
+  })
+
+  // A census that settles nothing leaves the fact unknown, and the board keeps
+  // every gated rule. Falling back is not the same as guessing.
+  assert.deepEqual(effectiveOperation({ carrier_operation: null, fmcsa_carrier_operation: null }), {
+    carrier_operation: null,
+    for_hire: null,
+    hazmat: null,
+    federal: [],
+  })
+
+  // Rubbish in either column is not a code. `operationCode` is the only judge
+  // of that, on both sides.
+  assert.equal(effectiveOperation({ fmcsa_carrier_operation: 'X' }).carrier_operation, null)
+  assert.equal(effectiveOperation({ fmcsa_carrier_operation: 'a' }).carrier_operation, 'A')
+})
+
+test('an owner who says "I am not sure" gets the board his federal record earns him', () => {
+  // Exactly the shape of the two dev carriers: he answered, said he was not
+  // sure about crossing state lines and about hazmat, and the census knows.
+  const board = codesFor(
+    fromRow({
+      carrier_operation: null,
+      for_hire: true,
+      hazmat: null,
+      fmcsa_carrier_operation: 'C',
+      fmcsa_for_hire: true,
+      fmcsa_hazmat: false,
+    }),
+  )
+  for (const code of INTERSTATE_ONLY) {
+    assert.equal(board.has(code), false, `${code} survived the federal answer`)
+  }
+  for (const code of HAZMAT_RULES) assert.equal(board.has(code), false, code)
+  assert.equal(board.has(AUTHORITY), false, 'an intrastate carrier holds no federal authority')
+  assert.equal(board.has(INSURANCE), true, 'he is for hire, so this one stays')
+  assert.equal(board.has(CA_MEDICAL), true)
+
+  // And the same man with no federal record either sees all of it, because
+  // nothing has been settled by anybody.
+  const blind = codesFor(fromRow({ carrier_operation: null, for_hire: true, hazmat: null }))
+  for (const code of [...INTERSTATE_ONLY, ...HAZMAT_RULES, AUTHORITY, INSURANCE]) {
+    assert.equal(blind.has(code), true, `${code} must stay when nothing is known`)
+  }
 })

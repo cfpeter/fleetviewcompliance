@@ -18,9 +18,14 @@
  *   - Only carriers with a dot_number: there is nothing to look up otherwise.
  *   - Only columns that are NULL. A value already on the row is never replaced,
  *     whoever wrote it.
- *   - Never a row whose operation_source is 'owner'. The owner has answered on
- *     /app/settings, and "I'm not sure" is an answer — overwriting it with the
- *     federal value would undo a choice he made on purpose.
+ *   - Never the OWNER'S three columns on a row whose operation_source is
+ *     'owner'. He has answered on /app/settings, and "I'm not sure" is an
+ *     answer — overwriting it with the federal value would undo a choice he
+ *     made on purpose.
+ *   - The four fmcsa_* columns (0040) on any row, owner or not. Those are the
+ *     federal record itself, not his answer, and they are what a rule falls
+ *     back to when he has said he is not sure. An owner row is the case that
+ *     needs them most: his NULL is the reason the fallback exists.
  *   - Never a guess. A census value that does not settle a fact leaves the
  *     column NULL, which the rules read as "unknown" and keep tracking. See
  *     `censusOperation` in src/lib/fmcsa.ts for the mapping.
@@ -31,7 +36,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import pg from 'pg'
-import { censusOperation, lookupCarrier } from '../src/lib/fmcsa.ts'
+import { censusOperation, federalOperationColumns, lookupCarrier } from '../src/lib/fmcsa.ts'
 import { dbConfig } from './db-config.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -127,6 +132,10 @@ guard(cfg)
 
 const OPERATION_COLUMNS = ['carrier_operation', 'for_hire', 'hazmat']
 
+/** 0040's census-only mirror, in the same order. `federalOperationColumns` in
+ *  src/lib/fmcsa.ts writes them; this list only has to know they exist. */
+const FEDERAL_COLUMNS = ['fmcsa_carrier_operation', 'fmcsa_for_hire', 'fmcsa_hazmat']
+
 const show = (v) => {
   if (v === null || v === undefined) return '—'
   if (v === true) return 'yes'
@@ -134,11 +143,9 @@ const show = (v) => {
   return String(v)
 }
 
-/** "—" when nothing changes, "— → C" when it does. */
-const change = (before, after) =>
-  after === null || after === undefined || before !== null
-    ? show(before)
-    : `${show(before)} → ${show(after)}`
+/** The three facts on one line, in the order the settings form asks them:
+ *  crosses state lines / for hire / hazmat. */
+const trio = (op, forHire, hazmat) => `${show(op)}/${show(forHire)}/${show(hazmat)}`
 
 // ------------------------------------------------------------------- the work
 
@@ -152,9 +159,14 @@ try {
     `select column_name from information_schema.columns
       where table_schema = 'public' and table_name = 'carriers'
         and column_name = any($1)`,
-    [[...OPERATION_COLUMNS, 'operation_source']],
+    [[...OPERATION_COLUMNS, 'operation_source', ...FEDERAL_COLUMNS]],
   )
-  const migrated = present.length === OPERATION_COLUMNS.length + 1
+  const has = new Set(present.map((r) => r.column_name))
+  const migrated = [...OPERATION_COLUMNS, 'operation_source'].every((c) => has.has(c))
+  // 0040 separately: a database can hold 0031 and not 0040, and on that one the
+  // owner columns are still fillable while the federal fallback has nowhere to
+  // go. Reading the two as one flag would stop a backfill that can still work.
+  const hasFederal = FEDERAL_COLUMNS.every((c) => has.has(c))
 
   if (!migrated) {
     console.log('0031_carrier_operation.sql is not applied on this database.')
@@ -163,33 +175,62 @@ try {
       process.exit(1)
     }
     console.log('Showing what the census says for every carrier with a USDOT number.\n')
+  } else if (!hasFederal) {
+    console.log(
+      '0040_federal_operation_fallback.sql is not applied: the federal fallback ' +
+        'columns will be skipped.\n',
+    )
   }
 
+  // TWO REASONS TO LOOK A CARRIER UP, and a row can have either.
+  //   1. one of HIS three columns is NULL and he has not answered himself
+  //   2. one of the federal mirror columns is NULL
+  // The second reaches rows the first never did: an owner who answered "I'm
+  // not sure" is excluded from the first for good, and is exactly the carrier
+  // whose board the fallback is meant to clear.
   const { rows: carriers } = await client.query(
-    migrated
-      ? `select id, dot_number, legal_name, carrier_operation, for_hire, hazmat, operation_source
-           from carriers
-          where dot_number is not null
-            and operation_source is distinct from 'owner'
-            and (carrier_operation is null or for_hire is null or hazmat is null)
-          order by created_at`
-      : `select id, dot_number, legal_name,
+    !migrated
+      ? `select id, dot_number, legal_name,
                 null::text as carrier_operation, null::boolean as for_hire,
-                null::boolean as hazmat, null::text as operation_source
+                null::boolean as hazmat, null::text as operation_source,
+                null::text as fmcsa_carrier_operation, null::boolean as fmcsa_for_hire,
+                null::boolean as fmcsa_hazmat
            from carriers
           where dot_number is not null
-          order by created_at`,
+          order by created_at`
+      : hasFederal
+        ? `select id, dot_number, legal_name, carrier_operation, for_hire, hazmat,
+                  operation_source, fmcsa_carrier_operation, fmcsa_for_hire, fmcsa_hazmat
+             from carriers
+            where dot_number is not null
+              and ((operation_source is distinct from 'owner'
+                     and (carrier_operation is null or for_hire is null or hazmat is null))
+                or fmcsa_carrier_operation is null
+                or fmcsa_for_hire is null
+                or fmcsa_hazmat is null)
+            order by created_at`
+        : `select id, dot_number, legal_name, carrier_operation, for_hire, hazmat,
+                  operation_source,
+                  null::text as fmcsa_carrier_operation, null::boolean as fmcsa_for_hire,
+                  null::boolean as fmcsa_hazmat
+             from carriers
+            where dot_number is not null
+              and operation_source is distinct from 'owner'
+              and (carrier_operation is null or for_hire is null or hazmat is null)
+            order by created_at`,
   )
 
   if (carriers.length === 0) {
-    console.log('Every carrier with a USDOT number already has all three columns filled.')
+    console.log(
+      'Every carrier with a USDOT number is already filled, his columns and the federal ones.',
+    )
     process.exit(0)
   }
 
   console.log(`${carriers.length} carrier(s) to look up.\n`)
   const header =
-    `${'USDOT'.padEnd(9)} ${'Legal name'.padEnd(28)} ${'operation'.padEnd(11)} ` +
-    `${'for hire'.padEnd(11)} ${'hazmat'.padEnd(11)} classdef (federal)`
+    `${'USDOT'.padEnd(9)} ${'Legal name'.padEnd(24)} ${'his answers'.padEnd(13)} ` +
+    `${'federal'.padEnd(13)} ${'src'.padEnd(6)} will write`
   console.log(header)
   console.log('-'.repeat(header.length))
 
@@ -207,24 +248,51 @@ try {
     }
 
     const facts = censusOperation(census)
-    // Only NULL columns take a value. Everything else is kept as it was.
+    const owned = c.operation_source === 'owner'
+
+    // HIS three columns. Only NULL ones take a value, and none of them do on a
+    // row he has answered himself.
     const write = {}
-    for (const col of OPERATION_COLUMNS) {
-      const after = facts?.[col] ?? null
-      if (c[col] === null && after !== null) write[col] = after
+    if (!owned) {
+      for (const col of OPERATION_COLUMNS) {
+        const after = facts?.[col] ?? null
+        if (c[col] === null && after !== null) write[col] = after
+      }
     }
+
+    // The federal mirror. Any row, owner or not — but still only where the
+    // column is NULL, so a value already read off the census is not rewritten
+    // by a second run.
+    let federal = null
+    if (hasFederal && facts) {
+      const fill = {}
+      for (const [i, col] of FEDERAL_COLUMNS.entries()) {
+        const after = facts[OPERATION_COLUMNS[i]] ?? null
+        if (c[col] === null && after !== null) fill[col] = after
+      }
+      if (Object.keys(fill).length > 0) federal = fill
+    }
+
+    const willWrite = [
+      ...Object.keys(write),
+      ...(federal ? Object.keys(federal).map((k) => k.replace('fmcsa_', '')) : []).map(
+        (k) => `${k} (federal)`,
+      ),
+    ]
 
     console.log(
       `${String(c.dot_number).padEnd(9)} ${String(c.legal_name ?? '')
-        .slice(0, 28)
-        .padEnd(28)} ` +
-        `${change(c.carrier_operation, facts?.carrier_operation).padEnd(11)} ` +
-        `${change(c.for_hire, facts?.for_hire).padEnd(11)} ` +
-        `${change(c.hazmat, facts?.hazmat).padEnd(11)} ` +
-        `${note || census?.classdef || '—'}`,
+        .slice(0, 24)
+        .padEnd(24)} ` +
+        `${trio(c.carrier_operation, c.for_hire, c.hazmat).padEnd(13)} ` +
+        `${trio(facts?.carrier_operation, facts?.for_hire, facts?.hazmat).padEnd(13)} ` +
+        `${String(c.operation_source ?? '—').padEnd(6)} ` +
+        `${note || (willWrite.length > 0 ? willWrite.join(', ') : 'nothing')}`,
     )
 
-    if (Object.keys(write).length > 0) plan.push({ id: c.id, dot: c.dot_number, write })
+    if (Object.keys(write).length > 0 || federal) {
+      plan.push({ id: c.id, dot: c.dot_number, write, federal, facts })
+    }
   }
 
   console.log('')
@@ -241,24 +309,50 @@ try {
 
   await client.query('begin')
   let written = 0
+  let mirrored = 0
   for (const p of plan) {
     // COALESCE per column, and the 'owner' guard repeated in the WHERE: the
     // dry-run read and this write are two statements, and an owner who saved
     // his answers between them must win.
-    const r = await client.query(
-      `update carriers
-          set carrier_operation = coalesce(carrier_operation, $2),
-              for_hire          = coalesce(for_hire, $3),
-              hazmat            = coalesce(hazmat, $4),
-              operation_source  = coalesce(operation_source, 'fmcsa')
-        where id = $1
-          and operation_source is distinct from 'owner'`,
-      [p.id, p.write.carrier_operation ?? null, p.write.for_hire ?? null, p.write.hazmat ?? null],
-    )
-    written += r.rowCount ?? 0
+    if (Object.keys(p.write).length > 0) {
+      const r = await client.query(
+        `update carriers
+            set carrier_operation = coalesce(carrier_operation, $2),
+                for_hire          = coalesce(for_hire, $3),
+                hazmat            = coalesce(hazmat, $4),
+                operation_source  = coalesce(operation_source, 'fmcsa')
+          where id = $1
+            and operation_source is distinct from 'owner'`,
+        [p.id, p.write.carrier_operation ?? null, p.write.for_hire ?? null, p.write.hazmat ?? null],
+      )
+      written += r.rowCount ?? 0
+    }
+
+    // The federal mirror, in its own statement and with NO owner guard — these
+    // columns are not his and nothing he can do on /app/settings writes them.
+    // COALESCE all the same, so a value read on an earlier run stands.
+    if (p.federal) {
+      const cols = federalOperationColumns(p.facts)
+      const r = await client.query(
+        `update carriers
+            set fmcsa_carrier_operation = coalesce(fmcsa_carrier_operation, $2),
+                fmcsa_for_hire          = coalesce(fmcsa_for_hire, $3),
+                fmcsa_hazmat            = coalesce(fmcsa_hazmat, $4),
+                fmcsa_operation_read_at = $5
+          where id = $1`,
+        [
+          p.id,
+          cols.fmcsa_carrier_operation,
+          cols.fmcsa_for_hire,
+          cols.fmcsa_hazmat,
+          cols.fmcsa_operation_read_at,
+        ],
+      )
+      mirrored += r.rowCount ?? 0
+    }
   }
   await client.query('commit')
-  console.log(`Wrote ${written} row(s).`)
+  console.log(`Wrote ${written} row(s), and the federal record for ${mirrored}.`)
 } catch (err) {
   await client.query('rollback').catch(() => {})
   console.error(err instanceof Error ? err.message : err)

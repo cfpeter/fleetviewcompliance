@@ -14,7 +14,12 @@
  */
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
-import { type ExposureInput, exposure } from '../src/lib/rules/exposure.ts'
+import {
+  carrierCeiling,
+  ceilingCentsFor,
+  type ExposureInput,
+  exposure,
+} from '../src/lib/rules/exposure.ts'
 import { allRules } from '../src/lib/rules/index.ts'
 import {
   CLEARINGHOUSE,
@@ -124,5 +129,52 @@ describe('penalty exposure', () => {
       'most of this catalogue has no line-item penalty; if that has flipped, amounts are ' +
         'being attached to rules the research does not cover',
     )
+  })
+})
+
+// ------------------------------------------------ the one amount to show
+
+/**
+ * `carrierCeiling` is the single place two decisions are made — whose money,
+ * and which of several amounts — and it is now read by three callers: the
+ * total, the dashboard's rows, and the driver page's checklist. Before it
+ * existed each of them was about to make those decisions itself, and the
+ * failure mode is silent: a screen showing the driver's $4,812 where the
+ * owner's $19,246 belongs looks completely normal.
+ */
+describe('the amount shown on a row', () => {
+  test('takes the carrier side and never the driver side', () => {
+    assert.equal(carrierCeiling([PART382_DRIVER]), null, "the driver's money is not his")
+    assert.equal(carrierCeiling([PART382_EMPLOYER])?.key, 'part382_employer')
+    assert.equal(
+      carrierCeiling([PART382_DRIVER, PART382_EMPLOYER])?.key,
+      'part382_employer',
+      'with both sides present, his is the one that shows',
+    )
+  })
+
+  test('takes the largest, so what is shown stays a ceiling', () => {
+    assert.equal(carrierCeiling([CLEARINGHOUSE, PART382_EMPLOYER])?.key, 'part382_employer')
+    assert.equal(carrierCeiling([PART382_EMPLOYER, CLEARINGHOUSE])?.key, 'part382_employer')
+  })
+
+  // A per-day amount is compared on its CAP, not its daily rate — $1,584 a day
+  // looks smaller than $7,155 per violation and is worth more than twice it.
+  test('compares a daily amount by what it reaches, not by one day of it', () => {
+    assert.ok(
+      RECORDKEEPING.maxCents < CLEARINGHOUSE.maxCents,
+      'the fixture needs the daily rate to be the smaller number',
+    )
+    assert.ok(ceilingCentsFor(RECORDKEEPING) > ceilingCentsFor(CLEARINGHOUSE))
+    assert.equal(
+      carrierCeiling([RECORDKEEPING, CLEARINGHOUSE])?.key,
+      'recordkeeping',
+      'compared on the daily rate this would pick the wrong one, and understate the row',
+    )
+  })
+
+  test('nothing to show is null, not a zero-valued amount', () => {
+    assert.equal(carrierCeiling(undefined), null)
+    assert.equal(carrierCeiling([]), null)
   })
 })

@@ -14,7 +14,16 @@ import App from '../../../../layouts/App.astro'
 import { TONE_FOR_STATE } from '../../../../lib/charts/dq-rings.ts'
 import { type CheckPill, CHECK_TONES, pillFor } from '../../../../lib/charts/driver-status.ts'
 import { loadDeadlines } from '../../../../lib/deadlines.ts'
-import { assembleDqf, gaps, summarise, type DqfItem, type ItemState } from '../../../../lib/proof/dqf.ts'
+import {
+  assembleDqf,
+  expected,
+  gaps,
+  holdsSpe,
+  stateWord,
+  summarise,
+  type DqfItem,
+  type ItemState,
+} from '../../../../lib/proof/dqf.ts'
 
 const { id } = Astro.params
 const supabase = Astro.locals.supabase!
@@ -43,71 +52,40 @@ if (!driver) {
 }
 
 const mine = allItems.filter((i) => i.subjectId === id)
-const items = assembleDqf({ items: mine })
 const observedAt = new Date()
 
-/**
- * WHICH OF THE EIGHT THIS DRIVER'S FILE IS EXPECTED TO HOLD.
- *
- * `assembleDqf` scores every paragraph, and two of them do not apply to most
- * drivers — which this page already said in its own notes while listing them
- * under "needs attention". (b)(8) is required for non-CDL drivers only. (b)(7)
- * exists only where an SPE or a variance does, and the engine says
- * `not_applicable` when the driver holds none. An auditor who reads "3 needing
- * attention" and finds one real gap decides the carrier cannot count.
- */
-const hasCdl = Boolean(driver.cdl_number)
-const speApplies = mine.some(
-  (x) =>
-    x.rule.code === 'spe_certificate_renewal' &&
-    x.status.standing !== 'not_applicable' &&
-    x.status.standing !== 'unsupported',
-)
-
-/** Why an item is not expected in this file, or null when it is. */
-function doesNotApply(item: DqfItem): string | null {
-  if (item.paragraph === '(b)(8)') {
-    return hasCdl ? 'This driver holds a CDL. The note is required for non-CDL drivers only.' : null
-  }
-  if (item.paragraph === '(b)(7)') {
-    return speApplies ? null : 'No SPE certificate or medical variance is recorded for this driver.'
-  }
-  return null
-}
-
-const applicable = items.filter((i) => doesNotApply(i) === null)
-const notApplicable = items.length - applicable.length
-const summary = summarise(applicable, observedAt)
-const outstanding = gaps(applicable)
-
-/**
- * THE PAPER THAT WOULD BACK EACH PARAGRAPH.
- *
- * "On file" is printed only where a document of that kind is uploaded. A typed
- * date with nothing behind it prints "Date recorded, no document", because
- * that is all it is, and it is the first thing an officer tests. (b)(8) has no
- * paper of its own here.
- */
+// The paper we hold, by kind, so "On file" can mean a document and not only a
+// typed date. A superseded upload is not evidence of anything current.
 const heldKinds = new Set(((paper ?? []) as { kind: string }[]).map((p) => p.kind))
-const PAPER_FOR: Record<string, readonly string[]> = {
-  '(b)(1)': ['employment_application'],
-  '(b)(2)': ['mvr'],
-  '(b)(3)': ['road_test', 'cdl'],
-  '(b)(4)': ['mvr'],
-  '(b)(5)': ['annual_review'],
-  '(b)(6)': ['medical_certificate'],
-  '(b)(7)': ['spe_certificate'],
-}
-const backedByPaper = (item: DqfItem) =>
-  (PAPER_FOR[item.paragraph] ?? []).some((k) => heldKinds.has(k))
-const stateWord = (item: DqfItem) =>
-  item.state === 'present' && !backedByPaper(item)
-    ? 'Date recorded, no document'
-    : STATE_WORDS[item.state]
+
+/**
+ * THE FILE, SCORED — AND SCORED IN ONE PLACE.
+ *
+ * Which of the eight this driver is expected to hold, the hire date that lives
+ * on his row rather than in compliance_records, and whether there is paper
+ * behind each date are all decided in src/lib/proof/dqf.ts. That is the same
+ * call the roster, the driver's own page and the broker's shared link make, so
+ * no two of them can say different things about one driver.
+ *
+ * All three used to be written HERE and nowhere else, which is exactly how the
+ * link a carrier sends out came to report gaps his own binder did not.
+ * tests/proof-parity.test.ts is what stops that happening again.
+ */
+const items = assembleDqf({
+  items: mine,
+  driver: { cdl: Boolean(driver.cdl_number), spe: holdsSpe(mine) },
+  uploadedKinds: heldKinds,
+})
+
+const applicable = expected(items)
+const notApplicable = items.length - applicable.length
+const summary = summarise(items, observedAt)
+const outstanding = gaps(items)
+
 // Grey, not green, for a date with no paper behind it: grey is "we do not hold
-// it", said with a word, and the word says which half is missing.
+// it", said with a word, and `stateWord` says which half is missing.
 const stateClass = (item: DqfItem) =>
-  item.state === 'present' && !backedByPaper(item) ? 'badge badge-neutral' : STATE_CLASS[item.state]
+  item.state === 'present' && item.paper === 'none' ? 'badge badge-neutral' : STATE_CLASS[item.state]
 
 /**
  * HOW LONG, IN WORDS, BESIDE EACH ITEM.
@@ -131,21 +109,6 @@ function daysPill(item: DqfItem): CheckPill | null {
   if (!worst) return null
   const pill = pillFor(worst, observedAt)
   return pill.tone === TONE_FOR_STATE[item.state] ? pill : null
-}
-
-/**
- * The words printed for each state.
- *
- * `unknown` says "Not known" rather than "N/A" or a dash on purpose: to somebody
- * skimming a printout, both of those read as "nothing to do here", which is the
- * opposite of what an absent date means.
- */
-const STATE_WORDS: Record<ItemState, string> = {
-  present: 'On file',
-  expiring: 'Expires soon',
-  expired: 'Expired',
-  missing: 'Not on file',
-  unknown: 'Not known',
 }
 
 /**
@@ -244,7 +207,7 @@ const name = `${driver.first_name} ${driver.last_name}`.trim()
                   <span class="font-medium">
                     {i.paragraph} {i.title}
                   </span>
-                  <span class="ml-2 text-ink-500">— {STATE_WORDS[i.state]}</span>{' '}
+                  <span class="ml-2 text-ink-500">— {stateWord(i)}</span>{' '}
                   {pill && (
                     <span class:list={['badge ml-2', CHECK_TONES[pill.tone].pill]}>
                       {pill.text}
@@ -265,12 +228,12 @@ const name = `${driver.first_name} ${driver.last_name}`.trim()
       <div class="mt-3 divide-y divide-ink-100 border-t border-ink-100">
         {
           items.map((i) => {
-            const skip = doesNotApply(i)
+            const skip = i.notApplicable
             // No "on file" pill beside "Date recorded, no document": the pill
             // is about the date and the word is about the paper, and side by
             // side they argue.
             const days = skip ? null : daysPill(i)
-            const pill = days && days.text === 'on file' && !backedByPaper(i) ? null : days
+            const pill = days && days.text === 'on file' && i.paper === 'none' ? null : days
             return (
             <div class="py-4" data-block>
               <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">

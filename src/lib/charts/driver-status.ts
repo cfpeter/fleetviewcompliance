@@ -32,7 +32,9 @@
 
 import { daysBetween, toUtcMidnight } from '../rules/dates.ts'
 import { DRIVER_ANCHORS } from '../rules/driver-anchors.ts'
+import { carrierCeiling } from '../rules/exposure.ts'
 import { type DeadlineItem, dueLine, SOON_DAYS } from '../rules/index.ts'
+import { penaltyAmount } from '../rules/penalties.ts'
 import type { DqRing } from './dq-rings.ts'
 import type { Tone } from './tones.ts'
 
@@ -169,6 +171,19 @@ export interface ChecklistRow {
   hasDate: boolean
   /** The `compliance_records.anchor_key` a date for this row is filed under. */
   anchorKey?: string
+  /**
+   * THE MOST THIS ROW COULD COST HIM, already worded, or absent.
+   *
+   * Absent is the normal case and it means "no amount we can stand behind",
+   * never "no consequence" — most of the catalogue carries no line-item
+   * penalty, and the two rows that park a driver (the medical certificate and
+   * the CDL) are among them. Anything printing this must not let a blank read
+   * as free.
+   *
+   * Only on rows that are actually at risk. A price beside a date he still has
+   * time to meet turns a reminder into a threat.
+   */
+  fine?: string
 }
 
 export interface DriverChecklist {
@@ -193,6 +208,11 @@ export function buildDriverChecklist(items: readonly DeadlineItem[], today: Date
     .filter((i) => i.status.standing !== 'not_applicable')
     .map((i) => {
       const pill = pillFor(i, today)
+      // `act` is overdue and `nodate` is a date nobody has typed — the same two
+      // standings `exposure()` counts as at risk, said in this file's own
+      // vocabulary. `soon` is deliberately not one of them.
+      const atRisk = pill.tone === 'act' || pill.tone === 'nodate'
+      const mine = atRisk ? carrierCeiling(i.rule.penalty) : null
       return {
         code: i.rule.code,
         title: i.rule.title,
@@ -202,6 +222,7 @@ export function buildDriverChecklist(items: readonly DeadlineItem[], today: Date
         due: dueLine(i),
         hasDate: Boolean(i.status.nextDue || i.status.lastDue),
         anchorKey: anchorForRule(i),
+        fine: mine ? penaltyAmount(mine) : undefined,
       }
     })
     .sort((a, b) => TONE_ORDER[a.tone] - TONE_ORDER[b.tone])

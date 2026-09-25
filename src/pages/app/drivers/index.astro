@@ -10,7 +10,7 @@ import Proportion from '../../../components/charts/Proportion.astro'
 import Ring from '../../../components/charts/Ring.astro'
 import App from '../../../layouts/App.astro'
 import { flashText } from '../../../lib/flash.ts'
-import { dqRing, rosterLine, rowLine } from '../../../lib/charts/dq-rings.ts'
+import { type DqRing, dqRing, rosterLine, rowLine } from '../../../lib/charts/dq-rings.ts'
 import { CHECK_TONES, pillFor, rosterBar } from '../../../lib/charts/driver-status.ts'
 import { loadDeadlines } from '../../../lib/deadlines.ts'
 import {
@@ -24,7 +24,7 @@ import {
 import { isActiveDriver } from '../../../lib/fleet/active.ts'
 import { removedMessage } from '../../../lib/fleet/remove.ts'
 import { formatPhone } from '../../../lib/phone.ts'
-import { assembleDqf } from '../../../lib/proof/dqf.ts'
+import { assembleDqf, holdsSpe } from '../../../lib/proof/dqf.ts'
 import type { DeadlineItem } from '../../../lib/rules/index.ts'
 
 const supabase = Astro.locals.supabase!
@@ -138,10 +138,16 @@ const ringByDriver = new Map(
     // The shared predicate, not a hand-written status test: this list and
     // `loadDeadlines` must never disagree about who was looked at.
     .filter(isActiveDriver)
-    .map((d) => [
-      d.id,
-      dqRing(assembleDqf({ items: byDriver.get(d.id) ?? [] }), observedAt),
-    ]),
+    .map((d): [string, DqRing] => {
+      const items = byDriver.get(d.id) ?? []
+      // The driver's own facts, so the ring counts what his FILE is expected to
+      // hold rather than all eight paragraphs — see `notApplicableFor` in
+      // src/lib/proof/dqf.ts. Without them a well-kept CDL driver drew two red
+      // eighths for a non-CDL note and an SPE he does not have, on the roster,
+      // beside the binder that correctly prints neither.
+      const driver = { cdl: Boolean(d.cdl_number), spe: holdsSpe(items) }
+      return [d.id, dqRing(assembleDqf({ items, driver }), observedAt)]
+    }),
 )
 
 const rings = [...ringByDriver.values()]

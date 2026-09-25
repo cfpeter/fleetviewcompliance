@@ -19,6 +19,7 @@ import { describe, test } from 'node:test'
 import type pg from 'pg'
 import { DRIVER_DOCUMENT_KINDS } from '../src/lib/documents.ts'
 import {
+  ANYTHING_ASK,
   ASK_ANCHOR_KEYS,
   ASK_KEYS,
   askByKey,
@@ -27,6 +28,7 @@ import {
   readAsks,
   sameAsk,
 } from '../src/lib/driver-link/asks.ts'
+import { reachFor } from '../src/lib/driver-link/deliver.ts'
 import {
   clampExpiryHours,
   DEFAULT_EXPIRY_HOURS,
@@ -105,15 +107,42 @@ test('the carrier performs these, so the driver is never asked for them', () => 
   }
 })
 
-test('the catalogue and the database constraint are the same six keys', () => {
+test('the catalogue and the database constraint are the same closed set', () => {
   // Written twice, in two languages. Drift is invisible until a save fails.
-  assert.deepEqual([...ASK_KEYS], ['medical', 'cdl', 'spe', 'intracity', 'diabetes', 'vision'])
+  assert.deepEqual(
+    [...ASK_KEYS],
+    ['medical', 'cdl', 'spe', 'intracity', 'diabetes', 'vision', 'anything'],
+  )
+
+  // SIX ARE DATED PAPERS AND THE SEVENTH IS NOT. `anything` (0042) names no
+  // anchor, carries no date box and writes nothing on acceptance — it exists so
+  // a link can be minted for a driver who owes none of the six, and what he
+  // opens is the free upload box. It is deliberately absent from DRIVER_ASKS,
+  // because the driver's page and accept.ts both build their work by filtering
+  // that catalogue, and a key that is not in it contributes no question and no
+  // write. That absence IS the scope limit; if it ever appears there, somebody
+  // has given an unauthenticated writer a field nobody reasoned about.
   assert.deepEqual(
     DRIVER_ASKS.map((a) => a.key),
-    [...ASK_KEYS],
+    ['medical', 'cdl', 'spe', 'intracity', 'diabetes', 'vision'],
   )
-  const sql = read('../supabase/migrations/0034_driver_links.sql')
-  for (const key of ASK_KEYS) assert.match(sql, new RegExp(`'${key}'`))
+  assert.equal(ANYTHING_ASK, 'anything')
+  assert.ok(!DRIVER_ASKS.some((a) => a.key === ANYTHING_ASK))
+
+  // The database is the authority and holds the same list. 0034 wrote the six;
+  // 0042 replaced that constraint with the seven.
+  const first = read('../supabase/migrations/0034_driver_links.sql')
+  for (const key of DRIVER_ASKS.map((a) => a.key)) assert.match(first, new RegExp(`'${key}'`))
+  const widened = read('../supabase/migrations/0042_driver_link_anything.sql')
+  assert.match(widened, /drop constraint driver_links_asks_known/)
+  for (const key of ASK_KEYS) assert.match(widened, new RegExp(`'${key}'`))
+  // And the count ceiling is untouched: 'anything' spends one of the six slots
+  // 0038 allows between `asks` and `reminder_ids`, rather than buying a new one.
+  assert.doesNotMatch(
+    widened.replace(/--.*$/gm, ''),
+    /driver_links_asks_something/,
+    'the count ceiling is discussed in a comment and never altered',
+  )
 })
 
 test('a CDL expiry goes to the column, never to a compliance record', () => {
@@ -472,6 +501,102 @@ test('accepting one driver’s answer does not close a reminder about all of the
   // implementation of the same arithmetic.
   assert.match(accept, /nextCycle\(dueOn, repeat, today\)/)
   assert.match(accept, /last_done_on: on/, 'the date he typed, not today')
+})
+
+// ---------------------------------------------------------------------------
+// Getting the link to the driver
+// ---------------------------------------------------------------------------
+
+test('a text beats an email, and an unusable number is no number at all', () => {
+  // A driver reads a text at a fuel stop. He may have no email address at all,
+  // and if he has one he has not opened it this month. Email is the fallback.
+  const texted = reachFor({ phone: '(818) 555-0147', email: 'aram@example.com' })
+  assert.equal(texted.channel, 'sms')
+  assert.match(String(texted.to), /^\+1/)
+
+  // A phone field with words in it is not a failure to report — it is simply
+  // not a way to reach anybody, and the email is.
+  const posted = reachFor({ phone: 'call the office', email: 'aram@example.com' })
+  assert.deepEqual(posted, { channel: 'email', to: 'aram@example.com' })
+
+  for (const nowhere of [
+    { phone: null, email: null },
+    { phone: '', email: '  ' },
+    { phone: 'x', email: 'not an address' },
+    {},
+  ]) {
+    assert.equal(reachFor(nowhere).channel, 'copied', JSON.stringify(nowhere))
+    assert.equal(reachFor(nowhere).to, null)
+  }
+})
+
+test('the message goes through send(), so the dev guard cannot be walked past', () => {
+  const deliver = read('../src/lib/driver-link/deliver.ts')
+  /*
+   * THE STANDING RULE: outside production nothing may reach a real carrier or
+   * a real driver. `guard()` is what enforces it and it runs INSIDE `send()`,
+   * so a module that posted to Resend or Twilio itself would be correct-looking
+   * code that texts somebody's driver from a laptop.
+   */
+  assert.match(deliver, /import \{ send, smsBody \} from '\.\.\/notify\/send\.ts'/)
+  assert.match(deliver, /await send\(/)
+  assert.doesNotMatch(deliver, /api\.resend\.com|api\.twilio\.com/)
+  // And the SMS body goes through smsBody, which caps the length and prints no
+  // "Reply STOP" — a promise with no inbound route to honour it blocks A2P
+  // registration. See src/lib/notify/send.ts.
+  assert.match(deliver, /smsBody\(\[body\]\)/)
+})
+
+test('a failed send keeps the link instead of throwing it away', () => {
+  // `TWILIO_*` is deliberately unset until the 10DLC campaign is live
+  // (docs/OPERATIONS.md), so today a text reports "not configured". The link is
+  // already minted and already valid, and the owner has a phone in his hand:
+  // the answer is to hand him the link and say it did not go, never a red box
+  // with nothing in it.
+  const deliver = read('../src/lib/driver-link/deliver.ts')
+  assert.match(deliver, /COULD_NOT_SEND/)
+  // And before giving up, the address we also hold is tried — because a text
+  // that reports "not configured" is today's normal, and the email would have
+  // worked. One way round only: a driver who can be texted is texted.
+  assert.match(
+    deliver,
+    /const fallback = reach\.channel === 'sms' \? reachFor\(\{ email: args\.driver\.email \}\) : null/,
+  )
+  assert.match(deliver, /if \(fallback\?\.channel === 'email' && fallback\.to\)/)
+
+  // The mint is not rolled back: the action returns ok with the token whatever
+  // the send did, and the OUTCOME is what carries the bad news.
+  const action = read('../src/lib/driver-link/ask-action.ts')
+  assert.match(action, /if \(!minted\.ok\) return \{ ok: false, message: minted\.message \}/)
+  assert.match(
+    action,
+    /outcome: delivery\.sent \? delivery\.channel : reach\.channel === 'copied' \? 'none' : 'failed'/,
+  )
+  assert.doesNotMatch(action, /delete|rollback|revoke/i, 'a failed send never unmints the link')
+
+  const page = read('../src/pages/app/drivers/[id].astro')
+  // And the redirect still carries the token.
+  assert.match(
+    page,
+    /minted=\$\{encodeURIComponent\(asked\.token\)\}&sent=\$\{asked\.outcome\}#ask/,
+  )
+})
+
+test("what happened travels as a code, never as the driver's number", () => {
+  // The alternative puts a phone number in the address bar and in browser
+  // history for a page that is otherwise careful about exactly that.
+  const page = read('../src/pages/app/drivers/[id].astro')
+  assert.match(page, /const SENT_OUTCOMES = \['sms', 'email', 'none', 'failed'\] as const/)
+  assert.match(page, /SENT_OUTCOMES\.find\(\(o\) => o === params\.get\('sent'\)\) \?\? null/)
+
+  const panel = read('../src/components/DriverLink.astro')
+  assert.match(
+    panel,
+    /const reach = reachFor\(\{ phone, email \}\)/,
+    'the button says where it goes',
+  )
+  assert.match(panel, /Sent by text to/)
+  assert.match(panel, /We could not send it just now/)
 })
 
 // ---------------------------------------------------------------------------

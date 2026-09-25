@@ -20,7 +20,7 @@
  * and as the badges on the binder page, because red already means overdue
  * everywhere in this app.
  */
-import { type DqfItem, type ItemState, summarise } from '../proof/dqf.ts'
+import { type DqfItem, expected, type ItemState, summarise } from '../proof/dqf.ts'
 
 /**
  * Four tones and no fifth.
@@ -113,7 +113,12 @@ export interface DqRing {
  */
 export function dqRing(items: readonly DqfItem[], observedAt: Date): DqRing {
   const s = summarise(items, observedAt)
-  const inTone = (tone: RingTone) => items.filter((i) => TONE_FOR_STATE[i.state] === tone).length
+  // Counted over the paragraphs this file is EXPECTED to hold, exactly as
+  // `summarise` counts them. Counting all eight here would break the one
+  // arithmetic this ring rests on: red + grey = `attention`, and the arcs
+  // fill the circle.
+  const counted = expected(items)
+  const inTone = (tone: RingTone) => counted.filter((i) => TONE_FOR_STATE[i.state] === tone).length
 
   const actNow = inTone('act')
   const noDate = inTone('nodate')

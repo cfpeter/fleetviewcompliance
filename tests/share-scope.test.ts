@@ -35,6 +35,35 @@ async function carrierWithLinks(c: pg.Client, name: string, dot: string) {
   )
   const driver = d[0].id
 
+  // A SECOND driver in the same carrier. The risk worth testing for
+  // share_documents is not cross-carrier — every function here is already
+  // scoped by carrier — it is one driver's link reading the paper of the man at
+  // the next desk, whose file the broker was never shown.
+  const { rows: d2 } = await c.query(
+    `insert into drivers (carrier_id, first_name, last_name) values ($1,$2,'Other') returning id`,
+    [carrier, name],
+  )
+  const otherDriver = d2[0].id
+
+  await c.query(
+    `insert into documents (carrier_id, subject_type, subject_id, kind, storage_key)
+          values ($1,'driver',$2,'medical_certificate',$3),
+                 ($1,'driver',$2,'mvr',$4),
+                 ($1,'driver',$5,'spe_certificate',$6)`,
+    [carrier, driver, `${name}/med`, `${name}/mvr`, otherDriver, `${name}/spe`],
+  )
+
+  // One replaced upload, superseded the way the app supersedes it — an UPDATE
+  // that touches `superseded_at` and nothing else, because documents are
+  // append-only. A superseded row is not evidence of anything current and must
+  // not reach the shared page.
+  const { rows: replaced } = await c.query(
+    `insert into documents (carrier_id, subject_type, subject_id, kind, storage_key)
+     values ($1,'driver',$2,'road_test',$3) returning id`,
+    [carrier, driver, `${name}/road`],
+  )
+  await c.query('update documents set superseded_at = now() where id = $1', [replaced[0].id])
+
   await c.query(
     `insert into compliance_records (carrier_id, subject_type, subject_id, anchor_key, occurred_on)
      values ($1,'driver',$2,'medical_certificate_expires','2027-06-01')`,
@@ -72,7 +101,7 @@ async function carrierWithLinks(c: pg.Client, name: string, dot: string) {
   )
 
   await actAsOwner(c)
-  return { carrier, driver, file, summary, expired, revoked }
+  return { carrier, driver, otherDriver, file, summary, expired, revoked }
 }
 
 const call = async (c: pg.Client, fn: string, token: string) =>
@@ -129,7 +158,13 @@ describe('share token scope', { skip: !configured() }, () => {
         ['revoked', a.revoked],
         ['invented', 'definitely-not-a-real-token'],
       ] as const) {
-        for (const fn of ['share_carrier', 'share_driver', 'share_anchors', 'share_fleet_counts']) {
+        for (const fn of [
+          'share_carrier',
+          'share_driver',
+          'share_anchors',
+          'share_fleet_counts',
+          'share_documents',
+        ]) {
           assert.equal((await call(c, fn, token)).length, 0, `${fn} leaked to a ${label} token`)
         }
         assert.equal(
@@ -137,6 +172,57 @@ describe('share token scope', { skip: !configured() }, () => {
           0,
           `resolve_share_token accepted a ${label} token`,
         )
+      }
+    })
+  })
+
+  test('a driver_file token reads that driver’s paper, and only what is current', async () => {
+    // 0041. The page uses these kinds for one thing: printing "Date recorded,
+    // no document" where a date was typed in and nothing was ever scanned. That
+    // only ever makes the page say LESS about the carrier — but it is still a
+    // new door for `anon`, so what it opens onto is asserted here rather than
+    // argued for in the .astro file.
+    await withRollback(async (c) => {
+      const a = await carrierWithLinks(c, 'LIMA', `87${Date.now() % 100000}`)
+      await actAsAnon(c)
+
+      const kinds = (await call(c, 'share_documents', a.file))
+        .map((r: { kind: string }) => r.kind)
+        .sort()
+
+      assert.deepEqual(
+        kinds,
+        ['medical_certificate', 'mvr'],
+        'the shared link sees exactly the current paper of the driver it names',
+      )
+      assert.ok(!kinds.includes('road_test'), 'a superseded upload must not count as paper we hold')
+      assert.ok(
+        !kinds.includes('spe_certificate'),
+        'a driver_file token reached the paper of a driver it does not name',
+      )
+
+      // Wrong scope: a carrier summary names no driver, so there is no driver
+      // whose documents it could mean.
+      assert.equal(
+        (await call(c, 'share_documents', a.summary)).length,
+        0,
+        'a carrier_summary token read driver documents',
+      )
+    })
+  })
+
+  test('the shared link never learns where a document is or what it is called', async () => {
+    // The kinds are the whole payload. A storage key is the R2 object and a file
+    // name carries a driver's name and often his licence number, so neither may
+    // be added to this function later without this failing.
+    await withRollback(async (c) => {
+      const a = await carrierWithLinks(c, 'MIKE', `86${Date.now() % 100000}`)
+      await actAsAnon(c)
+
+      const rows = await call(c, 'share_documents', a.file)
+      assert.ok(rows.length > 0)
+      for (const row of rows) {
+        assert.deepEqual(Object.keys(row), ['kind'], 'share_documents returned more than the kind')
       }
     })
   })

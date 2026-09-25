@@ -1662,8 +1662,27 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
     reader than it was.
   */}
   <details open={datesOpen} id="add-dates" class="group mt-4">
+    {/*
+      DRAWN AS A BUTTON, the same way "Add a file" is in src/components/Documents.astro.
+
+      It was a bordered white card with a heading in it, and a card is something
+      you read, not something you press. This is the one control on the page that
+      opens the form the office actually came here to use, so it wears the app's
+      own secondary button: same border, same brand text, same hover.
+
+      IT STAYS FULL WIDTH AND IT STAYS THE SIZE OF THE CARD IT REPLACED. The
+      comment above is about how much height this fold saves on a phone, and a
+      target that spans the page is the easiest thing here to hit with a work
+      glove on. `rounded-xl` rather than the button's own `rounded-lg`, so it
+      still matches the cards it sits between; `justify-start` because a button
+      this wide with centred text reads as a banner, and the box count has to
+      keep its place on the right.
+
+      The caret stays and still turns. A button that opens something in place
+      owes the reader that much.
+    */}
     <summary
-      class="flex cursor-pointer list-none items-center gap-3 rounded-xl border border-ink-100 bg-white p-4 select-none [&::-webkit-details-marker]:hidden"
+      class="btn btn-secondary w-full cursor-pointer list-none justify-start gap-3 rounded-xl select-none [&::-webkit-details-marker]:hidden"
     >
       <h3 class={cardHeading}>Put a date in, or change one</h3>
       <svg
@@ -1674,7 +1693,7 @@ const cell = 'block px-4 sm:table-cell sm:py-3'
         stroke-width="2"
         stroke-linecap="round"
         stroke-linejoin="round"
-        class="size-4 shrink-0 text-ink-500 transition-transform group-open:rotate-180"
+        class="size-4 shrink-0 transition-transform group-open:rotate-180"
       >
         <path d="M5 8l5 5 5-5"></path>
       </svg>

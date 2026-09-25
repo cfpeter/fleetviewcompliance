@@ -22,8 +22,10 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const BINDER = fileURLToPath(new URL('../src/pages/app/drivers/[id]/file.astro', import.meta.url))
+const DQF = fileURLToPath(new URL('../src/lib/proof/dqf.ts', import.meta.url))
 
 const source = await readFile(BINDER, 'utf8')
+const dqfSource = await readFile(DQF, 'utf8')
 
 test('the binder never claims a verdict', () => {
   // Word boundaries matter. "certification of compliance" is in the footer
@@ -58,12 +60,17 @@ test('the binder says what it is not', () => {
 })
 
 test('an item we cannot evaluate reads as not known, never as satisfied', () => {
-  // The five states come from dqf.ts; these are the words printed for them. The
-  // failure this guards is the tempting one — labelling `unknown` as "N/A" or
-  // "—", which reads as "nothing to do here" to somebody skimming a printout.
-  assert.match(source, /unknown:\s*'Not known'/)
-  assert.match(source, /missing:\s*'Not on file'/)
-  assert.match(source, /expired:\s*'Expired'/)
+  // The five states come from dqf.ts and so, now, do the words printed for
+  // them — the binder, the roster, the driver's page and the broker's link all
+  // read one STATE_WORDS. That is why this reads dqf.ts rather than the page:
+  // the words moved, and the guard follows them, which now covers all four
+  // surfaces instead of the one.
+  //
+  // The failure this guards is the tempting one — labelling `unknown` as "N/A"
+  // or "—", which reads as "nothing to do here" to somebody skimming a printout.
+  assert.match(dqfSource, /unknown:\s*'Not known'/)
+  assert.match(dqfSource, /missing:\s*'Not on file'/)
+  assert.match(dqfSource, /expired:\s*'Expired'/)
 })
 
 test('the print rules the document exists for are actually present', () => {

@@ -664,6 +664,41 @@ export const federalCarrierRules: RuleDefinition[] = [
       'Suspension and then revocation — revocation only after a compliance order ' +
       'and 30 days of wilful non-compliance (49 U.S.C. 13905(e)).',
     impact: 'company',
+    /**
+     * THE LAST UNGATED ROW IN THE CATALOGUE, and it was the loudest one.
+     *
+     * This rule had no `applies` at all, so it was evaluated for every carrier
+     * in the country, and its schedule always answers `unsupported` — meaning
+     * a permanent blue "go and check this yourself" row at the top of every
+     * board, including the boards of carriers who cannot hold federal
+     * operating authority and never needed it.
+     *
+     * Who is actually in: § 13906(a)(1) secures a registration issued under
+     * § 13902, and § 13902 registers FOR-HIRE motor carriers in INTERSTATE
+     * commerce. A private carrier hauling its own goods is outside § 13902
+     * whatever it hauls and wherever it goes — which is why `hazmat` is absent
+     * from this test and present in the Part 387 one next door. A hazmat
+     * safety permit is Part 385 Subpart E and a different row.
+     *
+     * `false` on a positive intrastate code is the same answer the UCR gate
+     * above gives on the same fact, and the same one the IFTA and IRP gates in
+     * ./california.ts give. Three gates reading one self-reported code have to
+     * agree: when they did not, an intrastate carrier's UCR sat on his board
+     * while his IFTA was off it, and neither state told him which to believe.
+     *
+     * The residual risk is named and accepted: freight moving wholly inside
+     * one state as the continuation of an interstate movement IS interstate
+     * commerce, and a carrier who files 'B' or 'C' may still need authority
+     * for it. That is a mis-declared MCS-150, it is visible on his own federal
+     * record, and it is correctable on /app/settings — where the answer that
+     * reaches this gate is his, not ours.
+     */
+    applies(ctx: RuleContext): Applicability {
+      if (ctx.forHire === false) return false
+      if (ctx.carrierOperation === 'B' || ctx.carrierOperation === 'C') return false
+      if (ctx.carrierOperation === 'A' && ctx.forHire === true) return true
+      return 'unknown'
+    },
   },
 
   {

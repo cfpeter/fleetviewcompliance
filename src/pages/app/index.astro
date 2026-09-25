@@ -43,6 +43,7 @@ import {
 import { anchorSlot, planAnchorWrites } from '../../lib/anchors/plan.ts'
 import {
   buildDateEditor,
+  type DateSubject,
   findSubject,
   isBatchStamp,
   longDate,
@@ -52,9 +53,27 @@ import {
   savedHeadline,
   subjectHrefFor,
 } from '../../lib/dashboard-dates.ts'
+import DateSubjectActions from '../../components/DateSubjectActions.astro'
+import {
+  type ActionSubject,
+  blockedDriverIds,
+  buildActionIndex,
+} from '../../lib/dashboard-actions.ts'
 import { loadDeadlines } from '../../lib/deadlines.ts'
+import { askDriver, askDrivers, bulkAskLine } from '../../lib/driver-link/ask-action.ts'
+import { type Reach, reachFor } from '../../lib/driver-link/deliver.ts'
+import { ANYTHING_ASK, asksForAnswerKeys } from '../../lib/driver-link/asks.ts'
+import {
+  type ChaseState,
+  chaseState,
+  newestPerDriver,
+  type OutstandingLink,
+} from '../../lib/driver-link/outstanding.ts'
+import { remindMeFields } from '../../lib/dashboard-remind.ts'
+import { ACTIVE_DRIVER_STATUS } from '../../lib/fleet/active.ts'
+import { DEFAULT_EXPIRY_HOURS } from '../../lib/driver-link/link.ts'
 import { eligibility, isBlocked } from '../../lib/dispatch/eligibility.ts'
-import { exposure } from '../../lib/rules/exposure.ts'
+import { carrierCeiling, exposure } from '../../lib/rules/exposure.ts'
 import { effectiveLabel, money, penaltyAmount, RECORDKEEPING } from '../../lib/rules/penalties.ts'
 import {
   REMINDER_ORIGIN,
@@ -131,6 +150,142 @@ const [{ data: carrier }, items, reminders, truckCount, driverCount] = await Pro
 const editor = buildDateEditor(items.filter((i) => i.status.standing === 'unknown'))
 const focus = findSubject(editor, Astro.url.searchParams.get('s'))
 
+/**
+ * EVERY subject the dashboard has a row about, whatever its standing.
+ *
+ * `editor` above is deliberately narrower — it is a form for typing dates
+ * nobody knows. The card ACTIONS must not be: a driver whose medical card
+ * expired eight days ago is the man most worth texting, and he is not in
+ * `editor` at all. Building the actions on `editor` made the SERVER believe
+ * "can be texted" meant "is missing a date", and it answered every intent for
+ * such a driver with "that driver is not on this list any more".
+ */
+const actionIndex = buildActionIndex(items, carrierId)
+
+/** Who cannot be dispatched today. Computed before the POST block because both
+ *  the banner and the handler behind its button need the same list. */
+const blocked = blockedDriverIds(items, (d) => isBlocked(eligibility(d)))
+
+/**
+ * HOW WE WOULD REACH EACH DRIVER, for the action menu on his card.
+ *
+ * Only on the `?show=unknown` screen, because that is the only screen with the
+ * menu on it, and this is a second query on a page that already makes five.
+ * `reachFor` is the same function the driver's own page and the send itself
+ * use, so what the menu OFFERS and what the send actually DOES cannot drift —
+ * a menu saying "Text him" over a driver with no number is a menu that teaches
+ * him not to believe the menu.
+ *
+ * No .eq('carrier_id', ...): RLS scopes it, as it does the five above.
+ */
+/**
+ * NOT GATED ON THE VIEW ANY MORE. Both of the lookups below were `view ===
+ * 'unknown'`, so on every other screen they were empty maps — and a menu
+ * rendered from an empty map says "no number and no email on file" over a
+ * driver whose number we hold, which is the one thing
+ * src/components/DateSubjectActions.astro says it must never do.
+ */
+const hasDrivers = [...actionIndex.values()].some((x) => x.type === 'driver')
+
+const driverReach = new Map<string, { firstName: string | null; phone: string | null; reach: Reach }>()
+if (hasDrivers) {
+  const { data } = await supabase
+    .from('drivers')
+    .select('id, first_name, phone, email')
+    .eq('status', 'active')
+  for (const d of data ?? []) {
+    driverReach.set(d.id, {
+      firstName: d.first_name ?? null,
+      phone: d.phone ?? null,
+      reach: reachFor(d),
+    })
+  }
+}
+
+/** What the driver is called in a menu item, when we know. "the driver" is not
+ *  a name, and it is better than a blank or a surname nobody uses out loud. */
+const firstNameOf = (subjectId: string) => driverReach.get(subjectId)?.firstName?.trim() || null
+
+/**
+ * THE LINKS ALREADY OUT, so the card can say "you asked him on Tuesday".
+ *
+ * `driver_links.opened_at` has been written since 0034 and read by nothing, so
+ * "Ask him" appeared in identical words over a driver asked this morning and
+ * one never asked at all. See src/lib/driver-link/outstanding.ts for the four
+ * states and why they are four.
+ *
+ * `used_at is null` and `revoked_at is null` only: a link he has already
+ * answered is finished, and the dates it carried are either on his record or
+ * in the review queue on his own page. Expired ones are KEPT — an expired link
+ * is exactly the thing the owner needs told about, and the sentence says so.
+ *
+ * No .eq('carrier_id', ...): RLS scopes it, as it does every read on this page.
+ */
+const chaseByDriver = new Map<string, ChaseState>()
+if (hasDrivers) {
+  const { data } = await supabase
+    .from('driver_links')
+    .select('driver_id, created_at, opened_at, expires_at, channel')
+    .is('used_at', null)
+    .is('revoked_at', null)
+    .order('created_at', { ascending: false })
+    .limit(200)
+
+  const rows: OutstandingLink[] = (data ?? []).map((r) => ({
+    driverId: r.driver_id,
+    createdAt: new Date(r.created_at),
+    openedAt: r.opened_at ? new Date(r.opened_at) : null,
+    expiresAt: new Date(r.expires_at),
+    channel: r.channel ?? null,
+  }))
+  const now = new Date()
+  for (const [driverId, link] of newestPerDriver(rows)) {
+    chaseByDriver.set(driverId, chaseState(link, now))
+  }
+}
+
+/**
+ * Which drivers can be asked for what, over a list of subjects.
+ *
+ * Used by the single card and by "Ask everyone", so the two cannot disagree
+ * about who is askable — the bulk press must reach exactly the drivers whose
+ * own cards show the button, or the counts it reports back are about a
+ * different list than the one he is looking at.
+ *
+ * A driver with nothing askable is DROPPED, not returned with an empty list.
+ * His missing dates are things the carrier performs; counting him as a failure
+ * would tell an owner whose list is all annual MVRs that the feature is broken.
+ */
+const askTargetsFor = (subjects: readonly ActionSubject[]) =>
+  subjects
+    .filter((x) => x.type === 'driver')
+    .map((x) => {
+      const dated = asksForAnswerKeys(x.needKeys)
+      // EVERY DRIVER CAN BE TEXTED. Where none of his missing dates is one of
+      // the six federal papers, the link carries the dateless seventh ask
+      // (0042) and the page he opens is the free upload box — "send the office
+      // whatever they asked you for". The owner's reason for texting a driver
+      // is not confined to the six, and the button used to be.
+      return { driverId: x.id, asks: dated.length > 0 ? dated : [ANYTHING_ASK] }
+    })
+
+/**
+ * THE FORMS EVERY CARD ACTION SUBMITS, one per intent.
+ *
+ * A form may not be nested inside another, and the focused date editor is one
+ * big form — so the buttons live in the menus and point at these with `form=`.
+ * The button is still the submitter, so its `name`/`value` (the subject id)
+ * reaches the server; the intent rides as a hidden input, which is why there is
+ * one form per intent rather than one shared between them.
+ */
+const ACTION_FORMS = {
+  askBlocked: 'act-ask-blocked',
+  ask: 'act-ask-driver',
+  remind: 'act-remind-later',
+  retire: 'act-retire-driver',
+  askAll: 'act-ask-all',
+} as const
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const todayIso = new Date().toISOString().slice(0, 10)
 
@@ -161,8 +316,23 @@ if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData()
   const intent = String(form.get('intent') ?? '')
   const to = (query: string) => Astro.redirect(`/app?${query}`, 303)
-  const here = (extra: string) =>
-    `show=unknown${focus ? `&s=${encodeURIComponent(focus.id)}` : ''}${extra}`
+  /**
+   * BACK TO THE VIEW HE PRESSED FROM, not always to the date editor.
+   *
+   * This used to hard-code `show=unknown`, which was right while every action
+   * lived on that one screen and wrong the moment one did not: pressing "Text
+   * Marco" from the Overdue list would 303 him into a filtered view he never
+   * asked for — and then say nothing, because every receipt below is drawn
+   * only on the view that produced it. He would press a button, lose his
+   * place, and be told nothing, on the screen whose whole job is trust.
+   *
+   * `&s=` still rides along, but only on the view that has a focused subject.
+   */
+  const here = (extra: string) => {
+    const base = view === 'all' ? '' : `show=${view}`
+    const subject = view === 'unknown' && focus ? `&s=${encodeURIComponent(focus.id)}` : ''
+    return `${base}${subject}${base || subject ? extra : extra.replace(/^&/, '')}`
+  }
   const fail = (message: string) => to(here(`&error=${encodeURIComponent(message)}`))
 
   /**
@@ -338,6 +508,184 @@ if (Astro.request.method === 'POST') {
       .is('superseded_at', null)
     if (error) return fail(error.message)
     return to(here('&withdrawn=1'))
+  }
+
+  /**
+   * ASK THE DRIVER FOR THE DATES THIS SCREEN IS ALREADY SHOWING.
+   *
+   * The owner is looking at a card that says "Driver · 3 dates missing". Making
+   * him open the driver's page and tick the same three boxes is asking him to
+   * copy a list off his own screen. So the asks are DERIVED HERE, from the
+   * editor this page already built, and the body carries one thing: which
+   * driver.
+   *
+   * NOTHING ABOUT WHAT TO ASK FOR IS TRUSTED OUT OF THE BODY — the same rule
+   * `save_row_dates` above follows, and for a stronger reason. A posted ask key
+   * would be an owner choosing what a driver's phone is allowed to write into,
+   * and the one key that must never be on that list is the 49 CFR 40.307(g)
+   * return-to-duty date. `asksForAnswerKeys` can only ever return the six in
+   * the catalogue, and the SQL function checks the whitelist again.
+   */
+  if (intent === 'ask_driver_dates') {
+    const driverId = String(form.get('driver_id') ?? '')
+    if (!UUID.test(driverId)) return to(here(''))
+
+    // The subject must be one THIS page built for THIS carrier. A driver id
+    // that is not on the screen is not a driver he is being shown, and the
+    // lookup is what makes that true rather than the RLS underneath it.
+    const subject = actionIndex.get(driverId)
+    if (subject?.type !== 'driver') return fail('That driver is not on this list any more. Reload the page.')
+
+    // Same rule as the bulk button above: his dated papers when he owes any,
+    // and otherwise the dateless ask, so the button always works.
+    const dated = asksForAnswerKeys(subject.needKeys)
+    const asks = dated.length > 0 ? dated : [ANYTHING_ASK]
+
+    const asked = await askDriver({
+      supabase,
+      carrierId,
+      driverId,
+      asks,
+      hours: DEFAULT_EXPIRY_HOURS,
+      userId: Astro.locals.userId ?? null,
+      origin: Astro.url.origin,
+    })
+    if (!asked.ok) return fail(asked.message)
+
+    // The outcome is a CODE and the driver is his id, both already on this
+    // screen. Neither the token nor a phone number goes in the address bar:
+    // the link, when there is nowhere to send it, is shown on the driver's own
+    // page, which sets no-store.
+    return to(here(`&asked=${asked.outcome}&who=${encodeURIComponent(driverId)}`))
+  }
+
+  /**
+   * THE SAME ERRAND FOR EVERY DRIVER ON THE SCREEN.
+   *
+   * On a roster of twelve, pressing the same button twelve times is the work
+   * this product is supposed to remove. Every driver gets asked for HIS OWN
+   * missing dates — not one shared list — because the whole reason the single
+   * button is one press is that the screen already knows who is short of what.
+   *
+   * Drivers with nothing askable are left out silently rather than counted as
+   * failures: an owner whose whole list is annual MVRs would otherwise read
+   * "8 could not be asked" and conclude the feature is broken.
+   */
+  if (intent === 'ask_all_drivers') {
+    const targets = askTargetsFor([...actionIndex.values()])
+    if (targets.length === 0) return fail('No drivers on this list to ask.')
+
+    const result = await askDrivers({
+      supabase,
+      carrierId,
+      hours: DEFAULT_EXPIRY_HOURS,
+      userId: Astro.locals.userId ?? null,
+      origin: Astro.url.origin,
+      targets,
+    })
+
+    // Five counts, all small integers, all already visible on this screen as
+    // rows. Nothing here names a person or an address.
+    return to(
+      here(
+        `&bulk=${result.sms}.${result.email}.${result.none}.${result.failed}` +
+          `.${result.refused}.${result.overCap}`,
+      ),
+    )
+  }
+
+  /**
+   * TEXT THE DRIVERS WHO CANNOT BE DISPATCHED.
+   *
+   * The banner has named them since it was written and offered a link to the
+   * dispatch board — a screen where he can look at the problem again. These are
+   * the most urgent people in the product: their medical card or licence has
+   * RUN OUT, which is the one thing that stops a man driving today, and it is
+   * also exactly what a driver can fix from his own phone in a minute.
+   *
+   * The set is computed here, from `items`, by the same function the banner
+   * counts — never posted. A list of driver ids in the body would be an owner
+   * choosing who counts as blocked.
+   */
+  if (intent === 'ask_blocked_drivers') {
+    const targets = askTargetsFor(
+      blocked.map((id) => actionIndex.get(id)).filter((x) => x !== undefined),
+    )
+    if (targets.length === 0) return fail('Nobody is blocked right now.')
+
+    const result = await askDrivers({
+      supabase,
+      carrierId,
+      hours: DEFAULT_EXPIRY_HOURS,
+      userId: Astro.locals.userId ?? null,
+      origin: Astro.url.origin,
+      targets,
+    })
+    return to(
+      here(
+        `&bulk=${result.sms}.${result.email}.${result.none}.${result.failed}` +
+          `.${result.refused}.${result.overCap}`,
+      ),
+    )
+  }
+
+  /**
+   * "NOT NOW. REMIND ME IN A WEEK."
+   *
+   * The honest third answer to a missing date, and the one the screen had no
+   * button for. See src/lib/dashboard-remind.ts for what the row says and why
+   * it carries the date names in its note.
+   */
+  if (intent === 'remind_me_later') {
+    const subjectId = String(form.get('subject_id') ?? '')
+    if (!UUID.test(subjectId)) return to(here(''))
+    const subject = actionIndex.get(subjectId)
+    if (!subject) return fail('That row is not on this list any more. Reload the page.')
+
+    // carrier_id is SET on insert, never filtered on: RLS checks the value but
+    // does not fill it in, so a row without it fails the WITH CHECK half of the
+    // policy and reads as a permissions error about the owner's own list.
+    const { error } = await supabase.from('reminders').insert({
+      carrier_id: carrierId,
+      created_by: Astro.locals.userId ?? null,
+      ...remindMeFields(subject, new Date()),
+    })
+    if (error) return fail('We could not save that reminder. Try again.')
+    return to(here('&remind=1'))
+  }
+
+  /**
+   * "HE DOES NOT WORK HERE ANY MORE."
+   *
+   * A card for somebody who left counts against the owner every morning for
+   * ever, and the only cure was to know that a driver has a status and that it
+   * lives three screens away.
+   *
+   * INACTIVE, NEVER TERMINATED, and never a delete. 'terminated' is a statement
+   * about how the employment ended and is not ours to make from a dashboard
+   * card; a delete would take his medical card and his MVR with him, which is
+   * the federal retention problem 0028 exists to refuse. Inactive is reversible
+   * from his own page, which is where the full choice already lives, and the
+   * receipt below links straight to it.
+   */
+  if (intent === 'retire_driver') {
+    const driverId = String(form.get('driver_id') ?? '')
+    if (!UUID.test(driverId)) return to(here(''))
+    const subject = actionIndex.get(driverId)
+    if (subject?.type !== 'driver') return fail('That driver is not on this list any more. Reload the page.')
+
+    const { data, error } = await supabase
+      .from('drivers')
+      .update({ status: 'inactive' })
+      .eq('id', driverId)
+      .eq('status', ACTIVE_DRIVER_STATUS)
+      .select('id')
+    if (error) return fail('We could not change that driver. Try again.')
+    // An UPDATE matching nothing is not an error in Postgres, so without this
+    // the page reports a cheerful receipt for a driver somebody else moved in
+    // another tab.
+    if (!data || data.length === 0) return to(here(''))
+    return to(here(`&retired=1&who=${encodeURIComponent(driverId)}`))
   }
 
   if (intent === 'save_unknown_dates') {
@@ -708,9 +1056,17 @@ for (const i of items) {
   row.items.push(i)
   driverItems.set(i.subjectId, row)
 }
-const blockedDrivers = [...driverItems.values()].filter((d) =>
-  isBlocked(eligibility({ items: d.items, label: d.label })),
-).length
+/**
+ * THE IDS, not only the count.
+ *
+ * The banner has always known exactly who cannot be dispatched and thrown the
+ * names away, keeping a number and a link to a screen where he can look at the
+ * problem again. These are the drivers most worth texting in the whole product
+ * — the two non-conditional asks in the catalogue are the medical card and the
+ * licence, which is precisely what `eligibility()` blocks on — so the banner
+ * now carries the action instead of a signpost to one.
+ */
+const blockedDrivers = blocked.length
 
 /**
  * THE CEILING. What the unanswered dates could cost him, at the very most.
@@ -783,6 +1139,59 @@ const withdrawn = params.get('withdrawn') === '1'
  */
 const rowsSaved = params.has('rows') ? Number(params.get('rows')) : null
 const batchStamp = params.get('at')
+
+/**
+ * WHAT HAPPENED WHEN HE ASKED THE DRIVER, read back as a sentence.
+ *
+ * A code in the URL and never the sentence itself, for the same reason the
+ * driver's own page does it that way: the alternative puts a phone number in
+ * the address bar and in browser history. `who` is the driver id, which is
+ * already what `?s=` carries, and the name is looked up from the page.
+ *
+ * 'failed' is not an error state and is not printed in red. The link is minted
+ * and valid; what did not happen is the send — `TWILIO_*` stays unset until the
+ * 10DLC campaign is live — and the honest next step is his own phone.
+ */
+const ASKED_OUTCOMES = ['sms', 'email', 'none', 'failed'] as const
+const askedOutcome = ASKED_OUTCOMES.find((o) => o === params.get('asked')) ?? null
+const askedWho = askedOutcome ? firstNameOf(String(params.get('who') ?? '')) : null
+const askedLine = ((): string | null => {
+  if (!askedOutcome) return null
+  const who = askedWho ?? 'the driver'
+  if (askedOutcome === 'sms') return `Sent to ${who} by text. The dates land here when they answer.`
+  if (askedOutcome === 'email') return `Sent to ${who} by email. The dates land here when they answer.`
+  if (askedOutcome === 'none') {
+    return `No mobile number and no email for ${who}. The link is on their page — open it and send it however you already reach them.`
+  }
+  return `The link is ready but we could not send it just now. Open ${who}’s page to copy it.`
+})()
+
+/**
+ * The bulk receipt: six counts, as six digits in one parameter.
+ *
+ * Counts rather than a sentence, for the same reason `asked=` is a code — a
+ * sentence in the address bar is a sentence anybody can rewrite, and this one
+ * would be read as something the app did. Every number here is already on
+ * screen as a row, so none of it is a fact the URL is leaking.
+ */
+const bulkResult = ((): ReturnType<typeof bulkAskLine> | null => {
+  const raw = params.get('bulk')
+  if (!raw) return null
+  const n = raw.split('.').map((x) => Number.parseInt(x, 10))
+  if (n.length !== 6 || n.some((x) => !Number.isInteger(x) || x < 0 || x > 9999)) return null
+  const [sms, email, none, failed, refused, overCap] = n
+  return bulkAskLine({ sms, email, none, failed, refused, overCap })
+})()
+
+const reminded = params.get('remind') === '1'
+
+/** Who "Ask everyone" would actually reach. The same function the handler uses,
+ *  so the number on the button is the number that gets a message. */
+const bulkTargets = askTargetsFor([...actionIndex.values()])
+
+/** Who was taken off the list, so the receipt can offer the way back. */
+const retiredId = params.get('retired') === '1' ? String(params.get('who') ?? '') : null
+const retiredName = retiredId ? (firstNameOf(retiredId) ?? 'That driver') : null
 
 /**
  * The receipt: the rows this submit just wrote, read back in words.
@@ -1137,10 +1546,34 @@ const backOut = 'btn btn-secondary'
             {blockedDrivers === 1 ? 'His' : 'Their'} medical card or licence has run out. Put{' '}
             {blockedDrivers === 1 ? 'him' : 'them'} on a load and you are running unqualified.
           </span>
+          {/* THE ACTION, not a signpost to one. "See dispatch →" led to a
+              board that shows him the same problem a second time. What fixes
+              it is the driver's phone: the two non-conditional asks in the
+              catalogue are the medical card and the licence, which is what
+              `eligibility()` blocks on. */}
+          <button
+            type="submit"
+            form={ACTION_FORMS.askBlocked}
+            class="btn btn-sm shrink-0 bg-red-600 text-white hover:bg-red-700 active:bg-red-700"
+          >
+            {blockedDrivers === 1 ? 'Text them' : `Text all ${blockedDrivers}`}
+          </button>
           <a href="/app/dispatch" class="link inline-flex min-h-11 shrink-0 items-center font-medium text-red-700">
             See dispatch →
           </a>
         </p>
+      )
+    }
+
+    {/* Its own form, outside everything, for the same reason the card actions
+        have theirs: a form may not be nested and the intent has to be a hidden
+        input because the button carries no id of its own — the server works out
+        who is blocked. */}
+    {
+      blockedDrivers > 0 && (
+        <form method="POST" id={ACTION_FORMS.askBlocked} class="hidden">
+          <input type="hidden" name="intent" value="ask_blocked_drivers" />
+        </form>
       )
     }
 
@@ -1357,6 +1790,28 @@ const backOut = 'btn btn-secondary'
       shipping 600 date inputs over one bar of signal.
   */}
 
+  {/* The POST forms every card action submits. Rendered outside the date editor
+      because a form may not contain another, and hidden because there is
+      nothing in them to look at — a hidden form still submits. */}
+  {
+    view === 'unknown' && (
+      <>
+        <form method="POST" id={ACTION_FORMS.ask} class="hidden">
+          <input type="hidden" name="intent" value="ask_driver_dates" />
+        </form>
+        <form method="POST" id={ACTION_FORMS.remind} class="hidden">
+          <input type="hidden" name="intent" value="remind_me_later" />
+        </form>
+        <form method="POST" id={ACTION_FORMS.retire} class="hidden">
+          <input type="hidden" name="intent" value="retire_driver" />
+        </form>
+        <form method="POST" id={ACTION_FORMS.askAll} class="hidden">
+          <input type="hidden" name="intent" value="ask_all_drivers" />
+        </form>
+      </>
+    )
+  }
+
   {
     view === 'unknown' && errorMessage && (
       <p
@@ -1366,6 +1821,54 @@ const backOut = 'btn btn-secondary'
       >
         {errorMessage}
       </p>
+    )
+  }
+
+  {/* ===================================== the card actions' receipts ===
+
+      NO `view ===` GUARD ON THESE FOUR, and that is the point. They sat behind
+      one while the only buttons that produced them were on this one screen —
+      and became silently wrong the moment one was not. A man who presses "Text
+      Marco" in the Overdue list and is told nothing has been shown a dead
+      button, whatever the server actually did. They render above the lists on
+      whichever view he pressed from; `here()` is what sends him back to it.
+  */}
+  {
+    bulkResult && (
+      <Flash tone="ok" class="mt-4">
+        {bulkResult}
+      </Flash>
+    )
+  }
+
+  {
+    reminded && (
+      <Flash tone="ok" class="mt-4">
+        Saved to your reminders for next week. It is on <a href="/app/reminders" class="link">your
+        own list</a>, not the law's.
+      </Flash>
+    )
+  }
+
+  {
+    /* The way back, in the receipt itself. Taking a man off the board with no
+       visible undo is how somebody loses a driver inside the app. */
+    retiredId && (
+      <Flash tone="note" class="mt-4">
+        {retiredName} is off your list. Their records stay on file.{' '}
+        <a href={`/app/drivers/${retiredId}`} class="link">
+          Open their page
+        </a>{' '}
+        to put them back to Active.
+      </Flash>
+    )
+  }
+
+  {
+    askedLine && (
+      <Flash tone={askedOutcome === 'sms' || askedOutcome === 'email' ? 'ok' : 'note'} class="mt-4">
+        {askedLine}
+      </Flash>
     )
   }
 
@@ -1443,30 +1946,59 @@ const backOut = 'btn btn-secondary'
         {editor.groups.map((g) => (
           <>
             <h3 class:list={['mt-5', cardHeading]}>{g.title}</h3>
-            <div class="mt-2 space-y-2">
-              {g.subjects.map((subject) => (
-                <a
-                  href={subjectHrefFor(subject.id)}
-                  class="flex items-center gap-3 rounded-xl border border-ink-100 bg-white p-4 transition hover:bg-ink-50"
+
+            {/* ONE PRESS FOR THE WHOLE ROSTER. On a fleet of twelve, pressing
+                the same button twelve times is the work this product exists to
+                remove.
+                
+                It used to need TWO askable drivers, on the reasoning that with
+                one it is the card's own button wearing a different coat. That
+                reasoning was wrong about the screen it lands on: on a real
+                roster most drivers have nothing askable, so the bar never
+                appeared at all, and the fastest way to ask the one driver who
+                can be asked was to find his card among the ones that cannot.
+                One is enough, and the words change with the number. */}
+            {g.key === 'driver' && bulkTargets.length > 0 && (
+              <div class="mt-2 flex flex-wrap items-center gap-3 rounded-xl border border-brand-600/25 bg-champagne-50 p-4">
+                <p class="min-w-0 flex-1 text-sm">
+                  {bulkTargets.length === 1 ? (
+                    <>
+                      One of them can send their own dates in. The rest are things you record
+                      yourself.
+                    </>
+                  ) : (
+                    <>
+                      Ask all {bulkTargets.length} of them at once. Each one gets a link for their
+                      own missing dates — not a shared list.
+                    </>
+                  )}
+                </p>
+                <button
+                  type="submit"
+                  form={ACTION_FORMS.askAll}
+                  class="btn btn-primary btn-sm shrink-0"
                 >
-                  <span class="min-w-0 flex-1">
-                    <span class="block truncate font-medium">{subject.label}</span>
-                    <span class="mt-0.5 block text-xs text-ink-700 tabular-nums">
-                      {subject.noun} · {subject.questionCount}{' '}
-                      {subject.questionCount === 1 ? 'date' : 'dates'} missing
-                    </span>
-                  </span>
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    class="size-5 shrink-0 text-ink-300"
-                    aria-hidden="true"
-                  >
-                    <path d="M9 18l6-6-6-6" stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
-                </a>
+                  {bulkTargets.length === 1 ? 'Ask them' : `Ask all ${bulkTargets.length}`}
+                </button>
+              </div>
+            )}
+
+            <div class="mt-2 space-y-2">
+              {/* NOT one <a> round the whole card any more. The card carries its
+                  own actions now, a button inside a link is invalid HTML, and
+                  <summary> has to be the first child of <details> to be the
+                  control — so the name, the count and the menu are one card and
+                  "Type the dates in" is the first thing in it. The whole of
+                  that reasoning is at the top of DateSubjectActions.astro. */}
+              {g.subjects.map((subject) => (
+                <DateSubjectActions
+                  subject={subject}
+                  reach={driverReach.get(subject.id)?.reach}
+                  firstName={firstNameOf(subject.id)}
+                  recordHref={subjectHref(subject.type, subject.id)}
+                  forms={ACTION_FORMS}
+                  chase={chaseByDriver.get(subject.id)}
+                />
               ))}
             </div>
           </>
@@ -1498,6 +2030,20 @@ const backOut = 'btn btn-secondary'
           Type what you have in front of you. Leave the rest for later. A blank box changes
           nothing.
         </p>
+
+        {/* The same actions as the card he came from — under the heading rather
+            than beside it, so the panel has the width to be read on a phone and
+            pushes the form down instead of covering the first date box. The
+            "Type the dates in" line is dropped: it would link to this page. */}
+        <DateSubjectActions
+          subject={focus}
+          reach={driverReach.get(focus.id)?.reach}
+          firstName={firstNameOf(focus.id)}
+          recordHref={subjectHref(focus.type, focus.id)}
+          forms={ACTION_FORMS}
+          chase={chaseByDriver.get(focus.id)}
+          variant="inline"
+        />
 
         <div class="mt-3 rounded-xl border border-ink-100 bg-white">
           <div class="flex items-center gap-3 border-b border-ink-100 px-5 py-3">
@@ -1847,12 +2393,11 @@ const backOut = 'btn btn-secondary'
                           {(() => {
                             const atRisk =
                               i.status.standing === 'overdue' || i.status.standing === 'unknown'
-                            const mine = (i.rule.penalty ?? []).filter((p) => p.payer === 'carrier')
-                            if (!atRisk || mine.length === 0) return null
-                            const worst = mine.reduce((a, b) => (b.maxCents > a.maxCents ? b : a))
+                            const mine = atRisk ? carrierCeiling(i.rule.penalty) : null
+                            if (!mine) return null
                             return (
                               <div class="mt-0.5 text-xs text-ink-700">
-                                Most they can fine you: {penaltyAmount(worst)}
+                                Most they can fine you: {penaltyAmount(mine)}
                               </div>
                             )
                           })()}
